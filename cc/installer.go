@@ -30,8 +30,9 @@ type InstallerProperties struct {
 type installLocation int
 
 const (
-	InstallInSystem installLocation = 0
-	InstallInData                   = iota
+	InstallInSystem       installLocation = 0
+	InstallInData                         = iota
+	InstallInSanitizerDir                 = iota
 )
 
 func NewBaseInstaller(dir, dir64 string, location installLocation) *baseInstaller {
@@ -47,6 +48,7 @@ type baseInstaller struct {
 
 	dir      string
 	dir64    string
+	subDir   string
 	relative string
 	location installLocation
 
@@ -60,22 +62,29 @@ func (installer *baseInstaller) installerProps() []interface{} {
 }
 
 func (installer *baseInstaller) installDir(ctx ModuleContext) android.OutputPath {
-	subDir := installer.dir
+	dir := installer.dir
 	if ctx.toolchain().Is64Bit() && installer.dir64 != "" {
-		subDir = installer.dir64
+		dir = installer.dir64
 	}
 	if !ctx.Host() && !ctx.Arch().Native {
-		subDir = filepath.Join(subDir, ctx.Arch().ArchType.String())
+		dir = filepath.Join(dir, ctx.Arch().ArchType.String())
 	}
-	return android.PathForModuleInstall(ctx, subDir, installer.Properties.Relative_install_path, installer.relative)
+	if installer.location == InstallInData && ctx.useVndk() {
+		dir = filepath.Join(dir, "vendor")
+	}
+	return android.PathForModuleInstall(ctx, dir, installer.subDir, installer.Properties.Relative_install_path, installer.relative)
 }
 
 func (installer *baseInstaller) install(ctx ModuleContext, file android.Path) {
-	installer.path = ctx.InstallFile(installer.installDir(ctx), file)
+	installer.path = ctx.InstallFile(installer.installDir(ctx), file.Base(), file)
 }
 
 func (installer *baseInstaller) inData() bool {
 	return installer.location == InstallInData
+}
+
+func (installer *baseInstaller) inSanitizerDir() bool {
+	return installer.location == InstallInSanitizerDir
 }
 
 func (installer *baseInstaller) hostToolPath() android.OptionalPath {

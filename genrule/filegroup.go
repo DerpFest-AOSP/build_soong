@@ -15,13 +15,14 @@
 package genrule
 
 import (
-	"github.com/google/blueprint"
-
 	"android/soong/android"
+	"io"
+	"strings"
+	"text/template"
 )
 
 func init() {
-	android.RegisterModuleType("filegroup", fileGroupFactory)
+	android.RegisterModuleType("filegroup", FileGroupFactory)
 }
 
 type fileGroupProperties struct {
@@ -29,6 +30,16 @@ type fileGroupProperties struct {
 	Srcs []string
 
 	Exclude_srcs []string
+
+	// The base path to the files.  May be used by other modules to determine which portion
+	// of the path to use.  For example, when a filegroup is used as data in a cc_test rule,
+	// the base path is stripped off the path and the remaining path is used as the
+	// installation directory.
+	Path string
+
+	// Create a make variable with the specified name that contains the list of files in the
+	// filegroup, relative to the root of the source tree.
+	Export_to_make_var string
 }
 
 type fileGroup struct {
@@ -42,10 +53,11 @@ var _ android.SourceFileProducer = (*fileGroup)(nil)
 // filegroup modules contain a list of files, and can be used to export files across package
 // boundaries.  filegroups (and genrules) can be referenced from srcs properties of other modules
 // using the syntax ":module".
-func fileGroupFactory() (blueprint.Module, []interface{}) {
+func FileGroupFactory() android.Module {
 	module := &fileGroup{}
-
-	return android.InitAndroidModule(module, &module.properties)
+	module.AddProperties(&module.properties)
+	android.InitAndroidModule(module)
+	return module
 }
 
 func (fg *fileGroup) DepsMutator(ctx android.BottomUpMutatorContext) {
@@ -53,9 +65,30 @@ func (fg *fileGroup) DepsMutator(ctx android.BottomUpMutatorContext) {
 }
 
 func (fg *fileGroup) GenerateAndroidBuildActions(ctx android.ModuleContext) {
-	fg.srcs = ctx.ExpandSources(fg.properties.Srcs, fg.properties.Exclude_srcs)
+	fg.srcs = ctx.ExpandSourcesSubDir(fg.properties.Srcs, fg.properties.Exclude_srcs, fg.properties.Path)
 }
 
 func (fg *fileGroup) Srcs() android.Paths {
 	return fg.srcs
+}
+
+var androidMkTemplate = template.Must(template.New("filegroup").Parse(`
+ifdef {{.makeVar}}
+  $(error variable {{.makeVar}} set by soong module is already set in make)
+endif
+{{.makeVar}} := {{.value}}
+.KATI_READONLY := {{.makeVar}}
+`))
+
+func (fg *fileGroup) AndroidMk() android.AndroidMkData {
+	return android.AndroidMkData{
+		Custom: func(w io.Writer, name, prefix, moduleDir string, data android.AndroidMkData) {
+			if makeVar := fg.properties.Export_to_make_var; makeVar != "" {
+				androidMkTemplate.Execute(w, map[string]string{
+					"makeVar": makeVar,
+					"value":   strings.Join(fg.srcs.Strings(), " "),
+				})
+			}
+		},
+	}
 }

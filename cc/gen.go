@@ -37,7 +37,6 @@ var (
 		blueprint.RuleParams{
 			Command:     "BISON_PKGDATADIR=$yaccDataDir $yaccCmd -d $yaccFlags --defines=$hFile -o $out $in",
 			CommandDeps: []string{"$yaccCmd"},
-			Description: "yacc $out",
 		},
 		"yaccFlags", "hFile")
 
@@ -45,7 +44,6 @@ var (
 		blueprint.RuleParams{
 			Command:     "$lexCmd -o$out $in",
 			CommandDeps: []string{"$lexCmd"},
-			Description: "lex $out",
 		})
 
 	aidl = pctx.AndroidStaticRule("aidl",
@@ -54,16 +52,23 @@ var (
 			CommandDeps: []string{"$aidlCmd"},
 			Depfile:     "${out}.d",
 			Deps:        blueprint.DepsGCC,
-			Description: "aidl $out",
 		},
 		"aidlFlags", "outDir")
+
+	windmc = pctx.AndroidStaticRule("windmc",
+		blueprint.RuleParams{
+			Command:     "$windmcCmd -r$$(dirname $out) -h$$(dirname $out) $in",
+			CommandDeps: []string{"$windmcCmd"},
+		},
+		"windmcCmd")
 )
 
 func genYacc(ctx android.ModuleContext, yaccFile android.Path, outFile android.ModuleGenPath, yaccFlags string) (headerFile android.ModuleGenPath) {
 	headerFile = android.GenPathWithExt(ctx, "yacc", yaccFile, "h")
 
-	ctx.ModuleBuild(pctx, android.ModuleBuildParams{
+	ctx.Build(pctx, android.BuildParams{
 		Rule:           yacc,
+		Description:    "yacc " + yaccFile.Rel(),
 		Output:         outFile,
 		ImplicitOutput: headerFile,
 		Input:          yaccFile,
@@ -78,10 +83,11 @@ func genYacc(ctx android.ModuleContext, yaccFile android.Path, outFile android.M
 
 func genAidl(ctx android.ModuleContext, aidlFile android.Path, outFile android.ModuleGenPath, aidlFlags string) android.Paths {
 
-	ctx.ModuleBuild(pctx, android.ModuleBuildParams{
-		Rule:   aidl,
-		Output: outFile,
-		Input:  aidlFile,
+	ctx.Build(pctx, android.BuildParams{
+		Rule:        aidl,
+		Description: "aidl " + aidlFile.Rel(),
+		Output:      outFile,
+		Input:       aidlFile,
 		Args: map[string]string{
 			"aidlFlags": aidlFlags,
 			"outDir":    android.PathForModuleGen(ctx, "aidl").String(),
@@ -93,17 +99,40 @@ func genAidl(ctx android.ModuleContext, aidlFile android.Path, outFile android.M
 }
 
 func genLex(ctx android.ModuleContext, lexFile android.Path, outFile android.ModuleGenPath) {
-	ctx.ModuleBuild(pctx, android.ModuleBuildParams{
-		Rule:   lex,
-		Output: outFile,
-		Input:  lexFile,
+	ctx.Build(pctx, android.BuildParams{
+		Rule:        lex,
+		Description: "lex " + lexFile.Rel(),
+		Output:      outFile,
+		Input:       lexFile,
 	})
+}
+
+func genWinMsg(ctx android.ModuleContext, srcFile android.Path, flags builderFlags) (android.Path, android.Path) {
+	headerFile := android.GenPathWithExt(ctx, "windmc", srcFile, "h")
+	rcFile := android.GenPathWithExt(ctx, "windmc", srcFile, "rc")
+
+	windmcCmd := gccCmd(flags.toolchain, "windmc")
+
+	ctx.Build(pctx, android.BuildParams{
+		Rule:           windmc,
+		Description:    "windmc " + srcFile.Rel(),
+		Output:         rcFile,
+		ImplicitOutput: headerFile,
+		Input:          srcFile,
+		Args: map[string]string{
+			"windmcCmd": windmcCmd,
+		},
+	})
+
+	return rcFile, headerFile
 }
 
 func genSources(ctx android.ModuleContext, srcFiles android.Paths,
 	buildFlags builderFlags) (android.Paths, android.Paths) {
 
 	var deps android.Paths
+
+	var rsFiles android.Paths
 
 	for i, srcFile := range srcFiles {
 		switch srcFile.Ext() {
@@ -124,14 +153,26 @@ func genSources(ctx android.ModuleContext, srcFiles android.Paths,
 			srcFiles[i] = cppFile
 			genLex(ctx, srcFile, cppFile)
 		case ".proto":
-			cppFile, headerFile := genProto(ctx, srcFile, buildFlags.protoFlags)
-			srcFiles[i] = cppFile
+			ccFile, headerFile := genProto(ctx, srcFile, buildFlags.protoFlags)
+			srcFiles[i] = ccFile
 			deps = append(deps, headerFile)
 		case ".aidl":
 			cppFile := android.GenPathWithExt(ctx, "aidl", srcFile, "cpp")
 			srcFiles[i] = cppFile
 			deps = append(deps, genAidl(ctx, srcFile, cppFile, buildFlags.aidlFlags)...)
+		case ".rs", ".fs":
+			cppFile := rsGeneratedCppFile(ctx, srcFile)
+			rsFiles = append(rsFiles, srcFiles[i])
+			srcFiles[i] = cppFile
+		case ".mc":
+			rcFile, headerFile := genWinMsg(ctx, srcFile, buildFlags)
+			srcFiles[i] = rcFile
+			deps = append(deps, headerFile)
 		}
+	}
+
+	if len(rsFiles) > 0 {
+		deps = append(deps, rsGenerateCpp(ctx, rsFiles, buildFlags.rsFlags)...)
 	}
 
 	return srcFiles, deps

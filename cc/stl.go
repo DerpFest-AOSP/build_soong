@@ -23,7 +23,7 @@ type StlProperties struct {
 	// select the STL library to use.  Possible values are "libc++", "libc++_static",
 	// "stlport", "stlport_static", "ndk", "libstdc++", or "none".  Leave blank to select the
 	// default
-	Stl *string
+	Stl *string `android:"arch_variant"`
 
 	SelectedStl string `blueprint:"mutated"`
 }
@@ -42,7 +42,7 @@ func (stl *stl) begin(ctx BaseModuleContext) {
 		if stl.Properties.Stl != nil {
 			s = *stl.Properties.Stl
 		}
-		if ctx.sdk() && ctx.Device() {
+		if ctx.useSdk() && ctx.Device() {
 			switch s {
 			case "":
 				return "ndk_system"
@@ -50,13 +50,17 @@ func (stl *stl) begin(ctx BaseModuleContext) {
 				"stlport_shared", "stlport_static",
 				"gnustl_static":
 				return "ndk_lib" + s
+			case "libc++":
+				return "ndk_libc++_shared"
+			case "libc++_static":
+				return "ndk_libc++_static"
 			case "none":
 				return ""
 			default:
 				ctx.ModuleErrorf("stl: %q is not a supported STL with sdk_version set", s)
 				return ""
 			}
-		} else if ctx.Os() == android.Windows {
+		} else if ctx.Windows() {
 			switch s {
 			case "libc++", "libc++_static", "libstdc++", "":
 				// libc++ is not supported on mingw
@@ -103,8 +107,6 @@ func (stl *stl) deps(ctx BaseModuleContext, deps Deps) Deps {
 			}
 			if ctx.staticBinary() {
 				deps.StaticLibs = append(deps.StaticLibs, "libm", "libc", "libdl")
-			} else {
-				deps.SharedLibs = append(deps.SharedLibs, "libdl")
 			}
 		}
 	case "":
@@ -114,15 +116,9 @@ func (stl *stl) deps(ctx BaseModuleContext, deps Deps) Deps {
 		// The system STL doesn't have a prebuilt (it uses the system's libstdc++), but it does have
 		// its own includes. The includes are handled in CCBase.Flags().
 		deps.SharedLibs = append([]string{"libstdc++"}, deps.SharedLibs...)
-	case "ndk_libc++_shared":
-		deps.SharedLibs = append(deps.SharedLibs, stl.Properties.SelectedStl,
-			"libdl")
-	case "ndk_libc++_static":
-		deps.StaticLibs = append(deps.StaticLibs, stl.Properties.SelectedStl)
-		deps.SharedLibs = append(deps.SharedLibs, "libdl")
-	case "ndk_libstlport_shared":
+	case "ndk_libc++_shared", "ndk_libstlport_shared":
 		deps.SharedLibs = append(deps.SharedLibs, stl.Properties.SelectedStl)
-	case "ndk_libstlport_static", "ndk_libgnustl_static":
+	case "ndk_libc++_static", "ndk_libstlport_static", "ndk_libgnustl_static":
 		deps.StaticLibs = append(deps.StaticLibs, stl.Properties.SelectedStl)
 	default:
 		panic(fmt.Errorf("Unknown stl: %q", stl.Properties.SelectedStl))
@@ -138,7 +134,6 @@ func (stl *stl) flags(ctx ModuleContext, flags Flags) Flags {
 		if !ctx.toolchain().Bionic() {
 			flags.CppFlags = append(flags.CppFlags, "-nostdinc++")
 			flags.LdFlags = append(flags.LdFlags, "-nodefaultlibs")
-			flags.LdFlags = append(flags.LdFlags, "-lpthread", "-lm")
 			if ctx.staticBinary() {
 				flags.LdFlags = append(flags.LdFlags, hostStaticGccLibs[ctx.Os()]...)
 			} else {

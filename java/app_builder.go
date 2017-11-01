@@ -34,7 +34,6 @@ var (
 				`-J $javaDir || ( rm -rf "$javaDir/*"; exit 41 ) && ` +
 				`find $javaDir -name "*.java" > $javaFileList`,
 			CommandDeps: []string{"$aaptCmd"},
-			Description: "aapt create R.java $out",
 		},
 		"aaptFlags", "publicResourcesFile", "proguardOptionsFile", "javaDir", "javaFileList")
 
@@ -42,7 +41,6 @@ var (
 		blueprint.RuleParams{
 			Command:     `rm -f $out && $aaptCmd package $aaptFlags -F $out`,
 			CommandDeps: []string{"$aaptCmd"},
-			Description: "aapt export package $out",
 		},
 		"aaptFlags", "publicResourcesFile", "proguardOptionsFile", "javaDir", "javaFileList")
 
@@ -51,7 +49,6 @@ var (
 			// TODO: add-jni-shared-libs-to-package
 			Command:     `cp -f $in $out.tmp && $aaptCmd package -u $aaptFlags -F $out.tmp && mv $out.tmp $out`,
 			CommandDeps: []string{"$aaptCmd"},
-			Description: "aapt package $out",
 		},
 		"aaptFlags")
 
@@ -59,7 +56,6 @@ var (
 		blueprint.RuleParams{
 			Command:     `java -jar $signapkCmd $certificates $in $out`,
 			CommandDeps: []string{"$signapkCmd"},
-			Description: "signapk $out",
 		},
 		"certificates")
 
@@ -68,7 +64,7 @@ var (
 			Command: "java -classpath $androidManifestMergerCmd com.android.manifmerger.Main merge " +
 				"--main $in --libs $libsManifests --out $out",
 			CommandDeps: []string{"$androidManifestMergerCmd"},
-			Description: "merge manifest files $out",
+			Description: "merge manifest files",
 		},
 		"libsManifests")
 )
@@ -86,10 +82,11 @@ func CreateResourceJavaFiles(ctx android.ModuleContext, flags []string,
 	publicResourcesFile := android.PathForModuleOut(ctx, "public_resources.xml")
 	proguardOptionsFile := android.PathForModuleOut(ctx, "proguard.options")
 
-	ctx.ModuleBuild(pctx, android.ModuleBuildParams{
-		Rule:      aaptCreateResourceJavaFile,
-		Outputs:   android.WritablePaths{publicResourcesFile, proguardOptionsFile, javaFileList},
-		Implicits: deps,
+	ctx.Build(pctx, android.BuildParams{
+		Rule:        aaptCreateResourceJavaFile,
+		Description: "aapt create R.java",
+		Outputs:     android.WritablePaths{publicResourcesFile, proguardOptionsFile, javaFileList},
+		Implicits:   deps,
 		Args: map[string]string{
 			"aaptFlags":           strings.Join(flags, " "),
 			"publicResourcesFile": publicResourcesFile.String(),
@@ -105,10 +102,11 @@ func CreateResourceJavaFiles(ctx android.ModuleContext, flags []string,
 func CreateExportPackage(ctx android.ModuleContext, flags []string, deps android.Paths) android.ModuleOutPath {
 	outputFile := android.PathForModuleOut(ctx, "package-export.apk")
 
-	ctx.ModuleBuild(pctx, android.ModuleBuildParams{
-		Rule:      aaptCreateAssetsPackage,
-		Output:    outputFile,
-		Implicits: deps,
+	ctx.Build(pctx, android.BuildParams{
+		Rule:        aaptCreateAssetsPackage,
+		Description: "aapt export package",
+		Output:      outputFile,
+		Implicits:   deps,
 		Args: map[string]string{
 			"aaptFlags": strings.Join(flags, " "),
 		},
@@ -122,10 +120,11 @@ func CreateAppPackage(ctx android.ModuleContext, flags []string, jarFile android
 
 	resourceApk := android.PathForModuleOut(ctx, "resources.apk")
 
-	ctx.ModuleBuild(pctx, android.ModuleBuildParams{
-		Rule:   aaptAddResources,
-		Output: resourceApk,
-		Input:  jarFile,
+	ctx.Build(pctx, android.BuildParams{
+		Rule:        aaptAddResources,
+		Description: "aapt package",
+		Output:      resourceApk,
+		Input:       jarFile,
 		Args: map[string]string{
 			"aaptFlags": strings.Join(flags, " "),
 		},
@@ -138,10 +137,11 @@ func CreateAppPackage(ctx android.ModuleContext, flags []string, jarFile android
 		certificateArgs = append(certificateArgs, c+".x509.pem", c+".pk8")
 	}
 
-	ctx.ModuleBuild(pctx, android.ModuleBuildParams{
-		Rule:   signapk,
-		Output: outputFile,
-		Input:  resourceApk,
+	ctx.Build(pctx, android.BuildParams{
+		Rule:        signapk,
+		Description: "signapk",
+		Output:      outputFile,
+		Input:       resourceApk,
 		Args: map[string]string{
 			"certificates": strings.Join(certificateArgs, " "),
 		},

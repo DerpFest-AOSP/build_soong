@@ -43,13 +43,9 @@ type BaseLinkerProperties struct {
 	// list of module-specific flags that will be used for all link steps
 	Ldflags []string `android:"arch_variant"`
 
-	// don't insert default compiler flags into asflags, cflags,
-	// cppflags, conlyflags, ldflags, or include_dirs
-	No_default_compiler_flags *bool
-
 	// list of system libraries that will be dynamically linked to
-	// shared library and executable modules.  If unset, generally defaults to libc
-	// and libm.  Set to [] to prevent linking against libc and libm.
+	// shared library and executable modules.  If unset, generally defaults to libc,
+	// libm, and libdl.  Set to [] to prevent linking against the defaults.
 	System_shared_libs []string
 
 	// allow the module to contain undefined symbols.  By default,
@@ -87,6 +83,18 @@ type BaseLinkerProperties struct {
 	// group static libraries.  This can resolve missing symbols issues with interdependencies
 	// between static libraries, but it is generally better to order them correctly instead.
 	Group_static_libs *bool `android:"arch_variant"`
+
+	Target struct {
+		Vendor struct {
+			// list of shared libs that should not be used to build
+			// the vendor variant of the C/C++ module.
+			Exclude_shared_libs []string
+
+			// list of static libs that should not be used to build
+			// the vendor variant of the C/C++ module.
+			Exclude_static_libs []string
+		}
+	}
 }
 
 func NewBaseLinker() *baseLinker {
@@ -128,6 +136,14 @@ func (linker *baseLinker) linkerDeps(ctx BaseModuleContext, deps Deps) Deps {
 	deps.ReexportSharedLibHeaders = append(deps.ReexportSharedLibHeaders, linker.Properties.Export_shared_lib_headers...)
 	deps.ReexportGeneratedHeaders = append(deps.ReexportGeneratedHeaders, linker.Properties.Export_generated_headers...)
 
+	if ctx.useVndk() {
+		deps.SharedLibs = removeListFromList(deps.SharedLibs, linker.Properties.Target.Vendor.Exclude_shared_libs)
+		deps.ReexportSharedLibHeaders = removeListFromList(deps.ReexportSharedLibHeaders, linker.Properties.Target.Vendor.Exclude_shared_libs)
+		deps.StaticLibs = removeListFromList(deps.StaticLibs, linker.Properties.Target.Vendor.Exclude_static_libs)
+		deps.ReexportStaticLibHeaders = removeListFromList(deps.ReexportStaticLibHeaders, linker.Properties.Target.Vendor.Exclude_static_libs)
+		deps.WholeStaticLibs = removeListFromList(deps.WholeStaticLibs, linker.Properties.Target.Vendor.Exclude_static_libs)
+	}
+
 	if ctx.ModuleName() != "libcompiler_rt-extras" {
 		deps.LateStaticLibs = append(deps.LateStaticLibs, "libcompiler_rt-extras")
 	}
@@ -140,23 +156,37 @@ func (linker *baseLinker) linkerDeps(ctx BaseModuleContext, deps Deps) Deps {
 		}
 
 		if !ctx.static() {
-			if linker.Properties.System_shared_libs != nil {
-				deps.LateSharedLibs = append(deps.LateSharedLibs,
-					linker.Properties.System_shared_libs...)
-			} else if !ctx.sdk() {
-				deps.LateSharedLibs = append(deps.LateSharedLibs, "libc", "libm")
+			systemSharedLibs := linker.Properties.System_shared_libs
+			if systemSharedLibs == nil {
+				systemSharedLibs = []string{"libc", "libm", "libdl"}
 			}
-		}
 
-		if ctx.sdk() {
-			deps.SharedLibs = append(deps.SharedLibs,
-				"libc",
-				"libm",
-			)
+			if inList("libdl", deps.SharedLibs) {
+				// If system_shared_libs has libc but not libdl, make sure shared_libs does not
+				// have libdl to avoid loading libdl before libc.
+				if inList("libc", systemSharedLibs) {
+					if !inList("libdl", systemSharedLibs) {
+						ctx.PropertyErrorf("shared_libs",
+							"libdl must be in system_shared_libs, not shared_libs")
+					}
+					_, deps.SharedLibs = removeFromList("libdl", deps.SharedLibs)
+				}
+			}
+
+			// If libc and libdl are both in system_shared_libs make sure libd comes after libc
+			// to avoid loading libdl before libc.
+			if inList("libdl", systemSharedLibs) && inList("libc", systemSharedLibs) &&
+				indexList("libdl", systemSharedLibs) < indexList("libc", systemSharedLibs) {
+				ctx.PropertyErrorf("system_shared_libs", "libdl must be after libc")
+			}
+
+			deps.LateSharedLibs = append(deps.LateSharedLibs, systemSharedLibs...)
+		} else if ctx.useSdk() || ctx.useVndk() {
+			deps.LateSharedLibs = append(deps.LateSharedLibs, "libc", "libm", "libdl")
 		}
 	}
 
-	if ctx.Os() == android.Windows {
+	if ctx.Windows() {
 		deps.LateStaticLibs = append(deps.LateStaticLibs, "libwinpthread")
 	}
 
@@ -186,6 +216,19 @@ func (linker *baseLinker) linkerFlags(ctx ModuleContext, flags Flags) Flags {
 			CheckBadHostLdlibs(ctx, "host_ldlibs", linker.Properties.Host_ldlibs)
 
 			flags.LdFlags = append(flags.LdFlags, linker.Properties.Host_ldlibs...)
+
+			if !ctx.Windows() {
+				// Add -ldl, -lpthread, -lm and -lrt to host builds to match the default behavior of device
+				// builds
+				flags.LdFlags = append(flags.LdFlags,
+					"-ldl",
+					"-lpthread",
+					"-lm",
+				)
+				if !ctx.Darwin() {
+					flags.LdFlags = append(flags.LdFlags, "-lrt")
+				}
+			}
 		}
 	}
 
@@ -199,9 +242,19 @@ func (linker *baseLinker) linkerFlags(ctx ModuleContext, flags Flags) Flags {
 			rpath_prefix = "@loader_path/"
 		}
 
-		for _, rpath := range linker.dynamicProperties.RunPaths {
-			flags.LdFlags = append(flags.LdFlags, "-Wl,-rpath,"+rpath_prefix+rpath)
+		if !ctx.static() {
+			for _, rpath := range linker.dynamicProperties.RunPaths {
+				flags.LdFlags = append(flags.LdFlags, "-Wl,-rpath,"+rpath_prefix+rpath)
+			}
 		}
+	}
+
+	if ctx.useSdk() && (ctx.Arch().ArchType != android.Mips && ctx.Arch().ArchType != android.Mips64) {
+		// The bionic linker now has support gnu style hashes (which are much faster!), but shipping
+		// to older devices requires the old style hash. Fortunately, we can build with both and
+		// it'll work anywhere.
+		// This is not currently supported on MIPS architectures.
+		flags.LdFlags = append(flags.LdFlags, "-Wl,--hash-style=both")
 	}
 
 	if flags.Clang {

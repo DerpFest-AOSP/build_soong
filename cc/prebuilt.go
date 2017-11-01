@@ -16,12 +16,12 @@ package cc
 
 import (
 	"android/soong/android"
-
-	"github.com/google/blueprint"
 )
 
 func init() {
-	android.RegisterModuleType("cc_prebuilt_shared_library", prebuiltSharedLibraryFactory)
+	android.RegisterModuleType("cc_prebuilt_library_shared", prebuiltSharedLibraryFactory)
+	android.RegisterModuleType("cc_prebuilt_library_static", prebuiltStaticLibraryFactory)
+	android.RegisterModuleType("cc_prebuilt_binary", prebuiltBinaryFactory)
 }
 
 type prebuiltLinkerInterface interface {
@@ -29,45 +29,130 @@ type prebuiltLinkerInterface interface {
 	prebuilt() *android.Prebuilt
 }
 
+type prebuiltLinker struct {
+	android.Prebuilt
+	properties struct {
+		Srcs []string `android:"arch_variant"`
+	}
+}
+
+func (p *prebuiltLinker) prebuilt() *android.Prebuilt {
+	return &p.Prebuilt
+}
+
+func (p *prebuiltLinker) PrebuiltSrcs() []string {
+	return p.properties.Srcs
+}
+
 type prebuiltLibraryLinker struct {
 	*libraryDecorator
-	android.Prebuilt
+	prebuiltLinker
 }
 
 var _ prebuiltLinkerInterface = (*prebuiltLibraryLinker)(nil)
 
-func (p *prebuiltLibraryLinker) prebuilt() *android.Prebuilt {
-	return &p.Prebuilt
-}
-
-func (p *prebuiltLibraryLinker) linkerProps() []interface{} {
-	props := p.libraryDecorator.linkerProps()
-	return append(props, &p.Prebuilt.Properties)
-}
-
 func (p *prebuiltLibraryLinker) link(ctx ModuleContext,
 	flags Flags, deps PathDeps, objs Objects) android.Path {
 	// TODO(ccross): verify shared library dependencies
-	if len(p.Prebuilt.Properties.Srcs) > 0 {
+	if len(p.properties.Srcs) > 0 {
 		p.libraryDecorator.exportIncludes(ctx, "-I")
 		p.libraryDecorator.reexportFlags(deps.ReexportedFlags)
 		p.libraryDecorator.reexportDeps(deps.ReexportedFlagsDeps)
 		// TODO(ccross): .toc optimization, stripping, packing
-		return p.Prebuilt.Path(ctx)
+		return p.Prebuilt.SingleSourcePath(ctx)
 	}
 
 	return nil
 }
 
-func prebuiltSharedLibraryFactory() (blueprint.Module, []interface{}) {
-	module, library := NewLibrary(android.HostAndDeviceSupported)
+func prebuiltSharedLibraryFactory() android.Module {
+	module, _ := NewPrebuiltSharedLibrary(android.HostAndDeviceSupported)
+	return module.Init()
+}
+
+func NewPrebuiltSharedLibrary(hod android.HostOrDeviceSupported) (*Module, *libraryDecorator) {
+	module, library := NewLibrary(hod)
+	library.BuildOnlyShared()
 	module.compiler = nil
 
 	prebuilt := &prebuiltLibraryLinker{
 		libraryDecorator: library,
 	}
 	module.linker = prebuilt
-	module.installer = prebuilt
 
+	module.AddProperties(&prebuilt.properties)
+
+	android.InitPrebuiltModule(module, &prebuilt.properties.Srcs)
+	return module, library
+}
+
+func prebuiltStaticLibraryFactory() android.Module {
+	module, _ := NewPrebuiltStaticLibrary(android.HostAndDeviceSupported)
 	return module.Init()
+}
+
+func NewPrebuiltStaticLibrary(hod android.HostOrDeviceSupported) (*Module, *libraryDecorator) {
+	module, library := NewLibrary(hod)
+	library.BuildOnlyStatic()
+	module.compiler = nil
+
+	prebuilt := &prebuiltLibraryLinker{
+		libraryDecorator: library,
+	}
+	module.linker = prebuilt
+
+	module.AddProperties(&prebuilt.properties)
+
+	android.InitPrebuiltModule(module, &prebuilt.properties.Srcs)
+	return module, library
+}
+
+type prebuiltBinaryLinker struct {
+	*binaryDecorator
+	prebuiltLinker
+}
+
+var _ prebuiltLinkerInterface = (*prebuiltBinaryLinker)(nil)
+
+func (p *prebuiltBinaryLinker) link(ctx ModuleContext,
+	flags Flags, deps PathDeps, objs Objects) android.Path {
+	// TODO(ccross): verify shared library dependencies
+	if len(p.properties.Srcs) > 0 {
+		// TODO(ccross): .toc optimization, stripping, packing
+
+		// Copy binaries to a name matching the final installed name
+		fileName := p.getStem(ctx) + flags.Toolchain.ExecutableSuffix()
+		outputFile := android.PathForModuleOut(ctx, fileName)
+
+		ctx.Build(pctx, android.BuildParams{
+			Rule:        android.CpExecutable,
+			Description: "prebuilt",
+			Output:      outputFile,
+			Input:       p.Prebuilt.SingleSourcePath(ctx),
+		})
+
+		return outputFile
+	}
+
+	return nil
+}
+
+func prebuiltBinaryFactory() android.Module {
+	module, _ := NewPrebuiltBinary(android.HostAndDeviceSupported)
+	return module.Init()
+}
+
+func NewPrebuiltBinary(hod android.HostOrDeviceSupported) (*Module, *binaryDecorator) {
+	module, binary := NewBinary(hod)
+	module.compiler = nil
+
+	prebuilt := &prebuiltBinaryLinker{
+		binaryDecorator: binary,
+	}
+	module.linker = prebuilt
+
+	module.AddProperties(&prebuilt.properties)
+
+	android.InitPrebuiltModule(module, &prebuilt.properties.Srcs)
+	return module, binary
 }

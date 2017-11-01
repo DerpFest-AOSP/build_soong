@@ -3,6 +3,7 @@ package main
 import (
 	mkparser "android/soong/androidmk/parser"
 	"fmt"
+	"sort"
 	"strings"
 
 	bpparser "github.com/google/blueprint/parser"
@@ -12,87 +13,130 @@ const (
 	clear_vars = "__android_mk_clear_vars"
 )
 
-var standardProperties = map[string]struct {
-	string
-	bpparser.Type
-}{
-	// String properties
-	"LOCAL_MODULE":               {"name", bpparser.StringType},
-	"LOCAL_MODULE_CLASS":         {"class", bpparser.StringType},
-	"LOCAL_CXX_STL":              {"stl", bpparser.StringType},
-	"LOCAL_STRIP_MODULE":         {"strip", bpparser.StringType},
-	"LOCAL_MULTILIB":             {"compile_multilib", bpparser.StringType},
-	"LOCAL_ARM_MODE_HACK":        {"instruction_set", bpparser.StringType},
-	"LOCAL_SDK_VERSION":          {"sdk_version", bpparser.StringType},
-	"LOCAL_NDK_STL_VARIANT":      {"stl", bpparser.StringType},
-	"LOCAL_JAR_MANIFEST":         {"manifest", bpparser.StringType},
-	"LOCAL_JARJAR_RULES":         {"jarjar_rules", bpparser.StringType},
-	"LOCAL_CERTIFICATE":          {"certificate", bpparser.StringType},
-	"LOCAL_PACKAGE_NAME":         {"name", bpparser.StringType},
-	"LOCAL_MODULE_RELATIVE_PATH": {"relative_install_path", bpparser.StringType},
-	"LOCAL_PROTOC_OPTIMIZE_TYPE": {"proto.type", bpparser.StringType},
-
-	// List properties
-	"LOCAL_SRC_FILES_EXCLUDE":             {"exclude_srcs", bpparser.ListType},
-	"LOCAL_SHARED_LIBRARIES":              {"shared_libs", bpparser.ListType},
-	"LOCAL_STATIC_LIBRARIES":              {"static_libs", bpparser.ListType},
-	"LOCAL_WHOLE_STATIC_LIBRARIES":        {"whole_static_libs", bpparser.ListType},
-	"LOCAL_SYSTEM_SHARED_LIBRARIES":       {"system_shared_libs", bpparser.ListType},
-	"LOCAL_ASFLAGS":                       {"asflags", bpparser.ListType},
-	"LOCAL_CLANG_ASFLAGS":                 {"clang_asflags", bpparser.ListType},
-	"LOCAL_CFLAGS":                        {"cflags", bpparser.ListType},
-	"LOCAL_CONLYFLAGS":                    {"conlyflags", bpparser.ListType},
-	"LOCAL_CPPFLAGS":                      {"cppflags", bpparser.ListType},
-	"LOCAL_REQUIRED_MODULES":              {"required", bpparser.ListType},
-	"LOCAL_MODULE_TAGS":                   {"tags", bpparser.ListType},
-	"LOCAL_LDLIBS":                        {"host_ldlibs", bpparser.ListType},
-	"LOCAL_CLANG_CFLAGS":                  {"clang_cflags", bpparser.ListType},
-	"LOCAL_YACCFLAGS":                     {"yaccflags", bpparser.ListType},
-	"LOCAL_SANITIZE_RECOVER":              {"sanitize.recover", bpparser.ListType},
-	"LOCAL_LOGTAGS_FILES":                 {"logtags", bpparser.ListType},
-	"LOCAL_EXPORT_SHARED_LIBRARY_HEADERS": {"export_shared_lib_headers", bpparser.ListType},
-	"LOCAL_EXPORT_STATIC_LIBRARY_HEADERS": {"export_static_lib_headers", bpparser.ListType},
-	"LOCAL_INIT_RC":                       {"init_rc", bpparser.ListType},
-	"LOCAL_TIDY_FLAGS":                    {"tidy_flags", bpparser.ListType},
-	// TODO: This is comma-seperated, not space-separated
-	"LOCAL_TIDY_CHECKS": {"tidy_checks", bpparser.ListType},
-
-	"LOCAL_JAVA_RESOURCE_DIRS":    {"java_resource_dirs", bpparser.ListType},
-	"LOCAL_JAVACFLAGS":            {"javacflags", bpparser.ListType},
-	"LOCAL_DX_FLAGS":              {"dxflags", bpparser.ListType},
-	"LOCAL_JAVA_LIBRARIES":        {"java_libs", bpparser.ListType},
-	"LOCAL_STATIC_JAVA_LIBRARIES": {"java_static_libs", bpparser.ListType},
-	"LOCAL_AIDL_INCLUDES":         {"aidl_includes", bpparser.ListType},
-	"LOCAL_AAPT_FLAGS":            {"aaptflags", bpparser.ListType},
-	"LOCAL_PACKAGE_SPLITS":        {"package_splits", bpparser.ListType},
-
-	// Bool properties
-	"LOCAL_IS_HOST_MODULE":          {"host", bpparser.BoolType},
-	"LOCAL_CLANG":                   {"clang", bpparser.BoolType},
-	"LOCAL_FORCE_STATIC_EXECUTABLE": {"static_executable", bpparser.BoolType},
-	"LOCAL_NATIVE_COVERAGE":         {"native_coverage", bpparser.BoolType},
-	"LOCAL_NO_CRT":                  {"nocrt", bpparser.BoolType},
-	"LOCAL_ALLOW_UNDEFINED_SYMBOLS": {"allow_undefined_symbols", bpparser.BoolType},
-	"LOCAL_RTTI_FLAG":               {"rtti", bpparser.BoolType},
-	"LOCAL_NO_STANDARD_LIBRARIES":   {"no_standard_libraries", bpparser.BoolType},
-	"LOCAL_PACK_MODULE_RELOCATIONS": {"pack_relocations", bpparser.BoolType},
-	"LOCAL_TIDY":                    {"tidy", bpparser.BoolType},
-	"LOCAL_USE_VNDK":                {"use_vndk", bpparser.BoolType},
-	"LOCAL_PROPRIETARY_MODULE":      {"proprietary", bpparser.BoolType},
-
-	"LOCAL_EXPORT_PACKAGE_RESOURCES": {"export_package_resources", bpparser.BoolType},
+type bpVariable struct {
+	name         string
+	variableType bpparser.Type
 }
 
-var rewriteProperties = map[string]struct {
-	f func(file *bpFile, prefix string, value *mkparser.MakeString, append bool) error
-}{
-	"LOCAL_C_INCLUDES":            {localIncludeDirs},
-	"LOCAL_EXPORT_C_INCLUDE_DIRS": {exportIncludeDirs},
-	"LOCAL_MODULE_STEM":           {stem},
-	"LOCAL_MODULE_HOST_OS":        {hostOs},
-	"LOCAL_SRC_FILES":             {srcFiles},
-	"LOCAL_SANITIZE":              {sanitize},
-	"LOCAL_LDFLAGS":               {ldflags},
+type variableAssignmentContext struct {
+	file    *bpFile
+	prefix  string
+	mkvalue *mkparser.MakeString
+	append  bool
+}
+
+var rewriteProperties = map[string](func(variableAssignmentContext) error){
+	// custom functions
+	"LOCAL_AIDL_INCLUDES":         localAidlIncludes,
+	"LOCAL_C_INCLUDES":            localIncludeDirs,
+	"LOCAL_EXPORT_C_INCLUDE_DIRS": exportIncludeDirs,
+	"LOCAL_LDFLAGS":               ldflags,
+	"LOCAL_MODULE_CLASS":          prebuiltClass,
+	"LOCAL_MODULE_STEM":           stem,
+	"LOCAL_MODULE_HOST_OS":        hostOs,
+	"LOCAL_SRC_FILES":             srcFiles,
+	"LOCAL_SANITIZE":              sanitize(""),
+	"LOCAL_SANITIZE_DIAG":         sanitize("diag."),
+	"LOCAL_CFLAGS":                cflags,
+	"LOCAL_UNINSTALLABLE_MODULE":  invert("installable"),
+
+	// composite functions
+	"LOCAL_MODULE_TAGS": includeVariableIf(bpVariable{"tags", bpparser.ListType}, not(valueDumpEquals("optional"))),
+
+	// skip functions
+	"LOCAL_ADDITIONAL_DEPENDENCIES": skip, // TODO: check for only .mk files?
+	"LOCAL_CPP_EXTENSION":           skip,
+	"LOCAL_MODULE_SUFFIX":           skip, // TODO
+	"LOCAL_PATH":                    skip, // Nothing to do, except maybe avoid the "./" in paths?
+	"LOCAL_PRELINK_MODULE":          skip, // Already phased out
+}
+
+// adds a group of properties all having the same type
+func addStandardProperties(propertyType bpparser.Type, properties map[string]string) {
+	for key, val := range properties {
+		rewriteProperties[key] = includeVariable(bpVariable{val, propertyType})
+	}
+}
+
+func init() {
+	addStandardProperties(bpparser.StringType,
+		map[string]string{
+			"LOCAL_MODULE":                  "name",
+			"LOCAL_CXX_STL":                 "stl",
+			"LOCAL_STRIP_MODULE":            "strip",
+			"LOCAL_MULTILIB":                "compile_multilib",
+			"LOCAL_ARM_MODE_HACK":           "instruction_set",
+			"LOCAL_SDK_VERSION":             "sdk_version",
+			"LOCAL_NDK_STL_VARIANT":         "stl",
+			"LOCAL_JAR_MANIFEST":            "manifest",
+			"LOCAL_JARJAR_RULES":            "jarjar_rules",
+			"LOCAL_CERTIFICATE":             "certificate",
+			"LOCAL_PACKAGE_NAME":            "name",
+			"LOCAL_MODULE_RELATIVE_PATH":    "relative_install_path",
+			"LOCAL_PROTOC_OPTIMIZE_TYPE":    "proto.type",
+			"LOCAL_MODULE_OWNER":            "owner",
+			"LOCAL_RENDERSCRIPT_TARGET_API": "renderscript.target_api",
+			"LOCAL_NOTICE_FILE":             "notice",
+			"LOCAL_JAVA_LANGUAGE_VERSION":   "java_version",
+		})
+	addStandardProperties(bpparser.ListType,
+		map[string]string{
+			"LOCAL_SRC_FILES_EXCLUDE":             "exclude_srcs",
+			"LOCAL_HEADER_LIBRARIES":              "header_libs",
+			"LOCAL_SHARED_LIBRARIES":              "shared_libs",
+			"LOCAL_STATIC_LIBRARIES":              "static_libs",
+			"LOCAL_WHOLE_STATIC_LIBRARIES":        "whole_static_libs",
+			"LOCAL_SYSTEM_SHARED_LIBRARIES":       "system_shared_libs",
+			"LOCAL_ASFLAGS":                       "asflags",
+			"LOCAL_CLANG_ASFLAGS":                 "clang_asflags",
+			"LOCAL_CONLYFLAGS":                    "conlyflags",
+			"LOCAL_CPPFLAGS":                      "cppflags",
+			"LOCAL_REQUIRED_MODULES":              "required",
+			"LOCAL_LDLIBS":                        "host_ldlibs",
+			"LOCAL_CLANG_CFLAGS":                  "clang_cflags",
+			"LOCAL_YACCFLAGS":                     "yaccflags",
+			"LOCAL_SANITIZE_RECOVER":              "sanitize.recover",
+			"LOCAL_LOGTAGS_FILES":                 "logtags",
+			"LOCAL_EXPORT_HEADER_LIBRARY_HEADERS": "export_header_lib_headers",
+			"LOCAL_EXPORT_SHARED_LIBRARY_HEADERS": "export_shared_lib_headers",
+			"LOCAL_EXPORT_STATIC_LIBRARY_HEADERS": "export_static_lib_headers",
+			"LOCAL_INIT_RC":                       "init_rc",
+			"LOCAL_TIDY_FLAGS":                    "tidy_flags",
+			// TODO: This is comma-separated, not space-separated
+			"LOCAL_TIDY_CHECKS":           "tidy_checks",
+			"LOCAL_RENDERSCRIPT_INCLUDES": "renderscript.include_dirs",
+			"LOCAL_RENDERSCRIPT_FLAGS":    "renderscript.flags",
+
+			"LOCAL_JAVA_RESOURCE_DIRS":    "java_resource_dirs",
+			"LOCAL_JAVACFLAGS":            "javacflags",
+			"LOCAL_DX_FLAGS":              "dxflags",
+			"LOCAL_JAVA_LIBRARIES":        "libs",
+			"LOCAL_STATIC_JAVA_LIBRARIES": "static_libs",
+			"LOCAL_AAPT_FLAGS":            "aaptflags",
+			"LOCAL_PACKAGE_SPLITS":        "package_splits",
+			"LOCAL_COMPATIBILITY_SUITE":   "test_suites",
+
+			"LOCAL_ANNOTATION_PROCESSORS":        "annotation_processors",
+			"LOCAL_ANNOTATION_PROCESSOR_CLASSES": "annotation_processor_classes",
+		})
+	addStandardProperties(bpparser.BoolType,
+		map[string]string{
+			// Bool properties
+			"LOCAL_IS_HOST_MODULE":           "host",
+			"LOCAL_CLANG":                    "clang",
+			"LOCAL_FORCE_STATIC_EXECUTABLE":  "static_executable",
+			"LOCAL_NATIVE_COVERAGE":          "native_coverage",
+			"LOCAL_NO_CRT":                   "nocrt",
+			"LOCAL_ALLOW_UNDEFINED_SYMBOLS":  "allow_undefined_symbols",
+			"LOCAL_RTTI_FLAG":                "rtti",
+			"LOCAL_NO_STANDARD_LIBRARIES":    "no_standard_libs",
+			"LOCAL_PACK_MODULE_RELOCATIONS":  "pack_relocations",
+			"LOCAL_TIDY":                     "tidy",
+			"LOCAL_PROPRIETARY_MODULE":       "proprietary",
+			"LOCAL_VENDOR_MODULE":            "vendor",
+			"LOCAL_EXPORT_PACKAGE_RESOURCES": "export_package_resources",
+			"LOCAL_DEX_PREOPT":               "dex_preopt",
+		})
 }
 
 type listSplitFunc func(bpparser.Expression) (string, bpparser.Expression, error)
@@ -170,7 +214,9 @@ func splitBpList(val bpparser.Expression, keyFunc listSplitFunc) (lists map[stri
 	return lists, nil
 }
 
-func splitLocalGlobalPath(value bpparser.Expression) (string, bpparser.Expression, error) {
+// classifyLocalOrGlobalPath tells whether a file path should be interpreted relative to the current module (local)
+// or relative to the root of the source checkout (global)
+func classifyLocalOrGlobalPath(value bpparser.Expression) (string, bpparser.Expression, error) {
 	switch v := value.(type) {
 	case *bpparser.Variable:
 		if v.Name == "LOCAL_PATH" {
@@ -183,7 +229,7 @@ func splitLocalGlobalPath(value bpparser.Expression) (string, bpparser.Expressio
 		}
 	case *bpparser.Operator:
 		if v.Type() != bpparser.StringType {
-			return "", nil, fmt.Errorf("splitLocalGlobalPath expected a string, got %s", value.Type)
+			return "", nil, fmt.Errorf("classifyLocalOrGlobalPath expected a string, got %s", value.Type)
 		}
 
 		if v.Operator != '+' {
@@ -214,72 +260,61 @@ func splitLocalGlobalPath(value bpparser.Expression) (string, bpparser.Expressio
 	case *bpparser.String:
 		return "global", value, nil
 	default:
-		return "", nil, fmt.Errorf("splitLocalGlobalPath expected a string, got %s", value.Type)
+		return "", nil, fmt.Errorf("classifyLocalOrGlobalPath expected a string, got %s", value.Type)
 
 	}
 }
 
-func localIncludeDirs(file *bpFile, prefix string, value *mkparser.MakeString, appendVariable bool) error {
-	val, err := makeVariableToBlueprint(file, value, bpparser.ListType)
+func sortedMapKeys(inputMap map[string]string) (sortedKeys []string) {
+	keys := make([]string, 0, len(inputMap))
+	for key := range inputMap {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// splitAndAssign splits a Make list into components and then
+// creates the corresponding variable assignments.
+func splitAndAssign(ctx variableAssignmentContext, splitFunc listSplitFunc, namesByClassification map[string]string) error {
+	val, err := makeVariableToBlueprint(ctx.file, ctx.mkvalue, bpparser.ListType)
 	if err != nil {
 		return err
 	}
 
-	lists, err := splitBpList(val, splitLocalGlobalPath)
+	lists, err := splitBpList(val, splitFunc)
 	if err != nil {
 		return err
 	}
 
-	if global, ok := lists["global"]; ok && !emptyList(global) {
-		err = setVariable(file, appendVariable, prefix, "include_dirs", global, true)
-		if err != nil {
-			return err
+	for _, nameClassification := range sortedMapKeys(namesByClassification) {
+		name := namesByClassification[nameClassification]
+		if component, ok := lists[nameClassification]; ok && !emptyList(component) {
+			err = setVariable(ctx.file, ctx.append, ctx.prefix, name, component, true)
+			if err != nil {
+				return err
+			}
 		}
 	}
-
-	if local, ok := lists["local"]; ok && !emptyList(local) {
-		err = setVariable(file, appendVariable, prefix, "local_include_dirs", local, true)
-		if err != nil {
-			return err
-		}
-	}
-
 	return nil
 }
 
-func exportIncludeDirs(file *bpFile, prefix string, value *mkparser.MakeString, appendVariable bool) error {
-	val, err := makeVariableToBlueprint(file, value, bpparser.ListType)
-	if err != nil {
-		return err
-	}
+func localIncludeDirs(ctx variableAssignmentContext) error {
+	return splitAndAssign(ctx, classifyLocalOrGlobalPath, map[string]string{"global": "include_dirs", "local": "local_include_dirs"})
+}
 
-	lists, err := splitBpList(val, splitLocalGlobalPath)
-	if err != nil {
-		return err
-	}
-
-	if local, ok := lists["local"]; ok && !emptyList(local) {
-		err = setVariable(file, appendVariable, prefix, "export_include_dirs", local, true)
-		if err != nil {
-			return err
-		}
-		appendVariable = true
-	}
-
+func exportIncludeDirs(ctx variableAssignmentContext) error {
 	// Add any paths that could not be converted to local relative paths to export_include_dirs
 	// anyways, they will cause an error if they don't exist and can be fixed manually.
-	if global, ok := lists["global"]; ok && !emptyList(global) {
-		err = setVariable(file, appendVariable, prefix, "export_include_dirs", global, true)
-		if err != nil {
-			return err
-		}
-	}
-
-	return nil
+	return splitAndAssign(ctx, classifyLocalOrGlobalPath, map[string]string{"global": "export_include_dirs", "local": "export_include_dirs"})
 }
 
-func stem(file *bpFile, prefix string, value *mkparser.MakeString, appendVariable bool) error {
-	val, err := makeVariableToBlueprint(file, value, bpparser.StringType)
+func localAidlIncludes(ctx variableAssignmentContext) error {
+	return splitAndAssign(ctx, classifyLocalOrGlobalPath, map[string]string{"global": "aidl.include_dirs", "local": "aidl.local_include_dirs"})
+}
+
+func stem(ctx variableAssignmentContext) error {
+	val, err := makeVariableToBlueprint(ctx.file, ctx.mkvalue, bpparser.StringType)
 	if err != nil {
 		return err
 	}
@@ -292,11 +327,11 @@ func stem(file *bpFile, prefix string, value *mkparser.MakeString, appendVariabl
 		}
 	}
 
-	return setVariable(file, appendVariable, prefix, varName, val, true)
+	return setVariable(ctx.file, ctx.append, ctx.prefix, varName, val, true)
 }
 
-func hostOs(file *bpFile, prefix string, value *mkparser.MakeString, appendVariable bool) error {
-	val, err := makeVariableToBlueprint(file, value, bpparser.ListType)
+func hostOs(ctx variableAssignmentContext) error {
+	val, err := makeVariableToBlueprint(ctx.file, ctx.mkvalue, bpparser.ListType)
 	if err != nil {
 		return err
 	}
@@ -319,15 +354,15 @@ func hostOs(file *bpFile, prefix string, value *mkparser.MakeString, appendVaria
 	}
 
 	if inList("windows") {
-		err = setVariable(file, appendVariable, "target.windows", "enabled", trueValue, true)
+		err = setVariable(ctx.file, ctx.append, "target.windows", "enabled", trueValue, true)
 	}
 
 	if !inList("linux") && err == nil {
-		err = setVariable(file, appendVariable, "target.linux", "enabled", falseValue, true)
+		err = setVariable(ctx.file, ctx.append, "target.linux_glibc", "enabled", falseValue, true)
 	}
 
 	if !inList("darwin") && err == nil {
-		err = setVariable(file, appendVariable, "target.darwin", "enabled", falseValue, true)
+		err = setVariable(ctx.file, ctx.append, "target.darwin", "enabled", falseValue, true)
 	}
 
 	return err
@@ -352,8 +387,8 @@ func splitSrcsLogtags(value bpparser.Expression) (string, bpparser.Expression, e
 
 }
 
-func srcFiles(file *bpFile, prefix string, value *mkparser.MakeString, appendVariable bool) error {
-	val, err := makeVariableToBlueprint(file, value, bpparser.ListType)
+func srcFiles(ctx variableAssignmentContext) error {
+	val, err := makeVariableToBlueprint(ctx.file, ctx.mkvalue, bpparser.ListType)
 	if err != nil {
 		return err
 	}
@@ -361,14 +396,14 @@ func srcFiles(file *bpFile, prefix string, value *mkparser.MakeString, appendVar
 	lists, err := splitBpList(val, splitSrcsLogtags)
 
 	if srcs, ok := lists["srcs"]; ok && !emptyList(srcs) {
-		err = setVariable(file, appendVariable, prefix, "srcs", srcs, true)
+		err = setVariable(ctx.file, ctx.append, ctx.prefix, "srcs", srcs, true)
 		if err != nil {
 			return err
 		}
 	}
 
 	if logtags, ok := lists["logtags"]; ok && !emptyList(logtags) {
-		err = setVariable(file, true, prefix, "logtags", logtags, true)
+		err = setVariable(ctx.file, true, ctx.prefix, "logtags", logtags, true)
 		if err != nil {
 			return err
 		}
@@ -377,64 +412,65 @@ func srcFiles(file *bpFile, prefix string, value *mkparser.MakeString, appendVar
 	return nil
 }
 
-func sanitize(file *bpFile, prefix string, mkvalue *mkparser.MakeString, appendVariable bool) error {
-	val, err := makeVariableToBlueprint(file, mkvalue, bpparser.ListType)
-	if err != nil {
-		return err
-	}
-
-	lists, err := splitBpList(val, func(value bpparser.Expression) (string, bpparser.Expression, error) {
-		switch v := value.(type) {
-		case *bpparser.Variable:
-			return "vars", value, nil
-		case *bpparser.Operator:
-			file.errorf(mkvalue, "unknown sanitize expression")
-			return "unknown", value, nil
-		case *bpparser.String:
-			switch v.Value {
-			case "never", "address", "coverage", "integer", "thread", "undefined":
-				bpTrue := &bpparser.Bool{
-					Value: true,
-				}
-				return v.Value, bpTrue, nil
-			default:
-				file.errorf(mkvalue, "unknown sanitize argument: %s", v.Value)
-				return "unknown", value, nil
-			}
-		default:
-			return "", nil, fmt.Errorf("sanitize expected a string, got %s", value.Type())
-		}
-	})
-	if err != nil {
-		return err
-	}
-
-	for k, v := range lists {
-		if emptyList(v) {
-			continue
-		}
-
-		switch k {
-		case "never", "address", "coverage", "integer", "thread", "undefined":
-			err = setVariable(file, false, prefix, "sanitize."+k, lists[k].(*bpparser.List).Values[0], true)
-		case "unknown":
-			// Nothing, we already added the error above
-		case "vars":
-			fallthrough
-		default:
-			err = setVariable(file, true, prefix, "sanitize", v, true)
-		}
-
+func sanitize(sub string) func(ctx variableAssignmentContext) error {
+	return func(ctx variableAssignmentContext) error {
+		val, err := makeVariableToBlueprint(ctx.file, ctx.mkvalue, bpparser.ListType)
 		if err != nil {
 			return err
 		}
-	}
 
-	return err
+		if _, ok := val.(*bpparser.List); !ok {
+			return fmt.Errorf("unsupported sanitize expression")
+		}
+
+		misc := &bpparser.List{}
+
+		for _, v := range val.(*bpparser.List).Values {
+			switch v := v.(type) {
+			case *bpparser.Variable, *bpparser.Operator:
+				ctx.file.errorf(ctx.mkvalue, "unsupported sanitize expression")
+			case *bpparser.String:
+				switch v.Value {
+				case "never", "address", "coverage", "thread", "undefined", "cfi":
+					bpTrue := &bpparser.Bool{
+						Value: true,
+					}
+					err = setVariable(ctx.file, false, ctx.prefix, "sanitize."+sub+v.Value, bpTrue, true)
+					if err != nil {
+						return err
+					}
+				default:
+					misc.Values = append(misc.Values, v)
+				}
+			default:
+				return fmt.Errorf("sanitize expected a string, got %s", v.Type())
+			}
+		}
+
+		if len(misc.Values) > 0 {
+			err = setVariable(ctx.file, false, ctx.prefix, "sanitize."+sub+"misc_undefined", misc, true)
+			if err != nil {
+				return err
+			}
+		}
+
+		return err
+	}
 }
 
-func ldflags(file *bpFile, prefix string, mkvalue *mkparser.MakeString, appendVariable bool) error {
-	val, err := makeVariableToBlueprint(file, mkvalue, bpparser.ListType)
+func prebuiltClass(ctx variableAssignmentContext) error {
+	class := ctx.mkvalue.Value(ctx.file.scope)
+	if v, ok := prebuiltTypes[class]; ok {
+		ctx.file.scope.Set("BUILD_PREBUILT", v)
+	} else {
+		// reset to default
+		ctx.file.scope.Set("BUILD_PREBUILT", "prebuilt")
+	}
+	return nil
+}
+
+func ldflags(ctx variableAssignmentContext) error {
+	val, err := makeVariableToBlueprint(ctx.file, ctx.mkvalue, bpparser.ListType)
 	if err != nil {
 		return err
 	}
@@ -456,13 +492,13 @@ func ldflags(file *bpFile, prefix string, mkvalue *mkparser.MakeString, appendVa
 		}
 
 		if v, ok := exp2.Args[1].(*bpparser.Variable); !ok || v.Name != "LOCAL_PATH" {
-			file.errorf(mkvalue, "Unrecognized version-script")
+			ctx.file.errorf(ctx.mkvalue, "Unrecognized version-script")
 			return "ldflags", value, nil
 		}
 
 		s, ok := exp1.Args[1].(*bpparser.String)
 		if !ok {
-			file.errorf(mkvalue, "Unrecognized version-script")
+			ctx.file.errorf(ctx.mkvalue, "Unrecognized version-script")
 			return "ldflags", value, nil
 		}
 
@@ -475,7 +511,7 @@ func ldflags(file *bpFile, prefix string, mkvalue *mkparser.MakeString, appendVa
 	}
 
 	if ldflags, ok := lists["ldflags"]; ok && !emptyList(ldflags) {
-		err = setVariable(file, appendVariable, prefix, "ldflags", ldflags, true)
+		err = setVariable(ctx.file, ctx.append, ctx.prefix, "ldflags", ldflags, true)
 		if err != nil {
 			return err
 		}
@@ -483,9 +519,9 @@ func ldflags(file *bpFile, prefix string, mkvalue *mkparser.MakeString, appendVa
 
 	if version_script, ok := lists["version"]; ok && !emptyList(version_script) {
 		if len(version_script.(*bpparser.List).Values) > 1 {
-			file.errorf(mkvalue, "multiple version scripts found?")
+			ctx.file.errorf(ctx.mkvalue, "multiple version scripts found?")
 		}
-		err = setVariable(file, false, prefix, "version_script", version_script.(*bpparser.List).Values[0], true)
+		err = setVariable(ctx.file, false, ctx.prefix, "version_script", version_script.(*bpparser.List).Values[0], true)
 		if err != nil {
 			return err
 		}
@@ -494,8 +530,72 @@ func ldflags(file *bpFile, prefix string, mkvalue *mkparser.MakeString, appendVa
 	return nil
 }
 
-var deleteProperties = map[string]struct{}{
-	"LOCAL_CPP_EXTENSION": struct{}{},
+func cflags(ctx variableAssignmentContext) error {
+	// The Soong replacement for CFLAGS doesn't need the same extra escaped quotes that were present in Make
+	ctx.mkvalue = ctx.mkvalue.Clone()
+	ctx.mkvalue.ReplaceLiteral(`\"`, `"`)
+	return includeVariableNow(bpVariable{"cflags", bpparser.ListType}, ctx)
+}
+
+func invert(name string) func(ctx variableAssignmentContext) error {
+	return func(ctx variableAssignmentContext) error {
+		val, err := makeVariableToBlueprint(ctx.file, ctx.mkvalue, bpparser.BoolType)
+		if err != nil {
+			return err
+		}
+
+		val.(*bpparser.Bool).Value = !val.(*bpparser.Bool).Value
+
+		return setVariable(ctx.file, ctx.append, ctx.prefix, name, val, true)
+	}
+}
+
+// given a conditional, returns a function that will insert a variable assignment or not, based on the conditional
+func includeVariableIf(bpVar bpVariable, conditional func(ctx variableAssignmentContext) bool) func(ctx variableAssignmentContext) error {
+	return func(ctx variableAssignmentContext) error {
+		var err error
+		if conditional(ctx) {
+			err = includeVariableNow(bpVar, ctx)
+		}
+		return err
+	}
+}
+
+// given a variable, returns a function that will always insert a variable assignment
+func includeVariable(bpVar bpVariable) func(ctx variableAssignmentContext) error {
+	return includeVariableIf(bpVar, always)
+}
+
+func includeVariableNow(bpVar bpVariable, ctx variableAssignmentContext) error {
+	var val bpparser.Expression
+	var err error
+	val, err = makeVariableToBlueprint(ctx.file, ctx.mkvalue, bpVar.variableType)
+	if err == nil {
+		err = setVariable(ctx.file, ctx.append, ctx.prefix, bpVar.name, val, true)
+	}
+	return err
+}
+
+// given a function that returns a bool, returns a function that returns the opposite
+func not(conditional func(ctx variableAssignmentContext) bool) func(ctx variableAssignmentContext) bool {
+	return func(ctx variableAssignmentContext) bool {
+		return !conditional(ctx)
+	}
+}
+
+// returns a function that tells whether mkvalue.Dump equals the given query string
+func valueDumpEquals(textToMatch string) func(ctx variableAssignmentContext) bool {
+	return func(ctx variableAssignmentContext) bool {
+		return (ctx.mkvalue.Dump() == textToMatch)
+	}
+}
+
+func always(ctx variableAssignmentContext) bool {
+	return true
+}
+
+func skip(ctx variableAssignmentContext) error {
+	return nil
 }
 
 // Shorter suffixes of other suffixes must be at the end of the list
@@ -510,7 +610,7 @@ var propertyPrefixes = []struct{ mk, bp string }{
 	// 64 must be after x86_64
 	{"64", "multilib.lib64"},
 	{"darwin", "target.darwin"},
-	{"linux", "target.linux"},
+	{"linux", "target.linux_glibc"},
 	{"windows", "target.windows"},
 }
 
@@ -528,11 +628,11 @@ var conditionalTranslations = map[string]map[bool]string{
 		true:  "target.windows",
 		false: "target.not_windows"},
 	"($(HOST_OS),linux)": {
-		true:  "target.linux",
-		false: "target.not_linux"},
+		true:  "target.linux_glibc",
+		false: "target.not_linux_glibc"},
 	"($(HOST_OS), linux)": {
-		true:  "target.linux",
-		false: "target.not_linux"},
+		true:  "target.linux_glibc",
+		false: "target.not_linux_glibc"},
 	"($(BUILD_OS),darwin)": {
 		true:  "target.darwin",
 		false: "target.not_darwin"},
@@ -540,14 +640,17 @@ var conditionalTranslations = map[string]map[bool]string{
 		true:  "target.darwin",
 		false: "target.not_darwin"},
 	"($(BUILD_OS),linux)": {
-		true:  "target.linux",
-		false: "target.not_linux"},
+		true:  "target.linux_glibc",
+		false: "target.not_linux_glibc"},
 	"($(BUILD_OS), linux)": {
-		true:  "target.linux",
-		false: "target.not_linux"},
+		true:  "target.linux_glibc",
+		false: "target.not_linux_glibc"},
 	"(,$(TARGET_BUILD_APPS))": {
-		false: "product_variables.unbundled_build",
-	},
+		false: "product_variables.unbundled_build"},
+	"($(TARGET_BUILD_PDK),true)": {
+		true: "product_variables.pdk"},
+	"($(TARGET_BUILD_PDK), true)": {
+		true: "product_variables.pdk"},
 }
 
 func mydir(args []string) string {
@@ -563,6 +666,15 @@ func allJavaFilesUnder(args []string) string {
 	return fmt.Sprintf("%s/**/*.java", dir)
 }
 
+func allProtoFilesUnder(args []string) string {
+	dir := ""
+	if len(args) > 0 {
+		dir = strings.TrimSpace(args[0])
+	}
+
+	return fmt.Sprintf("%s/**/*.proto", dir)
+}
+
 func allSubdirJavaFiles(args []string) string {
 	return "**/*.java"
 }
@@ -572,6 +684,7 @@ var moduleTypes = map[string]string{
 	"BUILD_STATIC_LIBRARY":        "cc_library_static",
 	"BUILD_HOST_SHARED_LIBRARY":   "cc_library_host_shared",
 	"BUILD_HOST_STATIC_LIBRARY":   "cc_library_host_static",
+	"BUILD_HEADER_LIBRARY":        "cc_library_headers",
 	"BUILD_EXECUTABLE":            "cc_binary",
 	"BUILD_HOST_EXECUTABLE":       "cc_binary_host",
 	"BUILD_NATIVE_TEST":           "cc_test",
@@ -584,8 +697,13 @@ var moduleTypes = map[string]string{
 	"BUILD_HOST_JAVA_LIBRARY":        "java_library_host",
 	"BUILD_HOST_DALVIK_JAVA_LIBRARY": "java_library_host_dalvik",
 	"BUILD_PACKAGE":                  "android_app",
+}
 
-	"BUILD_PREBUILT": "prebuilt",
+var prebuiltTypes = map[string]string{
+	"SHARED_LIBRARIES": "cc_prebuilt_library_shared",
+	"STATIC_LIBRARIES": "cc_prebuilt_library_static",
+	"EXECUTABLES":      "cc_prebuilt_binary",
+	"JAVA_LIBRARIES":   "java_import",
 }
 
 var soongModuleTypes = map[string]bool{}
@@ -595,10 +713,14 @@ func androidScope() mkparser.Scope {
 	globalScope.Set("CLEAR_VARS", clear_vars)
 	globalScope.SetFunc("my-dir", mydir)
 	globalScope.SetFunc("all-java-files-under", allJavaFilesUnder)
+	globalScope.SetFunc("all-proto-files-under", allProtoFilesUnder)
 	globalScope.SetFunc("all-subdir-java-files", allSubdirJavaFiles)
 
 	for k, v := range moduleTypes {
 		globalScope.Set(k, v)
+		soongModuleTypes[v] = true
+	}
+	for _, v := range prebuiltTypes {
 		soongModuleTypes[v] = true
 	}
 

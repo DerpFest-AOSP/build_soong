@@ -40,6 +40,7 @@ const productVariablesFileName = "soong.variables"
 type FileConfigurableOptions struct {
 	Mega_device *bool `json:",omitempty"`
 	Ndk_abis    *bool `json:",omitempty"`
+	Host_bionic *bool `json:",omitempty"`
 }
 
 func (f *FileConfigurableOptions) SetDefaultConfig() {
@@ -49,6 +50,10 @@ func (f *FileConfigurableOptions) SetDefaultConfig() {
 // A Config object represents the entire build configuration for Android.
 type Config struct {
 	*config
+}
+
+func (c Config) BuildDir() string {
+	return c.buildDir
 }
 
 // A DeviceConfig object represents the configuration for a particular device being built.  For
@@ -73,18 +78,24 @@ type config struct {
 	srcDir   string // the path of the root source directory
 	buildDir string // the path of the build output directory
 
+	env       map[string]string
 	envLock   sync.Mutex
 	envDeps   map[string]string
 	envFrozen bool
 
 	inMake bool
 
+	captureBuild      bool // true for tests, saves build parameters for each module
+	ignoreEnvironment bool // true for tests, returns empty from all Getenv calls
+
+	useOpenJDK9    bool // Use OpenJDK9, but possibly target 1.8
+	targetOpenJDK9 bool // Use OpenJDK9 and target 1.9
+
 	OncePer
 }
 
 type deviceConfig struct {
-	config  *config
-	targets []Arch
+	config *config
 	OncePer
 }
 
@@ -161,10 +172,44 @@ func saveToConfigFile(config jsonConfigurable, filename string) error {
 }
 
 // TestConfig returns a Config object suitable for using for tests
-func TestConfig(buildDir string) Config {
-	return Config{&config{
-		buildDir: buildDir,
-	}}
+func TestConfig(buildDir string, env map[string]string) Config {
+	config := &config{
+		ProductVariables: productVariables{
+			DeviceName: stringPtr("test_device"),
+		},
+
+		buildDir:     buildDir,
+		captureBuild: true,
+		env:          env,
+	}
+	config.deviceConfig = &deviceConfig{
+		config: config,
+	}
+
+	if err := config.fromEnv(); err != nil {
+		panic(err)
+	}
+
+	return Config{config}
+}
+
+// TestConfig returns a Config object suitable for using for tests that need to run the arch mutator
+func TestArchConfig(buildDir string, env map[string]string) Config {
+	testConfig := TestConfig(buildDir, env)
+	config := testConfig.config
+
+	config.Targets = map[OsClass][]Target{
+		Device: []Target{
+			{Android, Arch{ArchType: Arm64, ArchVariant: "armv8-a", Native: true}},
+			{Android, Arch{ArchType: Arm, ArchVariant: "armv7-a-neon", Native: true}},
+		},
+		Host: []Target{
+			{BuildOs, Arch{ArchType: X86_64}},
+			{BuildOs, Arch{ArchType: X86}},
+		},
+	}
+
+	return testConfig
 }
 
 // New creates a new Config object.  The srcDir argument specifies the path to
@@ -175,18 +220,15 @@ func NewConfig(srcDir, buildDir string) (Config, error) {
 		ConfigFileName:           filepath.Join(buildDir, configFileName),
 		ProductVariablesFileName: filepath.Join(buildDir, productVariablesFileName),
 
+		env: originalEnv,
+
 		srcDir:   srcDir,
 		buildDir: buildDir,
-		envDeps:  make(map[string]string),
-
-		deviceConfig: &deviceConfig{},
 	}
 
-	deviceConfig := &deviceConfig{
+	config.deviceConfig = &deviceConfig{
 		config: config,
 	}
-
-	config.deviceConfig = deviceConfig
 
 	// Sanity check the build and source directories. This won't catch strange
 	// configurations with symlinks, but at least checks the obvious cases.
@@ -238,7 +280,29 @@ func NewConfig(srcDir, buildDir string) (Config, error) {
 	config.Targets = targets
 	config.BuildOsVariant = targets[Host][0].String()
 
+	if err := config.fromEnv(); err != nil {
+		return Config{}, err
+	}
+
 	return Config{config}, nil
+}
+
+func (c *config) fromEnv() error {
+	switch c.Getenv("EXPERIMENTAL_USE_OPENJDK9") {
+	case "":
+		// Use OpenJDK8
+	case "1.8":
+		// Use OpenJDK9, but target 1.8
+		c.useOpenJDK9 = true
+	case "true":
+		// Use OpenJDK9 and target 1.9
+		c.useOpenJDK9 = true
+		c.targetOpenJDK9 = true
+	default:
+		return fmt.Errorf(`Invalid value for EXPERIMENTAL_USE_OPENJDK9, should be "", "1.8", or "true"`)
+	}
+
+	return nil
 }
 
 func (c *config) RemoveAbandonedFiles() bool {
@@ -247,6 +311,20 @@ func (c *config) RemoveAbandonedFiles() bool {
 
 func (c *config) BlueprintToolLocation() string {
 	return filepath.Join(c.buildDir, "host", c.PrebuiltOS(), "bin")
+}
+
+// HostSystemTool looks for non-hermetic tools from the system we're running on.
+// Generally shouldn't be used, but useful to find the XCode SDK, etc.
+func (c *config) HostSystemTool(name string) string {
+	for _, dir := range filepath.SplitList(c.Getenv("PATH")) {
+		path := filepath.Join(dir, name)
+		if s, err := os.Stat(path); err != nil {
+			continue
+		} else if m := s.Mode(); !s.IsDir() && m&0111 != 0 {
+			return path
+		}
+	}
+	return name
 }
 
 // PrebuiltOS returns the name of the host OS used in prebuilts directories
@@ -281,14 +359,17 @@ func (c *config) Getenv(key string) string {
 	var val string
 	var exists bool
 	c.envLock.Lock()
+	defer c.envLock.Unlock()
+	if c.envDeps == nil {
+		c.envDeps = make(map[string]string)
+	}
 	if val, exists = c.envDeps[key]; !exists {
 		if c.envFrozen {
 			panic("Cannot access new environment variables after envdeps are frozen")
 		}
-		val = os.Getenv(key)
+		val, _ = c.env[key]
 		c.envDeps[key] = val
 	}
-	c.envLock.Unlock()
 	return val
 }
 
@@ -312,8 +393,8 @@ func (c *config) IsEnvFalse(key string) bool {
 
 func (c *config) EnvDeps() map[string]string {
 	c.envLock.Lock()
+	defer c.envLock.Unlock()
 	c.envFrozen = true
-	c.envLock.Unlock()
 	return c.envDeps
 }
 
@@ -350,20 +431,57 @@ func (c *config) PlatformSdkVersion() string {
 	return strconv.Itoa(c.PlatformSdkVersionInt())
 }
 
+func (c *config) MinSupportedSdkVersion() int {
+	return 14
+}
+
+func (c *config) DefaultAppTargetSdkInt() int {
+	if Bool(c.ProductVariables.Platform_sdk_final) {
+		return c.PlatformSdkVersionInt()
+	} else {
+		return 10000
+	}
+}
+
+// Codenames that are active in the current lunch target.
+func (c *config) PlatformVersionActiveCodenames() []string {
+	return c.ProductVariables.Platform_version_active_codenames
+}
+
+// Codenames that are available in the branch but not included in the current
+// lunch target.
+func (c *config) PlatformVersionFutureCodenames() []string {
+	return c.ProductVariables.Platform_version_future_codenames
+}
+
+// All possible codenames in the current branch. NB: Not named AllCodenames
+// because "all" has historically meant "active" in make, and still does in
+// build.prop.
+func (c *config) PlatformVersionCombinedCodenames() []string {
+	combined := []string{}
+	combined = append(combined, c.PlatformVersionActiveCodenames()...)
+	combined = append(combined, c.PlatformVersionFutureCodenames()...)
+	return combined
+}
+
 func (c *config) BuildNumber() string {
 	return "000000"
 }
 
-func (c *config) ProductAaptConfig() []string {
-	return []string{"normal", "large", "xlarge", "hdpi", "xhdpi", "xxhdpi"}
+func (c *config) ProductAAPTConfig() []string {
+	return *c.ProductVariables.AAPTConfig
 }
 
-func (c *config) ProductAaptPreferredConfig() string {
-	return "xhdpi"
+func (c *config) ProductAAPTPreferredConfig() string {
+	return *c.ProductVariables.AAPTPreferredConfig
 }
 
-func (c *config) ProductAaptCharacteristics() string {
-	return "nosdcard"
+func (c *config) ProductAAPTCharacteristics() string {
+	return *c.ProductVariables.AAPTCharacteristics
+}
+
+func (c *config) ProductAAPTPrebuiltDPI() []string {
+	return *c.ProductVariables.AAPTPrebuiltDPI
 }
 
 func (c *config) DefaultAppCertificateDir(ctx PathContext) SourcePath {
@@ -378,12 +496,25 @@ func (c *config) AllowMissingDependencies() bool {
 	return Bool(c.ProductVariables.Allow_missing_dependencies)
 }
 
+func (c *config) UnbundledBuild() bool {
+	return Bool(c.ProductVariables.Unbundled_build)
+}
+
+func (c *config) IsPdkBuild() bool {
+	return Bool(c.ProductVariables.Pdk)
+}
+
 func (c *config) DevicePrefer32BitExecutables() bool {
 	return Bool(c.ProductVariables.DevicePrefer32BitExecutables)
 }
 
 func (c *config) SkipDeviceInstall() bool {
-	return c.EmbeddedInMake() || Bool(c.Mega_device)
+	return c.EmbeddedInMake()
+}
+
+func (c *config) SkipMegaDeviceInstall(path string) bool {
+	return Bool(c.Mega_device) &&
+		strings.HasPrefix(path, filepath.Join(c.buildDir, "target", "product"))
 }
 
 func (c *config) SanitizeHost() []string {
@@ -394,8 +525,20 @@ func (c *config) SanitizeDevice() []string {
 	return append([]string(nil), c.ProductVariables.SanitizeDevice...)
 }
 
+func (c *config) SanitizeDeviceDiag() []string {
+	return append([]string(nil), c.ProductVariables.SanitizeDeviceDiag...)
+}
+
 func (c *config) SanitizeDeviceArch() []string {
 	return append([]string(nil), c.ProductVariables.SanitizeDeviceArch...)
+}
+
+func (c *config) EnableCFI() bool {
+	if c.ProductVariables.EnableCFI == nil {
+		return true
+	} else {
+		return *c.ProductVariables.EnableCFI
+	}
 }
 
 func (c *config) Android64() bool {
@@ -410,6 +553,16 @@ func (c *config) Android64() bool {
 
 func (c *config) UseGoma() bool {
 	return Bool(c.ProductVariables.UseGoma)
+}
+
+// Returns true if OpenJDK9 prebuilts are being used
+func (c *config) UseOpenJDK9() bool {
+	return c.useOpenJDK9
+}
+
+// Returns true if -source 1.9 -target 1.9 is being passed to javac
+func (c *config) TargetOpenJDK9() bool {
+	return c.targetOpenJDK9
 }
 
 func (c *config) ClangTidy() bool {
@@ -428,11 +581,15 @@ func (c *config) LibartImgHostBaseAddress() string {
 }
 
 func (c *config) LibartImgDeviceBaseAddress() string {
-	switch c.Targets[Device][0].Arch.ArchType {
+	archType := Common
+	if len(c.Targets[Device]) > 0 {
+		archType = c.Targets[Device][0].Arch.ArchType
+	}
+	switch archType {
 	default:
 		return "0x70000000"
 	case Mips, Mips64:
-		return "0x30000000"
+		return "0x5C000000"
 	}
 }
 
@@ -455,21 +612,43 @@ func (c *deviceConfig) VendorPath() string {
 	return "vendor"
 }
 
-func (c *deviceConfig) VndkVersion() string {
+func (c *deviceConfig) CompileVndk() bool {
 	if c.config.ProductVariables.DeviceVndkVersion == nil {
-		return ""
+		return false
 	}
-	return *c.config.ProductVariables.DeviceVndkVersion
+	return *c.config.ProductVariables.DeviceVndkVersion == "current"
 }
 
 func (c *deviceConfig) BtConfigIncludeDir() string {
 	return String(c.config.ProductVariables.BtConfigIncludeDir)
 }
 
-func (c *deviceConfig) BtHcilpIncluded() string {
-	return String(c.config.ProductVariables.BtHcilpIncluded)
+func (c *deviceConfig) DeviceKernelHeaderDirs() []string {
+	return c.config.ProductVariables.DeviceKernelHeaders
 }
 
-func (c *deviceConfig) BtHciUseMct() bool {
-	return Bool(c.config.ProductVariables.BtHciUseMct)
+func (c *deviceConfig) NativeCoverageEnabled() bool {
+	return Bool(c.config.ProductVariables.NativeCoverage)
+}
+
+func (c *deviceConfig) CoverageEnabledForPath(path string) bool {
+	coverage := false
+	if c.config.ProductVariables.CoveragePaths != nil {
+		if prefixInList(path, *c.config.ProductVariables.CoveragePaths) {
+			coverage = true
+		}
+	}
+	if coverage && c.config.ProductVariables.CoverageExcludePaths != nil {
+		if prefixInList(path, *c.config.ProductVariables.CoverageExcludePaths) {
+			coverage = false
+		}
+	}
+	return coverage
+}
+
+func (c *config) IntegerOverflowDisabledForPath(path string) bool {
+	if c.ProductVariables.IntegerOverflowExcludePaths == nil {
+		return false
+	}
+	return prefixInList(path, *c.ProductVariables.IntegerOverflowExcludePaths)
 }

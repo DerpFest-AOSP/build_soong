@@ -16,6 +16,7 @@ package config
 
 import (
 	"fmt"
+	"path/filepath"
 
 	"android/soong/android"
 )
@@ -47,6 +48,7 @@ type Toolchain interface {
 	GccTriple() string
 	// GccVersion should return a real value, not a ninja reference
 	GccVersion() string
+	ToolPath() string
 
 	ToolchainCflags() string
 	ToolchainLdflags() string
@@ -67,6 +69,8 @@ type Toolchain interface {
 	ClangInstructionSetFlags(string) (string, error)
 
 	YasmFlags() string
+
+	WindresFlags() string
 
 	Is64Bit() bool
 
@@ -133,6 +137,10 @@ func (toolchainBase) YasmFlags() string {
 	return ""
 }
 
+func (toolchainBase) WindresFlags() string {
+	return ""
+}
+
 func (toolchainBase) SanitizerRuntimeLibraryArch() string {
 	return ""
 }
@@ -143,6 +151,10 @@ func (toolchainBase) AvailableLibraries() []string {
 
 func (toolchainBase) Bionic() bool {
 	return true
+}
+
+func (t toolchainBase) ToolPath() string {
+	return ""
 }
 
 type toolchain64Bit struct {
@@ -201,18 +213,33 @@ func inList(s string, list []string) bool {
 	return indexList(s, list) != -1
 }
 
-func AddressSanitizerRuntimeLibrary(t Toolchain) string {
+func SanitizerRuntimeLibrary(t Toolchain, sanitizer string) string {
 	arch := t.SanitizerRuntimeLibraryArch()
 	if arch == "" {
 		return ""
 	}
-	return "libclang_rt.asan-" + arch + "-android.so"
+	return "libclang_rt." + sanitizer + "-" + arch + "-android"
+}
+
+func AddressSanitizerRuntimeLibrary(t Toolchain) string {
+	return SanitizerRuntimeLibrary(t, "asan")
 }
 
 func UndefinedBehaviorSanitizerRuntimeLibrary(t Toolchain) string {
-	arch := t.SanitizerRuntimeLibraryArch()
-	if arch == "" {
-		return ""
+	return SanitizerRuntimeLibrary(t, "ubsan_standalone")
+}
+
+func ThreadSanitizerRuntimeLibrary(t Toolchain) string {
+	return SanitizerRuntimeLibrary(t, "tsan")
+}
+
+func ProfileRuntimeLibrary(t Toolchain) string {
+	return SanitizerRuntimeLibrary(t, "profile")
+}
+
+func ToolPath(t Toolchain) string {
+	if p := t.ToolPath(); p != "" {
+		return p
 	}
-	return "libclang_rt.ubsan_standalone-" + arch + "-android.so"
+	return filepath.Join(t.GccRoot(), t.GccTriple(), "bin")
 }

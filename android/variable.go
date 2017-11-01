@@ -33,6 +33,7 @@ type variableProperties struct {
 	Product_variables struct {
 		Platform_sdk_version struct {
 			Asflags []string
+			Cflags  []string
 		}
 
 		// unbundled_build is a catch-all property to annotate modules that don't build in one or
@@ -54,15 +55,22 @@ type variableProperties struct {
 			Cflags []string `android:"arch_variant"`
 		} `android:"arch_variant"`
 
-		Cpusets struct {
-			Cflags []string
-		}
-
-		Schedboost struct {
-			Cflags []string
-		}
-
 		Binder32bit struct {
+			Cflags []string
+		}
+
+		Device_uses_hwc2 struct {
+			Cflags []string
+		}
+
+		Override_rs_driver struct {
+			Cflags []string
+		}
+
+		// treble is true when a build is a Treble compliant device.  This is automatically set when
+		// a build is shipped with Android O, but can be overriden.  This controls such things as
+		// the sepolicy split and enabling the Treble linker namespaces.
+		Treble struct {
 			Cflags []string
 		}
 
@@ -73,12 +81,21 @@ type variableProperties struct {
 		Debuggable struct {
 			Cflags   []string
 			Cppflags []string
+			Init_rc  []string
 		}
 
 		// eng is true for -eng builds, and can be used to turn on additionaly heavyweight debugging
 		// features.
 		Eng struct {
 			Cflags   []string
+			Cppflags []string
+		}
+
+		Pdk struct {
+			Enabled *bool `android:"arch_variant"`
+		} `android:"arch_variant"`
+
+		Uml struct {
 			Cppflags []string
 		}
 	} `android:"arch_variant"`
@@ -90,7 +107,10 @@ type productVariables struct {
 	// Suffix to add to generated Makefiles
 	Make_suffix *string `json:",omitempty"`
 
-	Platform_sdk_version *int `json:",omitempty"`
+	Platform_sdk_version              *int     `json:",omitempty"`
+	Platform_sdk_final                *bool    `json:",omitempty"`
+	Platform_version_active_codenames []string `json:",omitempty"`
+	Platform_version_future_codenames []string `json:",omitempty"`
 
 	DeviceName        *string   `json:",omitempty"`
 	DeviceArch        *string   `json:",omitempty"`
@@ -112,36 +132,59 @@ type productVariables struct {
 	CrossHostArch          *string `json:",omitempty"`
 	CrossHostSecondaryArch *string `json:",omitempty"`
 
+	ResourceOverlays           *[]string `json:",omitempty"`
+	EnforceRROTargets          *[]string `json:",omitempty"`
+	EnforceRROExcludedOverlays *[]string `json:",omitempty"`
+
+	AAPTCharacteristics *string   `json:",omitempty"`
+	AAPTConfig          *[]string `json:",omitempty"`
+	AAPTPreferredConfig *string   `json:",omitempty"`
+	AAPTPrebuiltDPI     *[]string `json:",omitempty"`
+
+	AppsDefaultVersionName *string `json:",omitempty"`
+
 	Allow_missing_dependencies *bool `json:",omitempty"`
 	Unbundled_build            *bool `json:",omitempty"`
 	Brillo                     *bool `json:",omitempty"`
 	Malloc_not_svelte          *bool `json:",omitempty"`
 	Safestack                  *bool `json:",omitempty"`
 	HostStaticBinaries         *bool `json:",omitempty"`
-	Cpusets                    *bool `json:",omitempty"`
-	Schedboost                 *bool `json:",omitempty"`
 	Binder32bit                *bool `json:",omitempty"`
 	UseGoma                    *bool `json:",omitempty"`
 	Debuggable                 *bool `json:",omitempty"`
 	Eng                        *bool `json:",omitempty"`
+	EnableCFI                  *bool `json:",omitempty"`
+	Device_uses_hwc2           *bool `json:",omitempty"`
+	Treble                     *bool `json:",omitempty"`
+	Pdk                        *bool `json:",omitempty"`
+	Uml                        *bool `json:",omitempty"`
+
+	IntegerOverflowExcludePaths *[]string `json:",omitempty"`
 
 	VendorPath *string `json:",omitempty"`
 
 	ClangTidy  *bool   `json:",omitempty"`
 	TidyChecks *string `json:",omitempty"`
 
+	NativeCoverage       *bool     `json:",omitempty"`
+	CoveragePaths        *[]string `json:",omitempty"`
+	CoverageExcludePaths *[]string `json:",omitempty"`
+
 	DevicePrefer32BitExecutables *bool `json:",omitempty"`
 	HostPrefer32BitExecutables   *bool `json:",omitempty"`
 
 	SanitizeHost       []string `json:",omitempty"`
 	SanitizeDevice     []string `json:",omitempty"`
+	SanitizeDeviceDiag []string `json:",omitempty"`
 	SanitizeDeviceArch []string `json:",omitempty"`
 
 	ArtUseReadBarrier *bool `json:",omitempty"`
 
 	BtConfigIncludeDir *string `json:",omitempty"`
-	BtHcilpIncluded    *string `json:",omitempty"`
-	BtHciUseMct        *bool   `json:",omitempty"`
+
+	Override_rs_driver *string `json:",omitempty"`
+
+	DeviceKernelHeaders []string `json:",omitempty"`
 }
 
 func boolPtr(v bool) *bool {
@@ -171,8 +214,14 @@ func (v *productVariables) SetDefaultConfig() {
 		DeviceSecondaryArchVariant: stringPtr("armv7-a-neon"),
 		DeviceSecondaryCpuVariant:  stringPtr("denver"),
 		DeviceSecondaryAbi:         &[]string{"armeabi-v7a"},
-		Malloc_not_svelte:          boolPtr(false),
-		Safestack:                  boolPtr(false),
+
+		AAPTConfig:          &[]string{"normal", "large", "xlarge", "hdpi", "xhdpi", "xxhdpi"},
+		AAPTPreferredConfig: stringPtr("xhdpi"),
+		AAPTCharacteristics: stringPtr("nosdcard"),
+		AAPTPrebuiltDPI:     &[]string{"xhdpi", "xxhdpi"},
+
+		Malloc_not_svelte: boolPtr(false),
+		Safestack:         boolPtr(false),
 	}
 
 	if runtime.GOOS == "linux" {
@@ -225,7 +274,7 @@ func variableMutator(mctx BottomUpMutatorContext) {
 func (a *ModuleBase) setVariableProperties(ctx BottomUpMutatorContext,
 	prefix string, productVariablePropertyValue reflect.Value, variableValue interface{}) {
 
-	printfIntoProperties(productVariablePropertyValue, variableValue)
+	printfIntoProperties(ctx, prefix, productVariablePropertyValue, variableValue)
 
 	err := proptools.AppendMatchingProperties(a.generalProperties,
 		productVariablePropertyValue.Addr().Interface(), nil)
@@ -238,7 +287,17 @@ func (a *ModuleBase) setVariableProperties(ctx BottomUpMutatorContext,
 	}
 }
 
-func printfIntoProperties(productVariablePropertyValue reflect.Value, variableValue interface{}) {
+func printfIntoPropertiesError(ctx BottomUpMutatorContext, prefix string,
+	productVariablePropertyValue reflect.Value, i int, err error) {
+
+	field := productVariablePropertyValue.Type().Field(i).Name
+	property := prefix + "." + proptools.PropertyNameForField(field)
+	ctx.PropertyErrorf(property, "%s", err)
+}
+
+func printfIntoProperties(ctx BottomUpMutatorContext, prefix string,
+	productVariablePropertyValue reflect.Value, variableValue interface{}) {
+
 	for i := 0; i < productVariablePropertyValue.NumField(); i++ {
 		propertyValue := productVariablePropertyValue.Field(i)
 		kind := propertyValue.Kind()
@@ -250,36 +309,64 @@ func printfIntoProperties(productVariablePropertyValue reflect.Value, variableVa
 		}
 		switch propertyValue.Kind() {
 		case reflect.String:
-			printfIntoProperty(propertyValue, variableValue)
+			err := printfIntoProperty(propertyValue, variableValue)
+			if err != nil {
+				printfIntoPropertiesError(ctx, prefix, productVariablePropertyValue, i, err)
+			}
 		case reflect.Slice:
 			for j := 0; j < propertyValue.Len(); j++ {
-				printfIntoProperty(propertyValue.Index(j), variableValue)
+				err := printfIntoProperty(propertyValue.Index(j), variableValue)
+				if err != nil {
+					printfIntoPropertiesError(ctx, prefix, productVariablePropertyValue, i, err)
+				}
 			}
 		case reflect.Bool:
 			// Nothing
 		case reflect.Struct:
-			printfIntoProperties(propertyValue, variableValue)
+			printfIntoProperties(ctx, prefix, propertyValue, variableValue)
 		default:
 			panic(fmt.Errorf("unsupported field kind %q", propertyValue.Kind()))
 		}
 	}
 }
 
-func printfIntoProperty(propertyValue reflect.Value, variableValue interface{}) {
+func printfIntoProperty(propertyValue reflect.Value, variableValue interface{}) error {
 	s := propertyValue.String()
-	// For now, we only support int formats
-	var i int
+
+	count := strings.Count(s, "%")
+	if count == 0 {
+		return nil
+	}
+
+	if count > 1 {
+		return fmt.Errorf("product variable properties only support a single '%%'")
+	}
+
 	if strings.Contains(s, "%d") {
 		switch v := variableValue.(type) {
 		case int:
-			i = v
+			// Nothing
 		case bool:
 			if v {
-				i = 1
+				variableValue = 1
+			} else {
+				variableValue = 0
 			}
 		default:
-			panic(fmt.Errorf("unsupported type %T", variableValue))
+			return fmt.Errorf("unsupported type %T for %%d", variableValue)
 		}
-		propertyValue.Set(reflect.ValueOf(fmt.Sprintf(s, i)))
+	} else if strings.Contains(s, "%s") {
+		switch variableValue.(type) {
+		case string:
+			// Nothing
+		default:
+			return fmt.Errorf("unsupported type %T for %%s", variableValue)
+		}
+	} else {
+		return fmt.Errorf("unsupported %% in product variable property")
 	}
+
+	propertyValue.Set(reflect.ValueOf(fmt.Sprintf(s, variableValue)))
+
+	return nil
 }

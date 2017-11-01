@@ -256,7 +256,7 @@ cc_library_shared {
         darwin: {
             srcs: ["darwin.c"],
         },
-        linux: {
+        linux_glibc: {
             srcs: ["linux.c"],
         },
         windows: {
@@ -285,33 +285,22 @@ cc_library_shared {
 		desc: "LOCAL_SANITIZE unknown parameter",
 		in: `
 include $(CLEAR_VARS)
-LOCAL_SANITIZE := integer asdf
+LOCAL_SANITIZE := thread cfi asdf
+LOCAL_SANITIZE_DIAG := cfi
 LOCAL_SANITIZE_RECOVER := qwert
 include $(BUILD_SHARED_LIBRARY)
 `,
 		expected: `
 cc_library_shared {
-    // ANDROIDMK TRANSLATION ERROR: unknown sanitize argument: asdf
-    // integer asdf
     sanitize: {
-	integer: true,
-	recover: ["qwert"],
+        thread: true,
+        cfi: true,
+        misc_undefined: ["asdf"],
+        diag: {
+            cfi: true,
+        },
+        recover: ["qwert"],
     },
-}
-`,
-	},
-	{
-		desc: "LOCAL_SANITIZE using variable",
-		in: `
-sanitize_var := never
-include $(CLEAR_VARS)
-LOCAL_SANITIZE := $(sanitize_var)
-include $(BUILD_SHARED_LIBRARY)
-`,
-		expected: `
-sanitize_var = ["never"]
-cc_library_shared {
-    sanitize: sanitize_var,
 }
 `,
 	},
@@ -356,6 +345,120 @@ cc_library_shared {
 	include_dirs: ["system/core/include", "."],
 }
 `,
+	},
+	{
+		desc: "Remove LOCAL_MODULE_TAGS optional",
+		in: `
+include $(CLEAR_VARS)
+LOCAL_MODULE_TAGS := optional
+include $(BUILD_SHARED_LIBRARY)
+`,
+
+		expected: `
+cc_library_shared {
+
+}
+`,
+	},
+	{
+		desc: "Keep LOCAL_MODULE_TAGS non-optional",
+		in: `
+include $(CLEAR_VARS)
+LOCAL_MODULE_TAGS := debug
+include $(BUILD_SHARED_LIBRARY)
+`,
+
+		expected: `
+cc_library_shared {
+	tags: ["debug"],
+}
+`,
+	},
+
+	{
+		desc: "Input containing escaped quotes",
+		in: `
+include $(CLEAR_VARS)
+LOCAL_MODULE:= libsensorservice
+LOCAL_CFLAGS:= -DLOG_TAG=\"-DDontEscapeMe\"
+LOCAL_SRC_FILES := \"EscapeMe.cc\"
+include $(BUILD_SHARED_LIBRARY)
+`,
+
+		expected: `
+cc_library_shared {
+    name: "libsensorservice",
+    cflags: ["-DLOG_TAG=\"-DDontEscapeMe\""],
+    srcs: ["\\\"EscapeMe.cc\\\""],
+}
+`,
+	},
+	{
+
+		desc: "Don't fail on missing CLEAR_VARS",
+		in: `
+LOCAL_MODULE := iAmAModule
+include $(BUILD_SHARED_LIBRARY)`,
+
+		expected: `
+// ANDROIDMK TRANSLATION WARNING: No 'include $(CLEAR_VARS)' detected before first assignment; clearing vars now
+cc_library_shared {
+  name: "iAmAModule",
+
+}`,
+	},
+	{
+
+		desc: "LOCAL_AIDL_INCLUDES",
+		in: `
+include $(CLEAR_VARS)
+LOCAL_MODULE := iAmAModule
+LOCAL_AIDL_INCLUDES := $(LOCAL_PATH)/src/main/java system/core
+include $(BUILD_SHARED_LIBRARY)`,
+
+		expected: `
+cc_library_shared {
+  name: "iAmAModule",
+  aidl: {
+    include_dirs: ["system/core"],
+    local_include_dirs: ["src/main/java"],
+  }
+}`,
+	},
+	{
+		// the important part of this test case is that it confirms that androidmk doesn't
+		// panic in this case
+		desc: "multiple directives inside recipe",
+		in: `
+ifeq ($(a),true)
+ifeq ($(b),false)
+imABuildStatement: somefile
+	echo begin
+endif # a==true
+	echo middle
+endif # b==false
+	echo end
+`,
+		expected: `
+// ANDROIDMK TRANSLATION ERROR: unsupported conditional
+// ifeq ($(a),true)
+
+// ANDROIDMK TRANSLATION ERROR: unsupported conditional
+// ifeq ($(b),false)
+
+// ANDROIDMK TRANSLATION ERROR: unsupported line
+// rule:       imABuildStatement: somefile
+// echo begin
+//  # a==true
+// echo middle
+//  # b==false
+// echo end
+//
+// ANDROIDMK TRANSLATION ERROR: endif from unsupported contitional
+// endif
+// ANDROIDMK TRANSLATION ERROR: endif from unsupported contitional
+// endif
+		`,
 	},
 }
 

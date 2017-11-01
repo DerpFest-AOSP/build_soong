@@ -68,6 +68,50 @@ func inList(s string, list []string) bool {
 	return indexList(s, list) != -1
 }
 
+func prefixInList(s string, list []string) bool {
+	for _, prefix := range list {
+		if strings.HasPrefix(s, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// FirstUniqueStrings returns all unique elements of a slice of strings, keeping the first copy of
+// each.  It modifies the slice contents in place, and returns a subslice of the original slice.
+func FirstUniqueStrings(list []string) []string {
+	k := 0
+outer:
+	for i := 0; i < len(list); i++ {
+		for j := 0; j < k; j++ {
+			if list[i] == list[j] {
+				continue outer
+			}
+		}
+		list[k] = list[i]
+		k++
+	}
+	return list[:k]
+}
+
+// LastUniqueStrings returns all unique elements of a slice of strings, keeping the last copy of
+// each.  It modifies the slice contents in place, and returns a subslice of the original slice.
+func LastUniqueStrings(list []string) []string {
+	totalSkip := 0
+	for i := len(list) - 1; i >= totalSkip; i-- {
+		skip := 0
+		for j := i - 1; j >= totalSkip; j-- {
+			if list[i] == list[j] {
+				skip++
+			} else {
+				list[j+skip] = list[j]
+			}
+		}
+		totalSkip += skip
+	}
+	return list[totalSkip:]
+}
+
 // checkCalledFromInit panics if a Go package's init function is not on the
 // call stack.
 func checkCalledFromInit() {

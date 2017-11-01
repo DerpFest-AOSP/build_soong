@@ -28,8 +28,6 @@ var (
 		"-fomit-frame-pointer",
 		"-fno-strict-aliasing",
 		"-funswitch-loops",
-		"-U__unix",
-		"-U__unix__",
 		"-Umips",
 		"-ffunction-sections",
 		"-fdata-sections",
@@ -52,7 +50,7 @@ var (
 
 	mipsClangCflags = append(mipsCflags, []string{
 		"-fPIC",
-		"-fno-integrated-as",
+		"-fintegrated-as",
 	}...)
 
 	mipsCppflags = []string{
@@ -92,7 +90,6 @@ var (
 			"-mfp32",
 			"-modd-spreg",
 			"-mno-fused-madd",
-			"-Wa,-mmxu",
 			"-mno-synci",
 		},
 		"mips32r2dsp-fp": []string{
@@ -114,9 +111,6 @@ var (
 			"-mfp64",
 			"-mno-odd-spreg",
 			"-msynci",
-
-			// revert once clang picks up r278824
-			"-mcompact-branches=never",
 		},
 	}
 )
@@ -133,7 +127,12 @@ func init() {
 		"mips32r2dsp_fp",
 		"mips32r2dspr2_fp",
 		"mips32r6")
-	android.RegisterArchFeatures(android.Mips, "rev6")
+	android.RegisterArchFeatures(android.Mips,
+		"dspr2",
+		"rev6",
+		"msa")
+	android.RegisterArchVariantFeatures(android.Mips, "mips32r2dspr2_fp",
+		"dspr2")
 	android.RegisterArchVariantFeatures(android.Mips, "mips32r6",
 		"rev6")
 
@@ -146,7 +145,7 @@ func init() {
 	pctx.StaticVariable("MipsCflags", strings.Join(mipsCflags, " "))
 	pctx.StaticVariable("MipsLdflags", strings.Join(mipsLdflags, " "))
 	pctx.StaticVariable("MipsCppflags", strings.Join(mipsCppflags, " "))
-	pctx.StaticVariable("MipsIncludeFlags", bionicHeaders("mips", "mips"))
+	pctx.StaticVariable("MipsIncludeFlags", bionicHeaders("mips"))
 
 	// Clang cflags
 	pctx.StaticVariable("MipsClangCflags", strings.Join(ClangFilterUnknownCflags(mipsClangCflags), " "))

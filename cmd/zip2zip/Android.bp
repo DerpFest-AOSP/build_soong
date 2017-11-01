@@ -14,9 +14,13 @@
 
 blueprint_go_binary {
     name: "zip2zip",
-    deps: ["android-archive-zip"],
+    deps: [
+      "android-archive-zip",
+      "soong-jar",
+    ],
     srcs: [
         "zip2zip.go",
     ],
+    testSrcs: ["zip2zip_test.go"],
 }
 

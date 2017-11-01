@@ -20,7 +20,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/google/blueprint"
+	"github.com/google/blueprint/proptools"
 
 	"android/soong/android"
 )
@@ -52,12 +52,12 @@ type androidAppProperties struct {
 	Asset_dirs []string
 
 	// list of directories relative to the Blueprints file containing
-	// Java resources
-	Android_resource_dirs []string
+	// Android resources
+	Resource_dirs []string
 }
 
 type AndroidApp struct {
-	javaBase
+	Module
 
 	appProperties androidAppProperties
 
@@ -65,22 +65,20 @@ type AndroidApp struct {
 	exportPackage    android.Path
 }
 
-func (a *AndroidApp) JavaDependencies(ctx AndroidJavaModuleContext) []string {
-	deps := a.javaBase.JavaDependencies(ctx)
+func (a *AndroidApp) DepsMutator(ctx android.BottomUpMutatorContext) {
+	a.Module.deps(ctx)
 
-	if !a.properties.No_standard_libraries {
-		switch a.properties.Sdk_version { // TODO: Res_sdk_version?
+	if !proptools.Bool(a.properties.No_standard_libs) {
+		switch a.deviceProperties.Sdk_version { // TODO: Res_sdk_version?
 		case "current", "system_current", "":
-			deps = append(deps, "framework-res")
+			ctx.AddDependency(ctx.Module(), frameworkResTag, "framework-res")
 		default:
 			// We'll already have a dependency on an sdk prebuilt android.jar
 		}
 	}
-
-	return deps
 }
 
-func (a *AndroidApp) GenerateJavaBuildActions(ctx android.ModuleContext) {
+func (a *AndroidApp) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 	aaptFlags, aaptDeps, hasResources := a.aaptFlags(ctx)
 
 	if hasResources {
@@ -90,7 +88,7 @@ func (a *AndroidApp) GenerateJavaBuildActions(ctx android.ModuleContext) {
 		publicResourcesFile, proguardOptionsFile, aaptJavaFileList :=
 			CreateResourceJavaFiles(ctx, aaptRJavaFlags, aaptDeps)
 		a.aaptJavaFileList = aaptJavaFileList
-		a.ExtraSrcLists = append(a.ExtraSrcLists, aaptJavaFileList)
+		// TODO(ccross):  export aapt generated java files as a src jar
 
 		if a.appProperties.Export_package_resources {
 			aaptPackageFlags := append([]string(nil), aaptFlags...)
@@ -104,7 +102,7 @@ func (a *AndroidApp) GenerateJavaBuildActions(ctx android.ModuleContext) {
 
 			if !hasProduct {
 				aaptPackageFlags = append(aaptPackageFlags,
-					"--product "+ctx.AConfig().ProductAaptCharacteristics())
+					"--product "+ctx.AConfig().ProductAAPTCharacteristics())
 			}
 			a.exportPackage = CreateExportPackage(ctx, aaptPackageFlags, aaptDeps)
 			ctx.CheckbuildFile(a.exportPackage)
@@ -114,14 +112,14 @@ func (a *AndroidApp) GenerateJavaBuildActions(ctx android.ModuleContext) {
 		ctx.CheckbuildFile(aaptJavaFileList)
 	}
 
-	// apps manifests are handled by aapt, don't let javaBase see them
+	// apps manifests are handled by aapt, don't let Module see them
 	a.properties.Manifest = nil
 
 	//if !ctx.ContainsProperty("proguard.enabled") {
 	//	a.properties.Proguard.Enabled = true
 	//}
 
-	a.javaBase.GenerateJavaBuildActions(ctx)
+	a.Module.compile(ctx)
 
 	aaptPackageFlags := append([]string(nil), aaptFlags...)
 	var hasProduct bool
@@ -134,7 +132,7 @@ func (a *AndroidApp) GenerateJavaBuildActions(ctx android.ModuleContext) {
 
 	if !hasProduct {
 		aaptPackageFlags = append(aaptPackageFlags,
-			"--product "+ctx.AConfig().ProductAaptCharacteristics())
+			"--product "+ctx.AConfig().ProductAAPTCharacteristics())
 	}
 
 	certificate := a.appProperties.Certificate
@@ -152,7 +150,7 @@ func (a *AndroidApp) GenerateJavaBuildActions(ctx android.ModuleContext) {
 	}
 
 	a.outputFile = CreateAppPackage(ctx, aaptPackageFlags, a.outputFile, certificates)
-	ctx.InstallFileName(android.PathForModuleInstall(ctx, "app"), ctx.ModuleName()+".apk", a.outputFile)
+	ctx.InstallFile(android.PathForModuleInstall(ctx, "app"), ctx.ModuleName()+".apk", a.outputFile)
 }
 
 var aaptIgnoreFilenames = []string{
@@ -184,7 +182,7 @@ func (a *AndroidApp) aaptFlags(ctx android.ModuleContext) ([]string, android.Pat
 	}
 
 	assetDirs := android.PathsWithOptionalDefaultForModuleSrc(ctx, a.appProperties.Asset_dirs, "assets")
-	resourceDirs := android.PathsWithOptionalDefaultForModuleSrc(ctx, a.appProperties.Android_resource_dirs, "res")
+	resourceDirs := android.PathsWithOptionalDefaultForModuleSrc(ctx, a.appProperties.Resource_dirs, "res")
 
 	var overlayResourceDirs android.Paths
 	// For every resource directory, check if there is an overlay directory with the same path.
@@ -232,22 +230,21 @@ func (a *AndroidApp) aaptFlags(ctx android.ModuleContext) ([]string, android.Pat
 	aaptFlags = append(aaptFlags, android.JoinWithPrefix(assetDirs.Strings(), "-A "))
 	aaptFlags = append(aaptFlags, android.JoinWithPrefix(resourceDirs.Strings(), "-S "))
 
-	ctx.VisitDirectDeps(func(module blueprint.Module) {
-		var depFile android.OptionalPath
-		if sdkDep, ok := module.(sdkDependency); ok {
-			depFile = android.OptionalPathForPath(sdkDep.ClasspathFile())
-		} else if javaDep, ok := module.(JavaDependency); ok {
+	ctx.VisitDirectDeps(func(module android.Module) {
+		var depFiles android.Paths
+		if javaDep, ok := module.(Dependency); ok {
 			if ctx.OtherModuleName(module) == "framework-res" {
-				depFile = android.OptionalPathForPath(javaDep.(*javaBase).module.(*AndroidApp).exportPackage)
+				depFiles = android.Paths{javaDep.(*AndroidApp).exportPackage}
 			}
 		}
-		if depFile.Valid() {
-			aaptFlags = append(aaptFlags, "-I "+depFile.String())
-			aaptDeps = append(aaptDeps, depFile.Path())
+
+		for _, dep := range depFiles {
+			aaptFlags = append(aaptFlags, "-I "+dep.String())
 		}
+		aaptDeps = append(aaptDeps, depFiles...)
 	})
 
-	sdkVersion := a.properties.Sdk_version
+	sdkVersion := a.deviceProperties.Sdk_version
 	if sdkVersion == "" {
 		sdkVersion = ctx.AConfig().PlatformSdkVersion()
 	}
@@ -273,10 +270,14 @@ func (a *AndroidApp) aaptFlags(ctx android.ModuleContext) ([]string, android.Pat
 	return aaptFlags, aaptDeps, hasResources
 }
 
-func AndroidAppFactory() (blueprint.Module, []interface{}) {
+func AndroidAppFactory() android.Module {
 	module := &AndroidApp{}
 
-	module.properties.Dex = true
+	module.AddProperties(
+		&module.Module.properties,
+		&module.Module.deviceProperties,
+		&module.appProperties)
 
-	return NewJavaBase(&module.javaBase, module, android.DeviceSupported, &module.appProperties)
+	android.InitAndroidArchModule(module, android.DeviceSupported, android.MultilibCommon)
+	return module
 }

@@ -14,45 +14,55 @@
 
 package android
 
-import "github.com/google/blueprint"
+import (
+	"github.com/google/blueprint"
+)
 
-// Mutator phases:
-//   Pre-arch
-//   Arch
-//   Pre-deps
-//   Deps
-//   PostDeps
+// Phases:
+//   run Pre-arch mutators
+//   run archMutator
+//   run Pre-deps mutators
+//   run depsMutator
+//   run PostDeps mutators
+//   continue on to GenerateAndroidBuildActions
 
-func registerMutators() {
-	ctx := registerMutatorsContext{}
+func registerMutatorsToContext(ctx *blueprint.Context, mutators []*mutator) {
+	for _, t := range mutators {
+		var handle blueprint.MutatorHandle
+		if t.bottomUpMutator != nil {
+			handle = ctx.RegisterBottomUpMutator(t.name, t.bottomUpMutator)
+		} else if t.topDownMutator != nil {
+			handle = ctx.RegisterTopDownMutator(t.name, t.topDownMutator)
+		}
+		if t.parallel {
+			handle.Parallel()
+		}
+	}
+}
+
+func registerMutators(ctx *blueprint.Context, preArch, preDeps, postDeps []RegisterMutatorFunc) {
+	mctx := &registerMutatorsContext{}
 
 	register := func(funcs []RegisterMutatorFunc) {
 		for _, f := range funcs {
-			f(ctx)
+			f(mctx)
 		}
 	}
 
-	ctx.TopDown("load_hooks", loadHookMutator).Parallel()
-	ctx.BottomUp("prebuilts", prebuiltMutator).Parallel()
-	ctx.BottomUp("defaults_deps", defaultsDepsMutator).Parallel()
-	ctx.TopDown("defaults", defaultsMutator).Parallel()
-
 	register(preArch)
-
-	ctx.BottomUp("arch", archMutator).Parallel()
-	ctx.TopDown("arch_hooks", archHookMutator).Parallel()
 
 	register(preDeps)
 
-	ctx.BottomUp("deps", depsMutator).Parallel()
-
-	ctx.TopDown("prebuilt_select", PrebuiltSelectModuleMutator).Parallel()
-	ctx.BottomUp("prebuilt_replace", PrebuiltReplaceMutator).Parallel()
+	mctx.BottomUp("deps", depsMutator).Parallel()
 
 	register(postDeps)
+
+	registerMutatorsToContext(ctx, mctx.mutators)
 }
 
-type registerMutatorsContext struct{}
+type registerMutatorsContext struct {
+	mutators []*mutator
+}
 
 type RegisterMutatorsContext interface {
 	TopDown(name string, m AndroidTopDownMutator) MutatorHandle
@@ -61,7 +71,26 @@ type RegisterMutatorsContext interface {
 
 type RegisterMutatorFunc func(RegisterMutatorsContext)
 
-var preArch, preDeps, postDeps []RegisterMutatorFunc
+var preArch = []RegisterMutatorFunc{
+	func(ctx RegisterMutatorsContext) {
+		ctx.TopDown("load_hooks", loadHookMutator).Parallel()
+	},
+	RegisterPrebuiltsPreArchMutators,
+	RegisterDefaultsPreArchMutators,
+}
+
+func registerArchMutator(ctx RegisterMutatorsContext) {
+	ctx.BottomUp("arch", archMutator).Parallel()
+	ctx.TopDown("arch_hooks", archHookMutator).Parallel()
+}
+
+var preDeps = []RegisterMutatorFunc{
+	registerArchMutator,
+}
+
+var postDeps = []RegisterMutatorFunc{
+	RegisterPrebuiltsPostDepsMutators,
+}
 
 func PreArchMutators(f RegisterMutatorFunc) {
 	preArch = append(preArch, f)
@@ -78,8 +107,27 @@ func PostDepsMutators(f RegisterMutatorFunc) {
 type AndroidTopDownMutator func(TopDownMutatorContext)
 
 type TopDownMutatorContext interface {
-	blueprint.TopDownMutatorContext
+	blueprint.BaseModuleContext
 	androidBaseContext
+
+	OtherModuleExists(name string) bool
+	Rename(name string)
+	Module() blueprint.Module
+
+	OtherModuleName(m blueprint.Module) string
+	OtherModuleErrorf(m blueprint.Module, fmt string, args ...interface{})
+	OtherModuleDependencyTag(m blueprint.Module) blueprint.DependencyTag
+
+	CreateModule(blueprint.ModuleFactory, ...interface{})
+
+	GetDirectDepWithTag(name string, tag blueprint.DependencyTag) blueprint.Module
+	GetDirectDep(name string) (blueprint.Module, blueprint.DependencyTag)
+
+	VisitDirectDeps(visit func(Module))
+	VisitDirectDepsIf(pred func(Module) bool, visit func(Module))
+	VisitDepsDepthFirst(visit func(Module))
+	VisitDepsDepthFirstIf(pred func(Module) bool, visit func(Module))
+	WalkDeps(visit func(Module, Module) bool)
 }
 
 type androidTopDownMutatorContext struct {
@@ -99,7 +147,7 @@ type androidBottomUpMutatorContext struct {
 	androidBaseContextImpl
 }
 
-func (registerMutatorsContext) BottomUp(name string, m AndroidBottomUpMutator) MutatorHandle {
+func (x *registerMutatorsContext) BottomUp(name string, m AndroidBottomUpMutator) MutatorHandle {
 	f := func(ctx blueprint.BottomUpMutatorContext) {
 		if a, ok := ctx.Module().(Module); ok {
 			actx := &androidBottomUpMutatorContext{
@@ -110,11 +158,11 @@ func (registerMutatorsContext) BottomUp(name string, m AndroidBottomUpMutator) M
 		}
 	}
 	mutator := &mutator{name: name, bottomUpMutator: f}
-	mutators = append(mutators, mutator)
+	x.mutators = append(x.mutators, mutator)
 	return mutator
 }
 
-func (registerMutatorsContext) TopDown(name string, m AndroidTopDownMutator) MutatorHandle {
+func (x *registerMutatorsContext) TopDown(name string, m AndroidTopDownMutator) MutatorHandle {
 	f := func(ctx blueprint.TopDownMutatorContext) {
 		if a, ok := ctx.Module().(Module); ok {
 			actx := &androidTopDownMutatorContext{
@@ -125,7 +173,7 @@ func (registerMutatorsContext) TopDown(name string, m AndroidTopDownMutator) Mut
 		}
 	}
 	mutator := &mutator{name: name, topDownMutator: f}
-	mutators = append(mutators, mutator)
+	x.mutators = append(x.mutators, mutator)
 	return mutator
 }
 
@@ -142,4 +190,64 @@ func depsMutator(ctx BottomUpMutatorContext) {
 	if m, ok := ctx.Module().(Module); ok {
 		m.DepsMutator(ctx)
 	}
+}
+
+func (a *androidTopDownMutatorContext) VisitDirectDeps(visit func(Module)) {
+	a.TopDownMutatorContext.VisitDirectDeps(func(module blueprint.Module) {
+		if aModule, _ := module.(Module); aModule != nil {
+			visit(aModule)
+		}
+	})
+}
+
+func (a *androidTopDownMutatorContext) VisitDirectDepsIf(pred func(Module) bool, visit func(Module)) {
+	a.TopDownMutatorContext.VisitDirectDepsIf(
+		// pred
+		func(module blueprint.Module) bool {
+			if aModule, _ := module.(Module); aModule != nil {
+				return pred(aModule)
+			} else {
+				return false
+			}
+		},
+		// visit
+		func(module blueprint.Module) {
+			visit(module.(Module))
+		})
+}
+
+func (a *androidTopDownMutatorContext) VisitDepsDepthFirst(visit func(Module)) {
+	a.TopDownMutatorContext.VisitDepsDepthFirst(func(module blueprint.Module) {
+		if aModule, _ := module.(Module); aModule != nil {
+			visit(aModule)
+		}
+	})
+}
+
+func (a *androidTopDownMutatorContext) VisitDepsDepthFirstIf(pred func(Module) bool, visit func(Module)) {
+	a.TopDownMutatorContext.VisitDepsDepthFirstIf(
+		// pred
+		func(module blueprint.Module) bool {
+			if aModule, _ := module.(Module); aModule != nil {
+				return pred(aModule)
+			} else {
+				return false
+			}
+		},
+		// visit
+		func(module blueprint.Module) {
+			visit(module.(Module))
+		})
+}
+
+func (a *androidTopDownMutatorContext) WalkDeps(visit func(Module, Module) bool) {
+	a.TopDownMutatorContext.WalkDeps(func(child, parent blueprint.Module) bool {
+		childAndroidModule, _ := child.(Module)
+		parentAndroidModule, _ := parent.(Module)
+		if childAndroidModule != nil && parentAndroidModule != nil {
+			return visit(childAndroidModule, parentAndroidModule)
+		} else {
+			return false
+		}
+	})
 }

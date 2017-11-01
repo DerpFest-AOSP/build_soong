@@ -36,6 +36,8 @@ func CheckBadCompilerFlags(ctx BaseModuleContext, prop string, flags []string) {
 			ctx.PropertyErrorf(prop, "Bad flag `%s`, use local_include_dirs or include_dirs instead", flag)
 		} else if inList(flag, config.IllegalFlags) {
 			ctx.PropertyErrorf(prop, "Illegal flag `%s`", flag)
+		} else if flag == "--coverage" {
+			ctx.PropertyErrorf(prop, "Bad flag: `%s`, use native_coverage instead", flag)
 		} else if strings.Contains(flag, " ") {
 			args := strings.Split(flag, " ")
 			if args[0] == "-include" {
@@ -48,6 +50,11 @@ func CheckBadCompilerFlags(ctx BaseModuleContext, prop string, flags []string) {
 				} else if strings.HasPrefix("../", path) {
 					ctx.PropertyErrorf(prop, "Path must not start with `../`: `%s`. Use include_dirs to -include from a different directory", flag)
 				}
+			} else if strings.HasPrefix(flag, "-D") && strings.Contains(flag, "=") {
+				// Do nothing in this case.
+				// For now, we allow space characters in -DNAME=def form to allow use cases
+				// like -DNAME="value with string". Later, this check should be done more
+				// correctly to prevent multi flag cases like -DNAME=value -O2.
 			} else {
 				ctx.PropertyErrorf(prop, "Bad flag: `%s` is not an allowed multi-word flag. Should it be split into multiple flags?", flag)
 			}
@@ -73,6 +80,8 @@ func CheckBadLinkerFlags(ctx BaseModuleContext, prop string, flags []string) {
 			ctx.PropertyErrorf(prop, "Bad flag: `%s` is not allowed", flag)
 		} else if strings.HasPrefix(flag, "-Wl,--version-script") {
 			ctx.PropertyErrorf(prop, "Bad flag: `%s`, use version_script instead", flag)
+		} else if flag == "--coverage" {
+			ctx.PropertyErrorf(prop, "Bad flag: `%s`, use native_coverage instead", flag)
 		} else if strings.Contains(flag, " ") {
 			args := strings.Split(flag, " ")
 			if args[0] == "-z" {

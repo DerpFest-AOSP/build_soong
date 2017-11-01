@@ -60,15 +60,12 @@ var (
 		"-Wl,--build-id=md5",
 		"-Wl,--warn-shared-textrel",
 		"-Wl,--fatal-warnings",
-		"-Wl,-maarch64linux",
+		"-Wl,-m,aarch64_elf64_le_vec",
 		"-Wl,--hash-style=gnu",
 		"-Wl,--fix-cortex-a53-843419",
 		"-fuse-ld=gold",
 		"-Wl,--icf=safe",
 		"-Wl,--no-undefined-version",
-
-		// Disable transitive dependency library symbol resolving.
-		"-Wl,--allow-shlib-undefined",
 	}
 
 	arm64Cppflags = []string{
@@ -78,6 +75,17 @@ var (
 	arm64CpuVariantCflags = map[string][]string{
 		"cortex-a53": []string{
 			"-mcpu=cortex-a53",
+		},
+		"kryo": []string{
+			// Use the cortex-a57 cpu since some compilers
+			// don't support a Kryo specific target yet.
+			"-mcpu=cortex-a57",
+		},
+		"exynos-m1": []string{
+			"-mcpu=exynos-m1",
+		},
+		"exynos-m2": []string{
+			"-mcpu=exynos-m2",
 		},
 	}
 
@@ -91,8 +99,15 @@ const (
 func init() {
 	android.RegisterArchVariants(android.Arm64,
 		"armv8_a",
-		"cortex_a53",
+		"cortex-a53",
+		"cortex-a73",
+		"kryo",
+		"exynos-m1",
+		"exynos-m2",
 		"denver64")
+
+	// Clang supports specific Kryo targeting
+	replaceFirst(arm64ClangCpuVariantCflags["kryo"], "-mcpu=cortex-a57", "-mcpu=kryo")
 
 	pctx.StaticVariable("arm64GccVersion", arm64GccVersion)
 
@@ -102,7 +117,7 @@ func init() {
 	pctx.StaticVariable("Arm64Cflags", strings.Join(arm64Cflags, " "))
 	pctx.StaticVariable("Arm64Ldflags", strings.Join(arm64Ldflags, " "))
 	pctx.StaticVariable("Arm64Cppflags", strings.Join(arm64Cppflags, " "))
-	pctx.StaticVariable("Arm64IncludeFlags", bionicHeaders("arm64", "arm64"))
+	pctx.StaticVariable("Arm64IncludeFlags", bionicHeaders("arm64"))
 
 	pctx.StaticVariable("Arm64ClangCflags", strings.Join(ClangFilterUnknownCflags(arm64Cflags), " "))
 	pctx.StaticVariable("Arm64ClangLdflags", strings.Join(ClangFilterUnknownCflags(arm64Ldflags), " "))
@@ -112,17 +127,40 @@ func init() {
 		strings.Join(arm64CpuVariantCflags["cortex-a53"], " "))
 	pctx.StaticVariable("Arm64ClangCortexA53Cflags",
 		strings.Join(arm64ClangCpuVariantCflags["cortex-a53"], " "))
+
+	pctx.StaticVariable("Arm64KryoCflags",
+		strings.Join(arm64CpuVariantCflags["kryo"], " "))
+	pctx.StaticVariable("Arm64ClangKryoCflags",
+		strings.Join(arm64ClangCpuVariantCflags["kryo"], " "))
+
+	pctx.StaticVariable("Arm64ExynosM1Cflags",
+		strings.Join(arm64CpuVariantCflags["cortex-a53"], " "))
+	pctx.StaticVariable("Arm64ClangExynosM1Cflags",
+		strings.Join(arm64ClangCpuVariantCflags["exynos-m1"], " "))
+
+	pctx.StaticVariable("Arm64ExynosM2Cflags",
+		strings.Join(arm64CpuVariantCflags["cortex-a53"], " "))
+	pctx.StaticVariable("Arm64ClangExynosM2Cflags",
+		strings.Join(arm64ClangCpuVariantCflags["exynos-m2"], " "))
 }
 
 var (
 	arm64CpuVariantCflagsVar = map[string]string{
 		"":           "",
 		"cortex-a53": "${config.Arm64CortexA53Cflags}",
+		"cortex-a73": "${config.Arm64CortexA53Cflags}",
+		"kryo":       "${config.Arm64KryoCflags}",
+		"exynos-m1":  "${config.Arm64ExynosM1Cflags}",
+		"exynos-m2":  "${config.Arm64ExynosM2Cflags}",
 	}
 
 	arm64ClangCpuVariantCflagsVar = map[string]string{
 		"":           "",
 		"cortex-a53": "${config.Arm64ClangCortexA53Cflags}",
+		"cortex-a73": "${config.Arm64ClangCortexA53Cflags}",
+		"kryo":       "${config.Arm64ClangKryoCflags}",
+		"exynos-m1":  "${config.Arm64ClangExynosM1Cflags}",
+		"exynos-m2":  "${config.Arm64ClangExynosM2Cflags}",
 	}
 )
 

@@ -15,6 +15,9 @@
 package android
 
 import (
+	"os"
+	"strings"
+
 	"android/soong/env"
 
 	"github.com/google/blueprint"
@@ -27,8 +30,17 @@ import (
 // compare the contents of the environment variables, rewriting the file if necessary to cause
 // a manifest regeneration.
 
+var originalEnv map[string]string
+
 func init() {
-	RegisterSingletonType("env", EnvSingleton)
+	originalEnv = make(map[string]string)
+	for _, env := range os.Environ() {
+		idx := strings.IndexRune(env, '=')
+		if idx != -1 {
+			originalEnv[env[:idx]] = env[idx+1:]
+		}
+	}
+	os.Clearenv()
 }
 
 func EnvSingleton() blueprint.Singleton {

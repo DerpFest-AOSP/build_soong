@@ -69,6 +69,7 @@ var (
 
 	windowsX86Ldflags = []string{
 		"-m32",
+		"-Wl,--large-address-aware",
 		"-L${WindowsGccRoot}/${WindowsGccTriple}/lib32",
 	}
 
@@ -80,7 +81,10 @@ var (
 	windowsAvailableLibraries = addPrefix([]string{
 		"gdi32",
 		"imagehlp",
+		"iphlpapi",
+		"netapi32",
 		"ole32",
+		"powrprof",
 		"psapi",
 		"pthread",
 		"userenv",
@@ -169,6 +173,14 @@ func (t *toolchainWindowsX8664) Ldflags() string {
 
 func (t *toolchainWindows) IncludeFlags() string {
 	return "${config.WindowsIncludeFlags}"
+}
+
+func (t *toolchainWindowsX86) WindresFlags() string {
+	return "-F pe-i386"
+}
+
+func (t *toolchainWindowsX8664) WindresFlags() string {
+	return "-F pe-x86-64"
 }
 
 func (t *toolchainWindows) ClangSupported() bool {

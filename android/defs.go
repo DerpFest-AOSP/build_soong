@@ -47,7 +47,14 @@ var (
 	// A copy rule.
 	Cp = pctx.AndroidStaticRule("Cp",
 		blueprint.RuleParams{
-			Command:     "cp $cpPreserveSymlinks $cpFlags $in $out",
+			Command:     "rm -f $out && cp $cpPreserveSymlinks $cpFlags $in $out",
+			Description: "cp $out",
+		},
+		"cpFlags")
+
+	CpExecutable = pctx.AndroidStaticRule("CpExecutable",
+		blueprint.RuleParams{
+			Command:     "rm -f $out && cp $cpPreserveSymlinks $cpFlags $in $out && chmod +x $out",
 			Description: "cp $out",
 		},
 		"cpFlags")
@@ -79,6 +86,16 @@ var (
 			Command:     "cat $in > $out",
 			Description: "concatenate licenses $out",
 		})
+
+	// ubuntu 14.04 offcially use dash for /bin/sh, and its builtin echo command
+	// doesn't support -e option. Therefore we force to use /bin/bash when writing out
+	// content to file.
+	WriteFile = pctx.AndroidStaticRule("WriteFile",
+		blueprint.RuleParams{
+			Command:     "/bin/bash -c 'echo -e $$0 > $out' '$content'",
+			Description: "writing file $out",
+		},
+		"content")
 
 	// Used only when USE_GOMA=true is set, to restrict non-goma jobs to the local parallelism value
 	localPool = blueprint.NewBuiltinPool("local_pool")

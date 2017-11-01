@@ -15,7 +15,6 @@
 package cc
 
 import (
-	"github.com/google/blueprint"
 	"github.com/google/blueprint/proptools"
 
 	"android/soong/android"
@@ -34,12 +33,18 @@ type BinaryLinkerProperties struct {
 	// if set, add an extra objcopy --prefix-symbols= step
 	Prefix_symbols string
 
+	// local file name to pass to the linker as --version_script
+	Version_script *string `android:"arch_variant"`
+
 	// if set, install a symlink to the preferred architecture
 	Symlink_preferred_arch bool
 
 	// install symlinks to the binary.  Symlink names will have the suffix and the binary
 	// extension (if any) appended
 	Symlinks []string `android:"arch_variant"`
+
+	// do not pass -pie
+	No_pie *bool `android:"arch_variant"`
 
 	DynamicLinker string `blueprint:"mutated"`
 }
@@ -50,13 +55,13 @@ func init() {
 }
 
 // Module factory for binaries
-func binaryFactory() (blueprint.Module, []interface{}) {
+func binaryFactory() android.Module {
 	module, _ := NewBinary(android.HostAndDeviceSupported)
 	return module.Init()
 }
 
 // Module factory for host binaries
-func binaryHostFactory() (blueprint.Module, []interface{}) {
+func binaryHostFactory() android.Module {
 	module, _ := NewBinary(android.HostSupported)
 	return module.Init()
 }
@@ -76,6 +81,9 @@ type binaryDecorator struct {
 
 	// Names of symlinks to be installed for use in LOCAL_MODULE_SYMLINKS
 	symlinks []string
+
+	// Output archive of gcno coverage information
+	coverageOutputFile android.OptionalPath
 }
 
 var _ linker = (*binaryDecorator)(nil)
@@ -100,7 +108,7 @@ func (binary *binaryDecorator) linkerDeps(ctx DepsContext, deps Deps) Deps {
 	deps = binary.baseLinker.linkerDeps(ctx, deps)
 	if ctx.toolchain().Bionic() {
 		if !Bool(binary.baseLinker.Properties.Nocrt) {
-			if !ctx.sdk() && !ctx.vndk() {
+			if !ctx.useSdk() {
 				if binary.static() {
 					deps.CrtBegin = "crtbegin_static"
 				} else {
@@ -114,7 +122,7 @@ func (binary *binaryDecorator) linkerDeps(ctx DepsContext, deps Deps) Deps {
 				// version.
 				version := ctx.sdkVersion()
 				if version == "current" {
-					version = ctx.AConfig().PlatformSdkVersion()
+					version = getCurrentNdkPrebuiltVersion(ctx)
 				}
 
 				if binary.static() {
@@ -131,7 +139,7 @@ func (binary *binaryDecorator) linkerDeps(ctx DepsContext, deps Deps) Deps {
 		}
 
 		if binary.static() {
-			if inList("libc++_static", deps.StaticLibs) {
+			if ctx.selectedStl() == "libc++_static" {
 				deps.StaticLibs = append(deps.StaticLibs, "libm", "libc", "libdl")
 			}
 			// static libraries libcompiler_rt, libc and libc_nomalloc need to be linked with
@@ -141,6 +149,10 @@ func (binary *binaryDecorator) linkerDeps(ctx DepsContext, deps Deps) Deps {
 			deps.StaticLibs, groupLibs = filterList(deps.StaticLibs,
 				[]string{"libc", "libc_nomalloc", "libcompiler_rt"})
 			deps.LateStaticLibs = append(groupLibs, deps.LateStaticLibs...)
+		}
+
+		if ctx.Os() == android.LinuxBionic && !binary.static() {
+			deps.LinkerScript = "host_bionic_linker_script"
 		}
 	}
 
@@ -194,17 +206,19 @@ func (binary *binaryDecorator) linkerFlags(ctx ModuleContext, flags Flags) Flags
 	flags = binary.baseLinker.linkerFlags(ctx, flags)
 
 	if ctx.Host() && !binary.static() {
-		flags.LdFlags = append(flags.LdFlags, "-pie")
-		if ctx.Os() == android.Windows {
-			flags.LdFlags = append(flags.LdFlags, "-Wl,-e_mainCRTStartup")
+		if !ctx.AConfig().IsEnvTrue("DISABLE_HOST_PIE") {
+			flags.LdFlags = append(flags.LdFlags, "-pie")
+			if ctx.Windows() {
+				flags.LdFlags = append(flags.LdFlags, "-Wl,-e_mainCRTStartup")
+			}
 		}
 	}
 
 	// MinGW spits out warnings about -fPIC even for -fpie?!) being ignored because
 	// all code is position independent, and then those warnings get promoted to
 	// errors.
-	if ctx.Os() != android.Windows {
-		flags.CFlags = append(flags.CFlags, "-fpie")
+	if !ctx.Windows() {
+		flags.CFlags = append(flags.CFlags, "-fPIE")
 	}
 
 	if ctx.toolchain().Bionic() {
@@ -222,13 +236,19 @@ func (binary *binaryDecorator) linkerFlags(ctx ModuleContext, flags Flags) Flags
 				"-Bstatic",
 				"-Wl,--gc-sections",
 			)
-
 		} else {
 			if flags.DynamicLinker == "" {
 				if binary.Properties.DynamicLinker != "" {
 					flags.DynamicLinker = binary.Properties.DynamicLinker
 				} else {
-					flags.DynamicLinker = "/system/bin/linker"
+					switch ctx.Os() {
+					case android.Android:
+						flags.DynamicLinker = "/system/bin/linker"
+					case android.LinuxBionic:
+						flags.DynamicLinker = ""
+					default:
+						ctx.ModuleErrorf("unknown dynamic linker")
+					}
 					if flags.Toolchain.Is64Bit() {
 						flags.DynamicLinker += "64"
 					}
@@ -242,6 +262,7 @@ func (binary *binaryDecorator) linkerFlags(ctx ModuleContext, flags Flags) Flags
 				"-Wl,--gc-sections",
 				"-Wl,-z,nocopyreloc",
 			)
+
 		}
 	} else {
 		if binary.static() {
@@ -258,6 +279,7 @@ func (binary *binaryDecorator) linkerFlags(ctx ModuleContext, flags Flags) Flags
 func (binary *binaryDecorator) link(ctx ModuleContext,
 	flags Flags, deps PathDeps, objs Objects) android.Path {
 
+	versionScript := android.OptionalPathForModuleSrc(ctx, binary.Properties.Version_script)
 	fileName := binary.getStem(ctx) + flags.Toolchain.ExecutableSuffix()
 	outputFile := android.PathForModuleOut(ctx, fileName)
 	ret := outputFile
@@ -266,6 +288,20 @@ func (binary *binaryDecorator) link(ctx ModuleContext,
 
 	sharedLibs := deps.SharedLibs
 	sharedLibs = append(sharedLibs, deps.LateSharedLibs...)
+
+	if versionScript.Valid() {
+		if ctx.Darwin() {
+			ctx.PropertyErrorf("version_script", "Not supported on Darwin")
+		} else {
+			flags.LdFlags = append(flags.LdFlags, "-Wl,--version-script,"+versionScript.String())
+			linkerDeps = append(linkerDeps, versionScript.Path())
+		}
+	}
+
+	if deps.LinkerScript.Valid() {
+		flags.LdFlags = append(flags.LdFlags, "-Wl,-T,"+deps.LinkerScript.String())
+		linkerDeps = append(linkerDeps, deps.LinkerScript.Path())
+	}
 
 	if flags.DynamicLinker != "" {
 		flags.LdFlags = append(flags.LdFlags, " -Wl,-dynamic-linker,"+flags.DynamicLinker)
@@ -289,10 +325,15 @@ func (binary *binaryDecorator) link(ctx ModuleContext,
 	linkerDeps = append(linkerDeps, deps.SharedLibsDeps...)
 	linkerDeps = append(linkerDeps, deps.LateSharedLibsDeps...)
 	linkerDeps = append(linkerDeps, objs.tidyFiles...)
+	linkerDeps = append(linkerDeps, flags.LdFlagsDeps...)
 
 	TransformObjToDynamicBinary(ctx, objs.objFiles, sharedLibs, deps.StaticLibs,
 		deps.LateStaticLibs, deps.WholeStaticLibs, linkerDeps, deps.CrtBegin, deps.CrtEnd, true,
 		builderFlags, outputFile)
+
+	objs.coverageFiles = append(objs.coverageFiles, deps.StaticLibObjs.coverageFiles...)
+	objs.coverageFiles = append(objs.coverageFiles, deps.WholeStaticLibObjs.coverageFiles...)
+	binary.coverageOutputFile = TransformCoverageFilesToLib(ctx, objs, builderFlags, binary.getStem(ctx))
 
 	return ret
 }

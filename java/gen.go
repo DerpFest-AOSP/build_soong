@@ -37,7 +37,6 @@ var (
 		blueprint.RuleParams{
 			Command:     "$aidlCmd -d$depFile $aidlFlags $in $out",
 			CommandDeps: []string{"$aidlCmd"},
-			Description: "aidl $out",
 		},
 		"depFile", "aidlFlags")
 
@@ -45,14 +44,12 @@ var (
 		blueprint.RuleParams{
 			Command:     "$logtagsCmd -o $out $in $allLogtagsFile",
 			CommandDeps: []string{"$logtagsCmd"},
-			Description: "logtags $out",
 		})
 
 	mergeLogtags = pctx.AndroidStaticRule("mergeLogtags",
 		blueprint.RuleParams{
 			Command:     "$mergeLogtagsCmd -o $out $in",
 			CommandDeps: []string{"$mergeLogtagsCmd"},
-			Description: "merge logtags $out",
 		})
 )
 
@@ -60,10 +57,11 @@ func genAidl(ctx android.ModuleContext, aidlFile android.Path, aidlFlags string)
 	javaFile := android.GenPathWithExt(ctx, "aidl", aidlFile, "java")
 	depFile := javaFile.String() + ".d"
 
-	ctx.ModuleBuild(pctx, android.ModuleBuildParams{
-		Rule:   aidl,
-		Output: javaFile,
-		Input:  aidlFile,
+	ctx.Build(pctx, android.BuildParams{
+		Rule:        aidl,
+		Description: "aidl " + aidlFile.Rel(),
+		Output:      javaFile,
+		Input:       aidlFile,
 		Args: map[string]string{
 			"depFile":   depFile,
 			"aidlFlags": aidlFlags,
@@ -76,31 +74,49 @@ func genAidl(ctx android.ModuleContext, aidlFile android.Path, aidlFlags string)
 func genLogtags(ctx android.ModuleContext, logtagsFile android.Path) android.Path {
 	javaFile := android.GenPathWithExt(ctx, "logtags", logtagsFile, "java")
 
-	ctx.ModuleBuild(pctx, android.ModuleBuildParams{
-		Rule:   logtags,
-		Output: javaFile,
-		Input:  logtagsFile,
+	ctx.Build(pctx, android.BuildParams{
+		Rule:        logtags,
+		Description: "logtags " + logtagsFile.Rel(),
+		Output:      javaFile,
+		Input:       logtagsFile,
 	})
 
 	return javaFile
 }
 
-func (j *javaBase) genSources(ctx android.ModuleContext, srcFiles android.Paths,
-	flags javaBuilderFlags) android.Paths {
+func (j *Module) genSources(ctx android.ModuleContext, srcFiles android.Paths,
+	flags javaBuilderFlags) (android.Paths, android.Paths) {
 
-	for i, srcFile := range srcFiles {
+	var protoFiles android.Paths
+	outSrcFiles := make(android.Paths, 0, len(srcFiles))
+
+	for _, srcFile := range srcFiles {
 		switch srcFile.Ext() {
 		case ".aidl":
 			javaFile := genAidl(ctx, srcFile, flags.aidlFlags)
-			srcFiles[i] = javaFile
+			outSrcFiles = append(outSrcFiles, javaFile)
 		case ".logtags":
 			j.logtagsSrcs = append(j.logtagsSrcs, srcFile)
 			javaFile := genLogtags(ctx, srcFile)
-			srcFiles[i] = javaFile
+			outSrcFiles = append(outSrcFiles, javaFile)
+		case ".proto":
+			protoFiles = append(protoFiles, srcFile)
+		default:
+			outSrcFiles = append(outSrcFiles, srcFile)
 		}
 	}
 
-	return srcFiles
+	var outSrcJars android.Paths
+
+	if len(protoFiles) > 0 {
+		protoSrcJar := android.PathForModuleGen(ctx, "proto.src.jar")
+		genProto(ctx, protoSrcJar, protoFiles,
+			flags.protoFlags, flags.protoOutFlag, "")
+
+		outSrcJars = append(outSrcJars, protoSrcJar)
+	}
+
+	return outSrcFiles, outSrcJars
 }
 
 func LogtagsSingleton() blueprint.Singleton {
@@ -122,8 +138,9 @@ func (l *logtagsSingleton) GenerateBuildActions(ctx blueprint.SingletonContext) 
 	})
 
 	ctx.Build(pctx, blueprint.BuildParams{
-		Rule:    mergeLogtags,
-		Outputs: []string{"$allLogtagsFile"},
-		Inputs:  allLogtags.Strings(),
+		Rule:        mergeLogtags,
+		Description: "merge logtags",
+		Outputs:     []string{"$allLogtagsFile"},
+		Inputs:      allLogtags.Strings(),
 	})
 }

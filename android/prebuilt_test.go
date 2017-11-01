@@ -118,13 +118,16 @@ func TestPrebuilts(t *testing.T) {
 	}
 	defer os.RemoveAll(buildDir)
 
-	config := TestConfig(buildDir)
+	config := TestConfig(buildDir, nil)
 
 	for _, test := range prebuiltsTests {
 		t.Run(test.name, func(t *testing.T) {
-			ctx := NewContext()
-			ctx.RegisterModuleType("prebuilt", newPrebuiltModule)
-			ctx.RegisterModuleType("source", newSourceModule)
+			ctx := NewTestContext()
+			ctx.PreArchMutators(RegisterPrebuiltsPreArchMutators)
+			ctx.PostDepsMutators(RegisterPrebuiltsPostDepsMutators)
+			ctx.RegisterModuleType("prebuilt", ModuleFactoryAdaptor(newPrebuiltModule))
+			ctx.RegisterModuleType("source", ModuleFactoryAdaptor(newSourceModule))
+			ctx.Register()
 			ctx.MockFileSystem(map[string][]byte{
 				"Blueprints": []byte(`
 					source {
@@ -139,25 +142,35 @@ func TestPrebuilts(t *testing.T) {
 			_, errs = ctx.PrepareBuildActions(config)
 			fail(t, errs)
 
-			foo := findModule(ctx, "foo")
-			if foo == nil {
-				t.Fatalf("failed to find module foo")
-			}
+			foo := ctx.ModuleForTests("foo", "")
+
+			var dependsOnSourceModule, dependsOnPrebuiltModule bool
+			ctx.VisitDirectDeps(foo.Module(), func(m blueprint.Module) {
+				if _, ok := m.(*sourceModule); ok {
+					dependsOnSourceModule = true
+				}
+				if p, ok := m.(*prebuiltModule); ok {
+					dependsOnPrebuiltModule = true
+					if !p.Prebuilt().properties.UsePrebuilt {
+						t.Errorf("dependency on prebuilt module not marked used")
+					}
+				}
+			})
 
 			if test.prebuilt {
-				if !foo.(*sourceModule).dependsOnPrebuiltModule {
+				if !dependsOnPrebuiltModule {
 					t.Errorf("doesn't depend on prebuilt module")
 				}
 
-				if foo.(*sourceModule).dependsOnSourceModule {
+				if dependsOnSourceModule {
 					t.Errorf("depends on source module")
 				}
 			} else {
-				if foo.(*sourceModule).dependsOnPrebuiltModule {
+				if dependsOnPrebuiltModule {
 					t.Errorf("depends on prebuilt module")
 				}
 
-				if !foo.(*sourceModule).dependsOnSourceModule {
+				if !dependsOnSourceModule {
 					t.Errorf("doens't depend on source module")
 				}
 			}
@@ -167,12 +180,18 @@ func TestPrebuilts(t *testing.T) {
 
 type prebuiltModule struct {
 	ModuleBase
-	prebuilt Prebuilt
+	prebuilt   Prebuilt
+	properties struct {
+		Srcs []string
+	}
 }
 
-func newPrebuiltModule() (blueprint.Module, []interface{}) {
+func newPrebuiltModule() Module {
 	m := &prebuiltModule{}
-	return InitAndroidModule(m, &m.prebuilt.Properties)
+	m.AddProperties(&m.properties)
+	InitPrebuiltModule(m, &m.properties.Srcs)
+	InitAndroidModule(m)
+	return m
 }
 
 func (p *prebuiltModule) Name() string {
@@ -197,9 +216,11 @@ type sourceModule struct {
 	dependsOnSourceModule, dependsOnPrebuiltModule bool
 }
 
-func newSourceModule() (blueprint.Module, []interface{}) {
+func newSourceModule() Module {
 	m := &sourceModule{}
-	return InitAndroidModule(m, &m.properties)
+	m.AddProperties(&m.properties)
+	InitAndroidModule(m)
+	return m
 }
 
 func (s *sourceModule) DepsMutator(ctx BottomUpMutatorContext) {
@@ -209,24 +230,6 @@ func (s *sourceModule) DepsMutator(ctx BottomUpMutatorContext) {
 }
 
 func (s *sourceModule) GenerateAndroidBuildActions(ctx ModuleContext) {
-	ctx.VisitDirectDeps(func(m blueprint.Module) {
-		if _, ok := m.(*sourceModule); ok {
-			s.dependsOnSourceModule = true
-		}
-		if _, ok := m.(*prebuiltModule); ok {
-			s.dependsOnPrebuiltModule = true
-		}
-	})
-}
-
-func findModule(ctx *blueprint.Context, name string) blueprint.Module {
-	var ret blueprint.Module
-	ctx.VisitAllModules(func(m blueprint.Module) {
-		if ctx.ModuleName(m) == name {
-			ret = m
-		}
-	})
-	return ret
 }
 
 func fail(t *testing.T, errs []error) {

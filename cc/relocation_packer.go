@@ -30,7 +30,6 @@ var relocationPackerRule = pctx.AndroidStaticRule("packRelocations",
 	blueprint.RuleParams{
 		Command:     "rm -f $out && cp $in $out && $relocationPackerCmd $out",
 		CommandDeps: []string{"$relocationPackerCmd"},
-		Description: "pack relocations $out",
 	})
 
 type RelocationPackerProperties struct {
@@ -57,7 +56,7 @@ func (p *relocationPacker) packingInit(ctx BaseModuleContext) {
 	if ctx.AConfig().Getenv("DISABLE_RELOCATION_PACKER") == "true" {
 		enabled = false
 	}
-	if ctx.sdk() {
+	if ctx.useSdk() {
 		enabled = false
 	}
 	if p.Properties.Pack_relocations != nil &&
@@ -76,9 +75,10 @@ func (p *relocationPacker) needsPacking(ctx ModuleContext) bool {
 }
 
 func (p *relocationPacker) pack(ctx ModuleContext, in, out android.ModuleOutPath, flags builderFlags) {
-	ctx.ModuleBuild(pctx, android.ModuleBuildParams{
-		Rule:   relocationPackerRule,
-		Output: out,
-		Input:  in,
+	ctx.Build(pctx, android.BuildParams{
+		Rule:        relocationPackerRule,
+		Description: "pack relocations",
+		Output:      out,
+		Input:       in,
 	})
 }

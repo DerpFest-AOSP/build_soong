@@ -16,8 +16,10 @@ package android
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/google/blueprint"
+	"github.com/google/blueprint/pathtools"
 )
 
 // AndroidPackageContext is a wrapper for blueprint.PackageContext that adds
@@ -55,6 +57,10 @@ func (e *configErrorWrapper) AddNinjaFileDeps(deps ...string) {
 	e.pctx.AddNinjaFileDeps(deps...)
 }
 
+func (e *configErrorWrapper) Fs() pathtools.FileSystem {
+	return nil
+}
+
 // SourcePathVariable returns a Variable whose value is the source directory
 // appended with the supplied path. It may only be called during a Go package's
 // initialization - either from the init() function or as part of a
@@ -70,19 +76,62 @@ func (p AndroidPackageContext) SourcePathVariable(name, path string) blueprint.V
 	})
 }
 
+// SourcePathsVariable returns a Variable whose value is the source directory
+// appended with the supplied paths, joined with separator. It may only be
+// called during a Go package's initialization - either from the init()
+// function or as part of a package-scoped variable's initialization.
+func (p AndroidPackageContext) SourcePathsVariable(name, separator string, paths ...string) blueprint.Variable {
+	return p.VariableFunc(name, func(config interface{}) (string, error) {
+		ctx := &configErrorWrapper{p, config.(Config), []error{}}
+		var ret []string
+		for _, path := range paths {
+			p := safePathForSource(ctx, path)
+			if len(ctx.errors) > 0 {
+				return "", ctx.errors[0]
+			}
+			ret = append(ret, p.String())
+		}
+		return strings.Join(ret, separator), nil
+	})
+}
+
+// SourcePathVariableWithEnvOverride returns a Variable whose value is the source directory
+// appended with the supplied path, or the value of the given environment variable if it is set.
+// The environment variable is not required to point to a path inside the source tree.
+// It may only be called during a Go package's initialization - either from the init() function or
+// as part of a package-scoped variable's initialization.
+func (p AndroidPackageContext) SourcePathVariableWithEnvOverride(name, path, env string) blueprint.Variable {
+	return p.VariableFunc(name, func(config interface{}) (string, error) {
+		ctx := &configErrorWrapper{p, config.(Config), []error{}}
+		p := safePathForSource(ctx, path)
+		if len(ctx.errors) > 0 {
+			return "", ctx.errors[0]
+		}
+		return config.(Config).GetenvWithDefault(env, p.String()), nil
+	})
+}
+
 // HostBinVariable returns a Variable whose value is the path to a host tool
 // in the bin directory for host targets. It may only be called during a Go
 // package's initialization - either from the init() function or as part of a
 // package-scoped variable's initialization.
 func (p AndroidPackageContext) HostBinToolVariable(name, path string) blueprint.Variable {
 	return p.VariableFunc(name, func(config interface{}) (string, error) {
-		ctx := &configErrorWrapper{p, config.(Config), []error{}}
-		p := PathForOutput(ctx, "host", ctx.config.PrebuiltOS(), "bin", path)
-		if len(ctx.errors) > 0 {
-			return "", ctx.errors[0]
+		po, err := p.HostBinToolPath(config, path)
+		if err != nil {
+			return "", err
 		}
-		return p.String(), nil
+		return po.String(), nil
 	})
+}
+
+func (p AndroidPackageContext) HostBinToolPath(config interface{}, path string) (Path, error) {
+	ctx := &configErrorWrapper{p, config.(Config), []error{}}
+	pa := PathForOutput(ctx, "host", ctx.config.PrebuiltOS(), "bin", path)
+	if len(ctx.errors) > 0 {
+		return nil, ctx.errors[0]
+	}
+	return pa, nil
 }
 
 // HostJavaToolVariable returns a Variable whose value is the path to a host
@@ -100,6 +149,15 @@ func (p AndroidPackageContext) HostJavaToolVariable(name, path string) blueprint
 	})
 }
 
+func (p AndroidPackageContext) HostJavaToolPath(config interface{}, path string) (Path, error) {
+	ctx := &configErrorWrapper{p, config.(Config), []error{}}
+	pa := PathForOutput(ctx, "host", ctx.config.PrebuiltOS(), "framework", path)
+	if len(ctx.errors) > 0 {
+		return nil, ctx.errors[0]
+	}
+	return pa, nil
+}
+
 // IntermediatesPathVariable returns a Variable whose value is the intermediate
 // directory appended with the supplied path. It may only be called during a Go
 // package's initialization - either from the init() function or as part of a
@@ -115,16 +173,16 @@ func (p AndroidPackageContext) IntermediatesPathVariable(name, path string) blue
 	})
 }
 
-// PrefixedPathsForOptionalSourceVariable returns a Variable whose value is the
+// PrefixedExistentPathsForSourcesVariable returns a Variable whose value is the
 // list of present source paths prefixed with the supplied prefix. It may only
 // be called during a Go package's initialization - either from the init()
 // function or as part of a package-scoped variable's initialization.
-func (p AndroidPackageContext) PrefixedPathsForOptionalSourceVariable(
+func (p AndroidPackageContext) PrefixedExistentPathsForSourcesVariable(
 	name, prefix string, paths []string) blueprint.Variable {
 
 	return p.VariableFunc(name, func(config interface{}) (string, error) {
 		ctx := &configErrorWrapper{p, config.(Config), []error{}}
-		paths := PathsForOptionalSource(ctx, "", paths)
+		paths := ExistentPathsForSources(ctx, "", paths)
 		if len(ctx.errors) > 0 {
 			return "", ctx.errors[0]
 		}

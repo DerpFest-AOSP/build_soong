@@ -15,14 +15,16 @@
 package config
 
 import (
+	"fmt"
+	"runtime"
 	"strings"
 
 	"android/soong/android"
 )
 
-// Flags used by lots of devices.  Putting them in package static variables will save bytes in
-// build.ninja so they aren't repeated for every file
 var (
+	// Flags used by lots of devices.  Putting them in package static variables
+	// will save bytes in build.ninja so they aren't repeated for every file
 	commonGlobalCflags = []string{
 		"-DANDROID",
 		"-fmessage-length=0",
@@ -65,9 +67,18 @@ var (
 		"-w",
 	}
 
-	CStdVersion      = "gnu99"
-	CppStdVersion    = "gnu++14"
-	GccCppStdVersion = "gnu++11"
+	CStdVersion               = "gnu99"
+	CppStdVersion             = "gnu++14"
+	GccCppStdVersion          = "gnu++11"
+	ExperimentalCStdVersion   = "gnu11"
+	ExperimentalCppStdVersion = "gnu++1z"
+
+	NdkMaxPrebuiltVersionInt = 24
+
+	// prebuilts/clang default settings.
+	ClangDefaultBase         = "prebuilts/clang/host"
+	ClangDefaultVersion      = "clang-4393122"
+	ClangDefaultShortVersion = "5.0.1"
 )
 
 var pctx = android.NewPackageContext("android/soong/cc/config")
@@ -99,7 +110,7 @@ func init() {
 
 	// Everything in these lists is a crime against abstraction and dependency tracking.
 	// Do not add anything to this list.
-	pctx.PrefixedPathsForOptionalSourceVariable("CommonGlobalIncludes", "-I",
+	pctx.PrefixedExistentPathsForSourcesVariable("CommonGlobalIncludes", "-I",
 		[]string{
 			"system/core/include",
 			"system/media/audio/include",
@@ -109,17 +120,14 @@ func init() {
 			"libnativehelper/include",
 			"frameworks/native/include",
 			"frameworks/native/opengl/include",
-		})
-	pctx.PrefixedPathsForOptionalSourceVariable("CommonGlobalSystemIncludes", "-isystem ",
-		[]string{
 			"frameworks/av/include",
 		})
 	// This is used by non-NDK modules to get jni.h. export_include_dirs doesn't help
 	// with this, since there is no associated library.
-	pctx.PrefixedPathsForOptionalSourceVariable("CommonNativehelperInclude", "-I",
-		[]string{"libnativehelper/include/nativehelper"})
+	pctx.PrefixedExistentPathsForSourcesVariable("CommonNativehelperInclude", "-I",
+		[]string{"libnativehelper/include_deprecated"})
 
-	pctx.SourcePathVariable("ClangDefaultBase", "prebuilts/clang/host")
+	pctx.SourcePathVariable("ClangDefaultBase", ClangDefaultBase)
 	pctx.VariableFunc("ClangBase", func(config interface{}) (string, error) {
 		if override := config.(android.Config).Getenv("LLVM_PREBUILTS_BASE"); override != "" {
 			return override, nil
@@ -130,7 +138,7 @@ func init() {
 		if override := config.(android.Config).Getenv("LLVM_PREBUILTS_VERSION"); override != "" {
 			return override, nil
 		}
-		return "clang-3289846", nil
+		return ClangDefaultVersion, nil
 	})
 	pctx.StaticVariable("ClangPath", "${ClangBase}/${HostPrebuiltTag}/${ClangVersion}")
 	pctx.StaticVariable("ClangBin", "${ClangPath}/bin")
@@ -139,9 +147,28 @@ func init() {
 		if override := config.(android.Config).Getenv("LLVM_RELEASE_VERSION"); override != "" {
 			return override, nil
 		}
-		return "3.8", nil
+		return ClangDefaultShortVersion, nil
 	})
 	pctx.StaticVariable("ClangAsanLibDir", "${ClangPath}/lib64/clang/${ClangShortVersion}/lib/linux")
+	if runtime.GOOS == "darwin" {
+		pctx.StaticVariable("LLVMGoldPlugin", "${ClangPath}/lib64/LLVMgold.dylib")
+	} else {
+		pctx.StaticVariable("LLVMGoldPlugin", "${ClangPath}/lib64/LLVMgold.so")
+	}
+
+	// These are tied to the version of LLVM directly in external/llvm, so they might trail the host prebuilts
+	// being used for the rest of the build process.
+	pctx.SourcePathVariable("RSClangBase", "prebuilts/clang/host")
+	pctx.SourcePathVariable("RSClangVersion", "clang-3289846")
+	pctx.SourcePathVariable("RSReleaseVersion", "3.8")
+	pctx.StaticVariable("RSLLVMPrebuiltsPath", "${RSClangBase}/${HostPrebuiltTag}/${RSClangVersion}/bin")
+	pctx.StaticVariable("RSIncludePath", "${RSLLVMPrebuiltsPath}/../lib64/clang/${RSReleaseVersion}/include")
+
+	pctx.PrefixedExistentPathsForSourcesVariable("RsGlobalIncludes", "-I",
+		[]string{
+			"external/clang/lib/Headers",
+			"frameworks/rs/script_api/include",
+		})
 
 	pctx.VariableFunc("CcWrapper", func(config interface{}) (string, error) {
 		if override := config.(android.Config).Getenv("CC_WRAPPER"); override != "" {
@@ -153,16 +180,19 @@ func init() {
 
 var HostPrebuiltTag = pctx.VariableConfigMethod("HostPrebuiltTag", android.Config.PrebuiltOS)
 
-func bionicHeaders(bionicArch, kernelArch string) string {
+func bionicHeaders(kernelArch string) string {
 	return strings.Join([]string{
-		"-isystem bionic/libc/arch-" + bionicArch + "/include",
 		"-isystem bionic/libc/include",
 		"-isystem bionic/libc/kernel/uapi",
 		"-isystem bionic/libc/kernel/uapi/asm-" + kernelArch,
+		"-isystem bionic/libc/kernel/android/scsi",
 		"-isystem bionic/libc/kernel/android/uapi",
 	}, " ")
 }
 
-func VndkLibraries() []string {
-	return []string{}
+func replaceFirst(slice []string, from, to string) {
+	if slice[0] != from {
+		panic(fmt.Errorf("Expected %q, found %q", from, to))
+	}
+	slice[0] = to
 }

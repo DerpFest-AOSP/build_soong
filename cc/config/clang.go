@@ -65,6 +65,11 @@ var ClangUnknownCflags = sorted([]string{
 	"-mbionic",
 })
 
+var ClangLibToolingUnknownCflags = []string{
+	"-flto*",
+	"-fsanitize*",
+}
+
 func init() {
 	pctx.StaticVariable("ClangExtraCflags", strings.Join([]string{
 		"-D__compiler_offsetof=__builtin_offsetof",
@@ -91,6 +96,16 @@ func init() {
 
 		// http://b/29823425 Disable -Wexpansion-to-defined for Clang update to r271374
 		"-Wno-expansion-to-defined",
+
+		// http://b/68236239 Allow 0/NULL instead of using nullptr everywhere.
+		"-Wno-zero-as-null-pointer-constant",
+
+		// http://b/68236396 Allow unknown warning options.
+		"-Wno-unknown-warning-option",
+
+		// http://b/36463318 Clang executes with an absolute path, so clang-provided
+		// headers are now absolute.
+		"-fdebug-prefix-map=$$PWD/=",
 	}, " "))
 
 	pctx.StaticVariable("ClangExtraCppflags", strings.Join([]string{
@@ -101,6 +116,11 @@ func init() {
 		// Bug: http://b/29823425 Disable -Wnull-dereference until the
 		// new instances detected by this warning are fixed.
 		"-Wno-null-dereference",
+
+		// Enable clang's thread-safety annotations in libcxx.
+		// Turn off -Wthread-safety-negative, to avoid breaking projects that use -Weverything.
+		"-D_LIBCPP_ENABLE_THREAD_SAFETY_ANNOTATIONS",
+		"-Wno-thread-safety-negative",
 	}, " "))
 
 	pctx.StaticVariable("ClangExtraTargetCflags", strings.Join([]string{

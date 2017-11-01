@@ -61,6 +61,7 @@ import (
 func init() {
 	android.RegisterModuleType("ndk_headers", ndkHeadersFactory)
 	android.RegisterModuleType("ndk_library", ndkLibraryFactory)
+	android.RegisterModuleType("preprocessed_ndk_headers", preprocessedNdkHeadersFactory)
 	android.RegisterSingletonType("ndk", NdkSingleton)
 
 	pctx.Import("android/soong/common")
@@ -89,26 +90,40 @@ func (n *ndkSingleton) GenerateBuildActions(ctx blueprint.SingletonContext) {
 	installPaths := []string{}
 	licensePaths := []string{}
 	ctx.VisitAllModules(func(module blueprint.Module) {
+		if m, ok := module.(android.Module); ok && !m.Enabled() {
+			return
+		}
+
 		if m, ok := module.(*headerModule); ok {
 			installPaths = append(installPaths, m.installPaths...)
 			licensePaths = append(licensePaths, m.licensePath.String())
 		}
-	})
 
-	ctx.VisitAllModules(func(module blueprint.Module) {
+		if m, ok := module.(*preprocessedHeaderModule); ok {
+			installPaths = append(installPaths, m.installPaths...)
+			licensePaths = append(licensePaths, m.licensePath.String())
+		}
+
 		if m, ok := module.(*Module); ok {
 			if installer, ok := m.installer.(*stubDecorator); ok {
 				installPaths = append(installPaths, installer.installPath)
+			}
+
+			if library, ok := m.linker.(*libraryDecorator); ok {
+				if library.MutatedProperties.NdkSysrootPath != "" {
+					installPaths = append(installPaths, library.MutatedProperties.NdkSysrootPath)
+				}
 			}
 		}
 	})
 
 	combinedLicense := getNdkInstallBase(ctx).Join(ctx, "NOTICE")
 	ctx.Build(pctx, blueprint.BuildParams{
-		Rule:     android.Cat,
-		Outputs:  []string{combinedLicense.String()},
-		Inputs:   licensePaths,
-		Optional: true,
+		Rule:        android.Cat,
+		Description: "combine licenses",
+		Outputs:     []string{combinedLicense.String()},
+		Inputs:      licensePaths,
+		Optional:    true,
 	})
 
 	depPaths := append(installPaths, combinedLicense.String())

@@ -15,8 +15,6 @@
 package android
 
 import (
-	"sync"
-
 	"github.com/google/blueprint"
 )
 
@@ -43,19 +41,34 @@ type mutator struct {
 
 var mutators []*mutator
 
-func RegisterModuleType(name string, factory blueprint.ModuleFactory) {
-	moduleTypes = append(moduleTypes, moduleType{name, factory})
+type ModuleFactory func() Module
+
+// ModuleFactoryAdaptor Wraps a ModuleFactory into a blueprint.ModuleFactory by converting an Module
+// into a blueprint.Module and a list of property structs
+func ModuleFactoryAdaptor(factory ModuleFactory) blueprint.ModuleFactory {
+	return func() (blueprint.Module, []interface{}) {
+		module := factory()
+		return module, module.GetProperties()
+	}
+}
+
+func RegisterModuleType(name string, factory ModuleFactory) {
+	moduleTypes = append(moduleTypes, moduleType{name, ModuleFactoryAdaptor(factory)})
 }
 
 func RegisterSingletonType(name string, factory blueprint.SingletonFactory) {
 	singletons = append(singletons, singleton{name, factory})
 }
 
-var registerMutatorsOnce sync.Once
+type Context struct {
+	*blueprint.Context
+}
 
-func NewContext() *blueprint.Context {
-	ctx := blueprint.NewContext()
+func NewContext() *Context {
+	return &Context{blueprint.NewContext()}
+}
 
+func (ctx *Context) Register() {
 	for _, t := range moduleTypes {
 		ctx.RegisterModuleType(t.name, t.factory)
 	}
@@ -64,19 +77,7 @@ func NewContext() *blueprint.Context {
 		ctx.RegisterSingletonType(t.name, t.factory)
 	}
 
-	registerMutatorsOnce.Do(registerMutators)
+	registerMutators(ctx.Context, preArch, preDeps, postDeps)
 
-	for _, t := range mutators {
-		var handle blueprint.MutatorHandle
-		if t.bottomUpMutator != nil {
-			handle = ctx.RegisterBottomUpMutator(t.name, t.bottomUpMutator)
-		} else if t.topDownMutator != nil {
-			handle = ctx.RegisterTopDownMutator(t.name, t.topDownMutator)
-		}
-		if t.parallel {
-			handle.Parallel()
-		}
-	}
-
-	return ctx
+	ctx.RegisterSingletonType("env", EnvSingleton)
 }
