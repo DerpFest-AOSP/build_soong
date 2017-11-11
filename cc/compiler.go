@@ -89,12 +89,12 @@ type BaseCompilerProperties struct {
 	// C standard version to use. Can be a specific version (such as "gnu11"),
 	// "experimental" (which will use draft versions like C1x when available),
 	// or the empty string (which will use the default).
-	C_std string
+	C_std *string
 
 	// C++ standard version to use. Can be a specific version (such as
 	// "gnu++11"), "experimental" (which will use draft versions like C++1z when
 	// available), or the empty string (which will use the default).
-	Cpp_std string
+	Cpp_std *string
 
 	// if set to false, use -std=c++* instead of -std=gnu++*
 	Gnu_extensions *bool
@@ -143,7 +143,7 @@ type BaseCompilerProperties struct {
 
 	Proto struct {
 		// Link statically against the protobuf runtime
-		Static bool `android:"arch_variant"`
+		Static *bool `android:"arch_variant"`
 	} `android:"arch_variant"`
 
 	// Stores the original list of source files before being cleared by library reuse
@@ -193,7 +193,7 @@ func (compiler *baseCompiler) compilerDeps(ctx DepsContext, deps Deps) Deps {
 	android.ExtractSourcesDeps(ctx, compiler.Properties.Srcs)
 
 	if compiler.hasSrcExt(".proto") {
-		deps = protoDeps(ctx, deps, &compiler.Proto, compiler.Properties.Proto.Static)
+		deps = protoDeps(ctx, deps, &compiler.Proto, Bool(compiler.Properties.Proto.Static))
 	}
 
 	return deps
@@ -232,16 +232,14 @@ func (compiler *baseCompiler) compilerFlags(ctx ModuleContext, flags Flags) Flag
 		flags.YasmFlags = append(flags.YasmFlags, f)
 	}
 
-	if !ctx.noDefaultCompilerFlags() {
-		flags.GlobalFlags = append(flags.GlobalFlags, "-I"+android.PathForModuleSrc(ctx).String())
-		flags.YasmFlags = append(flags.YasmFlags, "-I"+android.PathForModuleSrc(ctx).String())
+	flags.GlobalFlags = append(flags.GlobalFlags, "-I"+android.PathForModuleSrc(ctx).String())
+	flags.YasmFlags = append(flags.YasmFlags, "-I"+android.PathForModuleSrc(ctx).String())
 
-		if !(ctx.useSdk() || ctx.useVndk()) || ctx.Host() {
-			flags.SystemIncludeFlags = append(flags.SystemIncludeFlags,
-				"${config.CommonGlobalIncludes}",
-				tc.IncludeFlags(),
-				"${config.CommonNativehelperInclude}")
-		}
+	if !(ctx.useSdk() || ctx.useVndk()) || ctx.Host() {
+		flags.SystemIncludeFlags = append(flags.SystemIncludeFlags,
+			"${config.CommonGlobalIncludes}",
+			tc.IncludeFlags(),
+			"${config.CommonNativehelperInclude}")
 	}
 
 	if ctx.useSdk() {
@@ -277,7 +275,7 @@ func (compiler *baseCompiler) compilerFlags(ctx ModuleContext, flags Flags) Flag
 			"-D__ANDROID_API__=__ANDROID_API_FUTURE__", "-D__ANDROID_VNDK__")
 	}
 
-	instructionSet := proptools.String(compiler.Properties.Instruction_set)
+	instructionSet := String(compiler.Properties.Instruction_set)
 	if flags.RequiredInstructionSet != "" {
 		instructionSet = flags.RequiredInstructionSet
 	}
@@ -318,47 +316,45 @@ func (compiler *baseCompiler) compilerFlags(ctx ModuleContext, flags Flags) Flag
 		hod = "Device"
 	}
 
-	if !ctx.noDefaultCompilerFlags() {
-		flags.GlobalFlags = append(flags.GlobalFlags, instructionSetFlags)
-		flags.ConlyFlags = append([]string{"${config.CommonGlobalConlyflags}"}, flags.ConlyFlags...)
+	flags.GlobalFlags = append(flags.GlobalFlags, instructionSetFlags)
+	flags.ConlyFlags = append([]string{"${config.CommonGlobalConlyflags}"}, flags.ConlyFlags...)
 
-		if flags.Clang {
-			flags.AsFlags = append(flags.AsFlags, tc.ClangAsflags())
-			flags.CppFlags = append([]string{"${config.CommonClangGlobalCppflags}"}, flags.CppFlags...)
-			flags.GlobalFlags = append(flags.GlobalFlags,
-				tc.ClangCflags(),
-				"${config.CommonClangGlobalCflags}",
-				fmt.Sprintf("${config.%sClangGlobalCflags}", hod))
-		} else {
-			flags.CppFlags = append([]string{"${config.CommonGlobalCppflags}"}, flags.CppFlags...)
-			flags.GlobalFlags = append(flags.GlobalFlags,
-				tc.Cflags(),
-				"${config.CommonGlobalCflags}",
-				fmt.Sprintf("${config.%sGlobalCflags}", hod))
-		}
-
-		if Bool(ctx.AConfig().ProductVariables.Brillo) {
-			flags.GlobalFlags = append(flags.GlobalFlags, "-D__BRILLO__")
-		}
-
-		if ctx.Device() {
-			if Bool(compiler.Properties.Rtti) {
-				flags.CppFlags = append(flags.CppFlags, "-frtti")
-			} else {
-				flags.CppFlags = append(flags.CppFlags, "-fno-rtti")
-			}
-		}
-
-		flags.AsFlags = append(flags.AsFlags, "-D__ASSEMBLY__")
-
-		if flags.Clang {
-			flags.CppFlags = append(flags.CppFlags, tc.ClangCppflags())
-		} else {
-			flags.CppFlags = append(flags.CppFlags, tc.Cppflags())
-		}
-
-		flags.YasmFlags = append(flags.YasmFlags, tc.YasmFlags())
+	if flags.Clang {
+		flags.AsFlags = append(flags.AsFlags, tc.ClangAsflags())
+		flags.CppFlags = append([]string{"${config.CommonClangGlobalCppflags}"}, flags.CppFlags...)
+		flags.GlobalFlags = append(flags.GlobalFlags,
+			tc.ClangCflags(),
+			"${config.CommonClangGlobalCflags}",
+			fmt.Sprintf("${config.%sClangGlobalCflags}", hod))
+	} else {
+		flags.CppFlags = append([]string{"${config.CommonGlobalCppflags}"}, flags.CppFlags...)
+		flags.GlobalFlags = append(flags.GlobalFlags,
+			tc.Cflags(),
+			"${config.CommonGlobalCflags}",
+			fmt.Sprintf("${config.%sGlobalCflags}", hod))
 	}
+
+	if Bool(ctx.AConfig().ProductVariables.Brillo) {
+		flags.GlobalFlags = append(flags.GlobalFlags, "-D__BRILLO__")
+	}
+
+	if ctx.Device() {
+		if Bool(compiler.Properties.Rtti) {
+			flags.CppFlags = append(flags.CppFlags, "-frtti")
+		} else {
+			flags.CppFlags = append(flags.CppFlags, "-fno-rtti")
+		}
+	}
+
+	flags.AsFlags = append(flags.AsFlags, "-D__ASSEMBLY__")
+
+	if flags.Clang {
+		flags.CppFlags = append(flags.CppFlags, tc.ClangCppflags())
+	} else {
+		flags.CppFlags = append(flags.CppFlags, tc.Cppflags())
+	}
+
+	flags.YasmFlags = append(flags.YasmFlags, tc.YasmFlags())
 
 	if flags.Clang {
 		flags.GlobalFlags = append(flags.GlobalFlags, tc.ToolchainClangCflags())
@@ -368,21 +364,21 @@ func (compiler *baseCompiler) compilerFlags(ctx ModuleContext, flags Flags) Flag
 
 	if !ctx.useSdk() {
 		cStd := config.CStdVersion
-		if compiler.Properties.C_std == "experimental" {
+		if String(compiler.Properties.C_std) == "experimental" {
 			cStd = config.ExperimentalCStdVersion
-		} else if compiler.Properties.C_std != "" {
-			cStd = compiler.Properties.C_std
+		} else if String(compiler.Properties.C_std) != "" {
+			cStd = String(compiler.Properties.C_std)
 		}
 
-		cppStd := compiler.Properties.Cpp_std
-		switch compiler.Properties.Cpp_std {
+		cppStd := String(compiler.Properties.Cpp_std)
+		switch String(compiler.Properties.Cpp_std) {
 		case "":
 			cppStd = config.CppStdVersion
 		case "experimental":
 			cppStd = config.ExperimentalCppStdVersion
 		case "c++17", "gnu++17":
 			// Map c++17 and gnu++17 to their 1z equivalents, until 17 is finalized.
-			cppStd = strings.Replace(compiler.Properties.Cpp_std, "17", "1z", 1)
+			cppStd = strings.Replace(String(compiler.Properties.Cpp_std), "17", "1z", 1)
 		}
 
 		if !flags.Clang {

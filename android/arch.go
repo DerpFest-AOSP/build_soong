@@ -312,12 +312,12 @@ func archMutator(mctx BottomUpMutatorContext) {
 		var multilib string
 		switch class {
 		case Device:
-			multilib = module.base().commonProperties.Target.Android.Compile_multilib
+			multilib = String(module.base().commonProperties.Target.Android.Compile_multilib)
 		case Host, HostCross:
-			multilib = module.base().commonProperties.Target.Host.Compile_multilib
+			multilib = String(module.base().commonProperties.Target.Host.Compile_multilib)
 		}
 		if multilib == "" {
-			multilib = module.base().commonProperties.Compile_multilib
+			multilib = String(module.base().commonProperties.Compile_multilib)
 		}
 		if multilib == "" {
 			multilib = module.base().commonProperties.Default_multilib
@@ -973,8 +973,6 @@ func getNdkAbisConfig() []archConfig {
 	return []archConfig{
 		{"arm", "armv5te", "", []string{"armeabi"}},
 		{"arm64", "armv8-a", "", []string{"arm64-v8a"}},
-		{"mips", "mips32-fp", "", []string{"mips"}},
-		{"mips64", "mips64r6", "", []string{"mips64"}},
 		{"x86", "", "", []string{"x86"}},
 		{"x86_64", "", "", []string{"x86_64"}},
 	}

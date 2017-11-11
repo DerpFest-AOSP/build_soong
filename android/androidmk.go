@@ -25,7 +25,6 @@ import (
 	"strings"
 
 	"github.com/google/blueprint"
-	"github.com/google/blueprint/proptools"
 )
 
 func init() {
@@ -77,7 +76,7 @@ func (c *androidMkSingleton) GenerateBuildActions(ctx blueprint.SingletonContext
 
 	sort.Sort(AndroidModulesByName{androidMkModulesList, ctx})
 
-	transMk := PathForOutput(ctx, "Android"+proptools.String(config.ProductVariables.Make_suffix)+".mk")
+	transMk := PathForOutput(ctx, "Android"+String(config.ProductVariables.Make_suffix)+".mk")
 	if ctx.Failed() {
 		return
 	}
@@ -231,10 +230,10 @@ func translateAndroidMkModule(ctx blueprint.SingletonContext, w io.Writer, mod b
 		if len(amod.commonProperties.Init_rc) > 0 {
 			fmt.Fprintln(&data.preamble, "LOCAL_INIT_RC := ", strings.Join(amod.commonProperties.Init_rc, " "))
 		}
-		if amod.commonProperties.Proprietary {
+		if Bool(amod.commonProperties.Proprietary) {
 			fmt.Fprintln(&data.preamble, "LOCAL_PROPRIETARY_MODULE := true")
 		}
-		if amod.commonProperties.Vendor {
+		if Bool(amod.commonProperties.Vendor) {
 			fmt.Fprintln(&data.preamble, "LOCAL_VENDOR_MODULE := true")
 		}
 		if amod.commonProperties.Owner != nil {

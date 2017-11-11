@@ -117,6 +117,9 @@ type CompilerProperties struct {
 	// List of classes to pass to javac to use as annotation processors
 	Annotation_processor_classes []string
 
+	// The number of Java source entries each Javac instance can process
+	Javac_shard_size *int64
+
 	Openjdk9 struct {
 		// List of source files that should only be used when passing -source 1.9
 		Srcs []string
@@ -131,7 +134,7 @@ type CompilerDeviceProperties struct {
 	Dxflags []string `android:"arch_variant"`
 
 	// if not blank, set to the version of the sdk to compile against
-	Sdk_version string
+	Sdk_version *string
 
 	// directories to pass to aidl tool
 	Aidl_includes []string
@@ -304,7 +307,7 @@ func decodeSdkDep(ctx android.BaseContext, v string) sdkDep {
 func (j *Module) deps(ctx android.BottomUpMutatorContext) {
 	if ctx.Device() {
 		if !proptools.Bool(j.properties.No_standard_libs) {
-			sdkDep := decodeSdkDep(ctx, j.deviceProperties.Sdk_version)
+			sdkDep := decodeSdkDep(ctx, String(j.deviceProperties.Sdk_version))
 			if sdkDep.useDefaultLibs {
 				ctx.AddDependency(ctx.Module(), bootClasspathTag, config.DefaultBootclasspathLibraries...)
 				if ctx.AConfig().TargetOpenJDK9() {
@@ -355,6 +358,18 @@ func hasSrcExt(srcs []string, ext string) bool {
 	return false
 }
 
+func shardPaths(paths android.Paths, shardSize int) []android.Paths {
+	ret := make([]android.Paths, 0, (len(paths)+shardSize-1)/shardSize)
+	for len(paths) > shardSize {
+		ret = append(ret, paths[0:shardSize])
+		paths = paths[shardSize:]
+	}
+	if len(paths) > 0 {
+		ret = append(ret, paths)
+	}
+	return ret
+}
+
 func (j *Module) hasSrcExt(ext string) bool {
 	return hasSrcExt(j.properties.Srcs, ext)
 }
@@ -397,7 +412,7 @@ type deps struct {
 func (j *Module) collectDeps(ctx android.ModuleContext) deps {
 	var deps deps
 
-	sdkDep := decodeSdkDep(ctx, j.deviceProperties.Sdk_version)
+	sdkDep := decodeSdkDep(ctx, String(j.deviceProperties.Sdk_version))
 	if sdkDep.invalidVersion {
 		ctx.AddMissingDependencies([]string{sdkDep.module})
 	} else if sdkDep.useFiles {
@@ -466,6 +481,11 @@ func (j *Module) collectBuilderFlags(ctx android.ModuleContext, deps deps) javaB
 	if ctx.AConfig().TargetOpenJDK9() {
 		javacFlags = append(javacFlags, j.properties.Openjdk9.Javacflags...)
 	}
+	if ctx.AConfig().MinimizeJavaDebugInfo() {
+		// Override the -g flag passed globally to remove local variable debug info to reduce
+		// disk and memory usage.
+		javacFlags = append(javacFlags, "-g:source,lines")
+	}
 	if len(javacFlags) > 0 {
 		// optimization.
 		ctx.Variable(pctx, "javacFlags", strings.Join(javacFlags, " "))
@@ -473,14 +493,14 @@ func (j *Module) collectBuilderFlags(ctx android.ModuleContext, deps deps) javaB
 	}
 
 	// javaVersion flag.
-	sdk := sdkStringToNumber(ctx, j.deviceProperties.Sdk_version)
+	sdk := sdkStringToNumber(ctx, String(j.deviceProperties.Sdk_version))
 	if j.properties.Java_version != nil {
 		flags.javaVersion = *j.properties.Java_version
 	} else if ctx.Device() && sdk <= 23 {
 		flags.javaVersion = "1.7"
 	} else if ctx.Device() && sdk <= 26 || !ctx.AConfig().TargetOpenJDK9() {
 		flags.javaVersion = "1.8"
-	} else if ctx.Device() && j.deviceProperties.Sdk_version != "" && sdk == 10000 {
+	} else if ctx.Device() && String(j.deviceProperties.Sdk_version) != "" && sdk == 10000 {
 		// TODO(ccross): once we generate stubs we should be able to use 1.9 for sdk_version: "current"
 		flags.javaVersion = "1.8"
 	} else {
@@ -566,7 +586,17 @@ func (j *Module) compile(ctx android.ModuleContext) {
 		}
 	}
 
+	enable_sharding := false
 	if ctx.Device() && !ctx.AConfig().IsEnvFalse("TURBINE_ENABLED") {
+		if j.properties.Javac_shard_size != nil && *(j.properties.Javac_shard_size) > 0 {
+			enable_sharding = true
+			if len(j.properties.Annotation_processors) != 0 ||
+				len(j.properties.Annotation_processor_classes) != 0 {
+				ctx.PropertyErrorf("javac_shard_size",
+					"%q cannot be set when annotation processors are enabled.",
+					j.properties.Javac_shard_size)
+			}
+		}
 		// If sdk jar is java module, then directly return classesJar as header.jar
 		if j.Name() != "android_stubs_current" && j.Name() != "android_system_stubs_current" &&
 			j.Name() != "android_test_stubs_current" {
@@ -585,18 +615,35 @@ func (j *Module) compile(ctx android.ModuleContext) {
 			// TODO(ccross): Once we always compile with javac9 we may be able to conditionally
 			//    enable error-prone without affecting the output class files.
 			errorprone := android.PathForModuleOut(ctx, "errorprone", jarName)
-			RunErrorProne(ctx, errorprone, javaSrcFiles, srcJars, flags)
+			RunErrorProne(ctx, errorprone, uniqueSrcFiles, srcJars, flags)
 			extraJarDeps = append(extraJarDeps, errorprone)
 		}
 
-		// Compile java sources into .class files
-		classes := android.PathForModuleOut(ctx, "javac", jarName)
-		TransformJavaToClasses(ctx, classes, javaSrcFiles, srcJars, flags, extraJarDeps)
+		if enable_sharding {
+			flags.classpath.AddPaths([]android.Path{j.headerJarFile})
+			shardSize := int(*(j.properties.Javac_shard_size))
+			var shardSrcs []android.Paths
+			if len(uniqueSrcFiles) > 0 {
+				shardSrcs = shardPaths(uniqueSrcFiles, shardSize)
+				for idx, shardSrc := range shardSrcs {
+					classes := android.PathForModuleOut(ctx, "javac", jarName+strconv.Itoa(idx))
+					TransformJavaToClasses(ctx, classes, idx, shardSrc, nil, flags, extraJarDeps)
+					jars = append(jars, classes)
+				}
+			}
+			if len(srcJars) > 0 {
+				classes := android.PathForModuleOut(ctx, "javac", jarName+strconv.Itoa(len(shardSrcs)))
+				TransformJavaToClasses(ctx, classes, len(shardSrcs), nil, srcJars, flags, extraJarDeps)
+				jars = append(jars, classes)
+			}
+		} else {
+			classes := android.PathForModuleOut(ctx, "javac", jarName)
+			TransformJavaToClasses(ctx, classes, -1, uniqueSrcFiles, srcJars, flags, extraJarDeps)
+			jars = append(jars, classes)
+		}
 		if ctx.Failed() {
 			return
 		}
-
-		jars = append(jars, classes)
 	}
 
 	dirArgs, dirDeps := ResourceDirsToJarArgs(ctx, j.properties.Java_resource_dirs, j.properties.Exclude_java_resource_dirs)
@@ -736,11 +783,11 @@ func (j *Module) compileDex(ctx android.ModuleContext, flags javaBuilderFlags,
 	}
 
 	var minSdkVersion string
-	switch j.deviceProperties.Sdk_version {
+	switch String(j.deviceProperties.Sdk_version) {
 	case "", "current", "test_current", "system_current":
 		minSdkVersion = strconv.Itoa(ctx.AConfig().DefaultAppTargetSdkInt())
 	default:
-		minSdkVersion = j.deviceProperties.Sdk_version
+		minSdkVersion = String(j.deviceProperties.Sdk_version)
 	}
 
 	dxFlags = append(dxFlags, "--min-sdk-version="+minSdkVersion)
@@ -856,7 +903,7 @@ func LibraryHostFactory() android.Module {
 
 type binaryProperties struct {
 	// installable script to execute the resulting jar
-	Wrapper string
+	Wrapper *string
 }
 
 type Binary struct {
@@ -864,7 +911,7 @@ type Binary struct {
 
 	binaryProperties binaryProperties
 
-	wrapperFile android.ModuleSrcPath
+	wrapperFile android.SourcePath
 	binaryFile  android.OutputPath
 }
 
@@ -877,7 +924,11 @@ func (j *Binary) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 
 	// Depend on the installed jar (j.installFile) so that the wrapper doesn't get executed by
 	// another build rule before the jar has been installed.
-	j.wrapperFile = android.PathForModuleSrc(ctx, j.binaryProperties.Wrapper)
+	if String(j.binaryProperties.Wrapper) != "" {
+		j.wrapperFile = android.PathForModuleSrc(ctx, String(j.binaryProperties.Wrapper)).SourcePath
+	} else {
+		j.wrapperFile = android.PathForSource(ctx, "build/soong/scripts/jar-wrapper.sh")
+	}
 	j.binaryFile = ctx.InstallExecutable(android.PathForModuleInstall(ctx, "bin"),
 		ctx.ModuleName(), j.wrapperFile, j.installFile)
 }
@@ -919,7 +970,7 @@ func BinaryHostFactory() android.Module {
 type ImportProperties struct {
 	Jars []string
 
-	Sdk_version string
+	Sdk_version *string
 
 	Installable *bool
 }
@@ -1033,3 +1084,6 @@ func DefaultsFactory(props ...interface{}) android.Module {
 
 	return module
 }
+
+var Bool = proptools.Bool
+var String = proptools.String

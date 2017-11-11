@@ -504,6 +504,10 @@ func (c *config) IsPdkBuild() bool {
 	return Bool(c.ProductVariables.Pdk)
 }
 
+func (c *config) MinimizeJavaDebugInfo() bool {
+	return Bool(c.ProductVariables.MinimizeJavaDebugInfo) && !Bool(c.ProductVariables.Eng)
+}
+
 func (c *config) DevicePrefer32BitExecutables() bool {
 	return Bool(c.ProductVariables.DevicePrefer32BitExecutables)
 }
@@ -651,4 +655,18 @@ func (c *config) IntegerOverflowDisabledForPath(path string) bool {
 		return false
 	}
 	return prefixInList(path, *c.ProductVariables.IntegerOverflowExcludePaths)
+}
+
+func (c *config) CFIDisabledForPath(path string) bool {
+	if c.ProductVariables.CFIExcludePaths == nil {
+		return false
+	}
+	return prefixInList(path, *c.ProductVariables.CFIExcludePaths)
+}
+
+func (c *config) CFIEnabledForPath(path string) bool {
+	if c.ProductVariables.CFIIncludePaths == nil {
+		return false
+	}
+	return prefixInList(path, *c.ProductVariables.CFIIncludePaths)
 }

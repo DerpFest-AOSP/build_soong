@@ -46,6 +46,9 @@ func init() {
 		ctx.TopDown("asan_deps", sanitizerDepsMutator(asan))
 		ctx.BottomUp("asan", sanitizerMutator(asan)).Parallel()
 
+		ctx.TopDown("cfi_deps", sanitizerDepsMutator(cfi))
+		ctx.BottomUp("cfi", sanitizerMutator(cfi)).Parallel()
+
 		ctx.TopDown("tsan_deps", sanitizerDepsMutator(tsan))
 		ctx.BottomUp("tsan", sanitizerMutator(tsan)).Parallel()
 
@@ -145,7 +148,7 @@ type ObjectLinkerProperties struct {
 	Objs []string `android:"arch_variant"`
 
 	// if set, add an extra objcopy --prefix-symbols= step
-	Prefix_symbols string
+	Prefix_symbols *string
 }
 
 // Properties used to compile all C or C++ modules
@@ -154,11 +157,7 @@ type BaseProperties struct {
 	Clang *bool `android:"arch_variant"`
 
 	// Minimum sdk version supported when compiling against the ndk
-	Sdk_version string
-
-	// don't insert default compiler flags into asflags, cflags,
-	// cppflags, conlyflags, ldflags, or include_dirs
-	No_default_compiler_flags *bool
+	Sdk_version *string
 
 	AndroidMkSharedLibs []string `blueprint:"mutated"`
 	HideFromMake        bool     `blueprint:"mutated"`
@@ -196,7 +195,6 @@ type ModuleContextIntf interface {
 	staticBinary() bool
 	clang() bool
 	toolchain() config.Toolchain
-	noDefaultCompilerFlags() bool
 	useSdk() bool
 	sdkVersion() string
 	useVndk() bool
@@ -437,12 +435,7 @@ func (ctx *moduleContextImpl) toolchain() config.Toolchain {
 }
 
 func (ctx *moduleContextImpl) static() bool {
-	if static, ok := ctx.mod.linker.(interface {
-		static() bool
-	}); ok {
-		return static.static()
-	}
-	return false
+	return ctx.mod.static()
 }
 
 func (ctx *moduleContextImpl) staticBinary() bool {
@@ -454,13 +447,9 @@ func (ctx *moduleContextImpl) staticBinary() bool {
 	return false
 }
 
-func (ctx *moduleContextImpl) noDefaultCompilerFlags() bool {
-	return Bool(ctx.mod.Properties.No_default_compiler_flags)
-}
-
 func (ctx *moduleContextImpl) useSdk() bool {
 	if ctx.ctx.Device() && !ctx.useVndk() {
-		return ctx.mod.Properties.Sdk_version != ""
+		return String(ctx.mod.Properties.Sdk_version) != ""
 	}
 	return false
 }
@@ -470,7 +459,7 @@ func (ctx *moduleContextImpl) sdkVersion() string {
 		if ctx.useVndk() {
 			return "current"
 		} else {
-			return ctx.mod.Properties.Sdk_version
+			return String(ctx.mod.Properties.Sdk_version)
 		}
 	}
 	return ""
@@ -722,7 +711,7 @@ func (c *Module) begin(ctx BaseModuleContext) {
 		if err != nil {
 			ctx.PropertyErrorf("sdk_version", err.Error())
 		}
-		c.Properties.Sdk_version = version
+		c.Properties.Sdk_version = StringPtr(version)
 	}
 }
 
@@ -971,7 +960,7 @@ func checkLinkType(ctx android.ModuleContext, from *Module, to *Module) {
 		}
 		return
 	}
-	if from.Properties.Sdk_version == "" {
+	if String(from.Properties.Sdk_version) == "" {
 		// Platform code can link to anything
 		return
 	}
@@ -992,7 +981,7 @@ func checkLinkType(ctx android.ModuleContext, from *Module, to *Module) {
 		// the NDK.
 		return
 	}
-	if to.Properties.Sdk_version == "" {
+	if String(to.Properties.Sdk_version) == "" {
 		// NDK code linking to platform code is never okay.
 		ctx.ModuleErrorf("depends on non-NDK-built library %q",
 			ctx.OtherModuleName(to))
@@ -1003,31 +992,31 @@ func checkLinkType(ctx android.ModuleContext, from *Module, to *Module) {
 	// API level, as it is only valid to link against older or equivalent
 	// APIs.
 
-	if from.Properties.Sdk_version == "current" {
+	if String(from.Properties.Sdk_version) == "current" {
 		// Current can link against anything.
 		return
-	} else if to.Properties.Sdk_version == "current" {
+	} else if String(to.Properties.Sdk_version) == "current" {
 		// Current can't be linked against by anything else.
 		ctx.ModuleErrorf("links %q built against newer API version %q",
 			ctx.OtherModuleName(to), "current")
 	}
 
-	fromApi, err := strconv.Atoi(from.Properties.Sdk_version)
+	fromApi, err := strconv.Atoi(String(from.Properties.Sdk_version))
 	if err != nil {
 		ctx.PropertyErrorf("sdk_version",
 			"Invalid sdk_version value (must be int): %q",
-			from.Properties.Sdk_version)
+			String(from.Properties.Sdk_version))
 	}
-	toApi, err := strconv.Atoi(to.Properties.Sdk_version)
+	toApi, err := strconv.Atoi(String(to.Properties.Sdk_version))
 	if err != nil {
 		ctx.PropertyErrorf("sdk_version",
 			"Invalid sdk_version value (must be int): %q",
-			to.Properties.Sdk_version)
+			String(to.Properties.Sdk_version))
 	}
 
 	if toApi > fromApi {
 		ctx.ModuleErrorf("links %q built against newer API version %q",
-			ctx.OtherModuleName(to), to.Properties.Sdk_version)
+			ctx.OtherModuleName(to), String(to.Properties.Sdk_version))
 	}
 }
 
@@ -1281,6 +1270,15 @@ func (c *Module) Srcs() android.Paths {
 	return android.Paths{}
 }
 
+func (c *Module) static() bool {
+	if static, ok := c.linker.(interface {
+		static() bool
+	}); ok {
+		return static.static()
+	}
+	return false
+}
+
 //
 // Defaults
 //
@@ -1412,7 +1410,7 @@ func vendorMutator(mctx android.BottomUpMutatorContext) {
 		vendor := mod[1].(*Module)
 		vendor.Properties.UseVndk = true
 		squashVendorSrcs(vendor)
-	} else if mctx.InstallOnVendorPartition() && m.Properties.Sdk_version == "" {
+	} else if mctx.InstallOnVendorPartition() && String(m.Properties.Sdk_version) == "" {
 		// This will be available in /vendor only
 		mod := mctx.CreateVariations(vendorMode)
 		vendor := mod[0].(*Module)
@@ -1434,3 +1432,6 @@ func getCurrentNdkPrebuiltVersion(ctx DepsContext) string {
 }
 
 var Bool = proptools.Bool
+var BoolPtr = proptools.BoolPtr
+var String = proptools.String
+var StringPtr = proptools.StringPtr

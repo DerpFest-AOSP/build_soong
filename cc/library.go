@@ -57,12 +57,12 @@ type LibraryProperties struct {
 
 	Aidl struct {
 		// export headers generated from .aidl sources
-		Export_aidl_headers bool
+		Export_aidl_headers *bool
 	}
 
 	Proto struct {
 		// export headers generated from .proto sources
-		Export_proto_headers bool
+		Export_proto_headers *bool
 	}
 	Target struct {
 		Vendor struct {
@@ -71,7 +71,7 @@ type LibraryProperties struct {
 		}
 	}
 
-	Static_ndk_lib bool
+	Static_ndk_lib *bool
 }
 
 type LibraryMutatedProperties struct {
@@ -109,51 +109,51 @@ type FlagExporterProperties struct {
 }
 
 func init() {
-	android.RegisterModuleType("cc_library_static", libraryStaticFactory)
-	android.RegisterModuleType("cc_library_shared", librarySharedFactory)
-	android.RegisterModuleType("cc_library", libraryFactory)
-	android.RegisterModuleType("cc_library_host_static", libraryHostStaticFactory)
-	android.RegisterModuleType("cc_library_host_shared", libraryHostSharedFactory)
-	android.RegisterModuleType("cc_library_headers", libraryHeaderFactory)
+	android.RegisterModuleType("cc_library_static", LibraryStaticFactory)
+	android.RegisterModuleType("cc_library_shared", LibrarySharedFactory)
+	android.RegisterModuleType("cc_library", LibraryFactory)
+	android.RegisterModuleType("cc_library_host_static", LibraryHostStaticFactory)
+	android.RegisterModuleType("cc_library_host_shared", LibraryHostSharedFactory)
+	android.RegisterModuleType("cc_library_headers", LibraryHeaderFactory)
 }
 
 // Module factory for combined static + shared libraries, device by default but with possible host
 // support
-func libraryFactory() android.Module {
+func LibraryFactory() android.Module {
 	module, _ := NewLibrary(android.HostAndDeviceSupported)
 	return module.Init()
 }
 
 // Module factory for static libraries
-func libraryStaticFactory() android.Module {
+func LibraryStaticFactory() android.Module {
 	module, library := NewLibrary(android.HostAndDeviceSupported)
 	library.BuildOnlyStatic()
 	return module.Init()
 }
 
 // Module factory for shared libraries
-func librarySharedFactory() android.Module {
+func LibrarySharedFactory() android.Module {
 	module, library := NewLibrary(android.HostAndDeviceSupported)
 	library.BuildOnlyShared()
 	return module.Init()
 }
 
 // Module factory for host static libraries
-func libraryHostStaticFactory() android.Module {
+func LibraryHostStaticFactory() android.Module {
 	module, library := NewLibrary(android.HostSupported)
 	library.BuildOnlyStatic()
 	return module.Init()
 }
 
 // Module factory for host shared libraries
-func libraryHostSharedFactory() android.Module {
+func LibraryHostSharedFactory() android.Module {
 	module, library := NewLibrary(android.HostSupported)
 	library.BuildOnlyShared()
 	return module.Init()
 }
 
 // Module factory for header-only libraries
-func libraryHeaderFactory() android.Module {
+func LibraryHeaderFactory() android.Module {
 	module, library := NewLibrary(android.HostAndDeviceSupported)
 	library.HeaderOnly()
 	return module.Init()
@@ -513,6 +513,10 @@ func (library *libraryDecorator) linkShared(ctx ModuleContext,
 		if versionScript.Valid() {
 			flags.LdFlags = append(flags.LdFlags, "-Wl,--version-script,"+versionScript.String())
 			linkerDeps = append(linkerDeps, versionScript.Path())
+			if library.sanitize.isSanitizerEnabled(cfi) {
+				flags.LdFlags = append(flags.LdFlags, "-Wl,--version-script,"+cfiExportsMap.String())
+				linkerDeps = append(linkerDeps, cfiExportsMap)
+			}
 		}
 		if unexportedSymbols.Valid() {
 			ctx.PropertyErrorf("unexported_symbols_list", "Only supported on Darwin")
@@ -659,7 +663,7 @@ func (library *libraryDecorator) link(ctx ModuleContext,
 	library.reexportFlags(deps.ReexportedFlags)
 	library.reexportDeps(deps.ReexportedFlagsDeps)
 
-	if library.Properties.Aidl.Export_aidl_headers {
+	if Bool(library.Properties.Aidl.Export_aidl_headers) {
 		if library.baseCompiler.hasSrcExt(".aidl") {
 			flags := []string{
 				"-I" + android.PathForModuleGen(ctx, "aidl").String(),
@@ -671,7 +675,7 @@ func (library *libraryDecorator) link(ctx ModuleContext,
 		}
 	}
 
-	if library.Properties.Proto.Export_proto_headers {
+	if Bool(library.Properties.Proto.Export_proto_headers) {
 		if library.baseCompiler.hasSrcExt(".proto") {
 			flags := []string{
 				"-I" + android.ProtoSubDir(ctx).String(),
@@ -727,7 +731,7 @@ func (library *libraryDecorator) install(ctx ModuleContext, file android.Path) {
 		library.baseInstaller.install(ctx, file)
 	}
 
-	if library.Properties.Static_ndk_lib && library.static() {
+	if Bool(library.Properties.Static_ndk_lib) && library.static() {
 		installPath := getNdkSysrootBase(ctx).Join(
 			ctx, "usr/lib", ctx.toolchain().ClangTriple(), file.Base())
 

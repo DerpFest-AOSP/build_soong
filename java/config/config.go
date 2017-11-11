@@ -55,13 +55,8 @@ func init() {
 	pctx.VariableConfigMethod("hostPrebuiltTag", android.Config.PrebuiltOS)
 
 	pctx.VariableFunc("JavaHome", func(config interface{}) (string, error) {
-		if override := config.(android.Config).Getenv("OVERRIDE_ANDROID_JAVA_HOME"); override != "" {
-			return override, nil
-		}
-		if config.(android.Config).UseOpenJDK9() {
-			return "prebuilts/jdk/jdk9/${hostPrebuiltTag}", nil
-		}
-		return "prebuilts/jdk/jdk8/${hostPrebuiltTag}", nil
+		// This is set up and guaranteed by soong_ui
+		return config.(android.Config).Getenv("ANDROID_JAVA_HOME"), nil
 	})
 
 	pctx.SourcePathVariable("JavaToolchain", "${JavaHome}/bin")
@@ -80,14 +75,18 @@ func init() {
 	pctx.HostBinToolVariable("SoongZipCmd", "soong_zip")
 	pctx.HostBinToolVariable("MergeZipsCmd", "merge_zips")
 	pctx.VariableFunc("DxCmd", func(config interface{}) (string, error) {
-		dexer := "d8"
 		if config.(android.Config).IsEnvFalse("USE_D8") {
-			dexer = "dx"
-		}
-		if config.(android.Config).UnbundledBuild() || config.(android.Config).IsPdkBuild() {
-			return "prebuilts/build-tools/common/bin/" + dexer, nil
+			if config.(android.Config).UnbundledBuild() || config.(android.Config).IsPdkBuild() {
+				return "prebuilts/build-tools/common/bin/dx", nil
+			} else {
+				path, err := pctx.HostBinToolPath(config, "dx")
+				if err != nil {
+					return "", err
+				}
+				return path.String(), nil
+			}
 		} else {
-			path, err := pctx.HostBinToolPath(config, dexer)
+			path, err := pctx.HostBinToolPath(config, "d8-compat-dx")
 			if err != nil {
 				return "", err
 			}

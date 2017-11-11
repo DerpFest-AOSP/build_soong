@@ -9,8 +9,6 @@ import (
 	"sort"
 	"strings"
 	"testing"
-
-	"github.com/google/blueprint/proptools"
 )
 
 var buildDir string
@@ -40,10 +38,10 @@ func TestMain(m *testing.M) {
 
 func testCc(t *testing.T, bp string) *android.TestContext {
 	config := android.TestArchConfig(buildDir, nil)
-	config.ProductVariables.DeviceVndkVersion = proptools.StringPtr("current")
+	config.ProductVariables.DeviceVndkVersion = StringPtr("current")
 
 	ctx := android.NewTestArchContext()
-	ctx.RegisterModuleType("cc_library", android.ModuleFactoryAdaptor(libraryFactory))
+	ctx.RegisterModuleType("cc_library", android.ModuleFactoryAdaptor(LibraryFactory))
 	ctx.RegisterModuleType("toolchain_library", android.ModuleFactoryAdaptor(toolchainLibraryFactory))
 	ctx.RegisterModuleType("llndk_library", android.ModuleFactoryAdaptor(llndkLibraryFactory))
 	ctx.RegisterModuleType("cc_object", android.ModuleFactoryAdaptor(objectFactory))
@@ -118,7 +116,7 @@ func testCc(t *testing.T, bp string) *android.TestContext {
 		"bar.c":      nil,
 	})
 
-	_, errs := ctx.ParseBlueprintsFiles("Android.bp")
+	_, errs := ctx.ParseFileList(".", []string{"Android.bp"})
 	failIfErrored(t, errs)
 	_, errs = ctx.PrepareBuildActions(config)
 	failIfErrored(t, errs)

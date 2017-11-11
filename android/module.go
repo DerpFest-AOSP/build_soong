@@ -152,7 +152,7 @@ type Module interface {
 
 type nameProperties struct {
 	// The name of the module.  Must be unique across all modules.
-	Name string
+	Name *string
 }
 
 type commonProperties struct {
@@ -165,27 +165,27 @@ type commonProperties struct {
 	// are "32" (compile for 32-bit only), "64" (compile for 64-bit only), "both" (compile for both
 	// architectures), or "first" (compile for 64-bit on a 64-bit platform, and 32-bit on a 32-bit
 	// platform
-	Compile_multilib string `android:"arch_variant"`
+	Compile_multilib *string `android:"arch_variant"`
 
 	Target struct {
 		Host struct {
-			Compile_multilib string
+			Compile_multilib *string
 		}
 		Android struct {
-			Compile_multilib string
+			Compile_multilib *string
 		}
 	}
 
 	Default_multilib string `blueprint:"mutated"`
 
 	// whether this is a proprietary vendor module, and should be installed into /vendor
-	Proprietary bool
+	Proprietary *bool
 
 	// vendor who owns this module
 	Owner *string
 
 	// whether this module is device specific and should be installed into /vendor
-	Vendor bool
+	Vendor *bool
 
 	// *.logtags files, to combine together in order to generate the /system/etc/event-log-tags
 	// file
@@ -351,12 +351,12 @@ func (a *ModuleBase) BuildParamsForTests() []BuildParams {
 // Name returns the name of the module.  It may be overridden by individual module types, for
 // example prebuilts will prepend prebuilt_ to the name.
 func (a *ModuleBase) Name() string {
-	return a.nameProperties.Name
+	return String(a.nameProperties.Name)
 }
 
 // BaseModuleName returns the name of the module as specified in the blueprints file.
 func (a *ModuleBase) BaseModuleName() string {
-	return a.nameProperties.Name
+	return String(a.nameProperties.Name)
 }
 
 func (a *ModuleBase) base() *ModuleBase {
@@ -519,7 +519,7 @@ func (a *ModuleBase) androidBaseContextFactory(ctx blueprint.BaseModuleContext) 
 	return androidBaseContextImpl{
 		target:        a.commonProperties.CompileTarget,
 		targetPrimary: a.commonProperties.CompilePrimary,
-		vendor:        a.commonProperties.Proprietary || a.commonProperties.Vendor,
+		vendor:        Bool(a.commonProperties.Proprietary) || Bool(a.commonProperties.Vendor),
 		config:        ctx.Config().(Config),
 	}
 }
