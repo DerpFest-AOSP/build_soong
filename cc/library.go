@@ -85,9 +85,6 @@ type LibraryMutatedProperties struct {
 	VariantIsShared bool `blueprint:"mutated"`
 	// This variant is static
 	VariantIsStatic bool `blueprint:"mutated"`
-	// Location of the static library in the sysroot. Empty if the library is
-	// not included in the NDK.
-	NdkSysrootPath string `blueprint:"mutated"`
 }
 
 type FlagExporterProperties struct {
@@ -246,6 +243,10 @@ type libraryDecorator struct {
 	// Source Abi Diff
 	sAbiDiff android.OptionalPath
 
+	// Location of the static library in the sysroot. Empty if the library is
+	// not included in the NDK.
+	ndkSysrootPath android.Path
+
 	// Decorated interafaces
 	*baseCompiler
 	*baseLinker
@@ -317,7 +318,7 @@ func (library *libraryDecorator) linkerFlags(ctx ModuleContext, flags Flags) Fla
 	return flags
 }
 
-func (library *libraryDecorator) compilerFlags(ctx ModuleContext, flags Flags) Flags {
+func (library *libraryDecorator) compilerFlags(ctx ModuleContext, flags Flags, deps PathDeps) Flags {
 	exportIncludeDirs := library.flagExporter.exportedIncludes(ctx)
 	if len(exportIncludeDirs) > 0 {
 		f := includeDirsToFlags(exportIncludeDirs)
@@ -325,7 +326,7 @@ func (library *libraryDecorator) compilerFlags(ctx ModuleContext, flags Flags) F
 		flags.YasmFlags = append(flags.YasmFlags, f)
 	}
 
-	return library.baseCompiler.compilerFlags(ctx, flags)
+	return library.baseCompiler.compilerFlags(ctx, flags, deps)
 }
 
 func extractExportIncludesFromFlags(flags []string) []string {
@@ -651,7 +652,7 @@ func vndkVsNdk(ctx ModuleContext) bool {
 func (library *libraryDecorator) link(ctx ModuleContext,
 	flags Flags, deps PathDeps, objs Objects) android.Path {
 
-	objs = objs.Append(deps.Objs)
+	objs = deps.Objs.Copy().Append(objs)
 	var out android.Path
 	if library.static() || library.header() {
 		out = library.linkStatic(ctx, flags, deps, objs)
@@ -742,7 +743,7 @@ func (library *libraryDecorator) install(ctx ModuleContext, file android.Path) {
 			Input:       file,
 		})
 
-		library.MutatedProperties.NdkSysrootPath = installPath.String()
+		library.ndkSysrootPath = installPath
 	}
 }
 

@@ -175,7 +175,12 @@ func saveToConfigFile(config jsonConfigurable, filename string) error {
 func TestConfig(buildDir string, env map[string]string) Config {
 	config := &config{
 		ProductVariables: productVariables{
-			DeviceName: stringPtr("test_device"),
+			DeviceName:           stringPtr("test_device"),
+			Platform_sdk_version: intPtr(26),
+			AAPTConfig:           &[]string{"normal", "large", "xlarge", "hdpi", "xhdpi", "xxhdpi"},
+			AAPTPreferredConfig:  stringPtr("xhdpi"),
+			AAPTCharacteristics:  stringPtr("nosdcard"),
+			AAPTPrebuiltDPI:      &[]string{"xhdpi", "xxhdpi"},
 		},
 
 		buildDir:     buildDir,
@@ -290,6 +295,8 @@ func NewConfig(srcDir, buildDir string) (Config, error) {
 func (c *config) fromEnv() error {
 	switch c.Getenv("EXPERIMENTAL_USE_OPENJDK9") {
 	case "":
+		// Use OpenJDK8
+	case "false":
 		// Use OpenJDK8
 	case "1.8":
 		// Use OpenJDK9, but target 1.8
@@ -415,12 +422,11 @@ func (c *config) DeviceUsesClang() bool {
 	return true
 }
 
-func (c *config) ResourceOverlays() []SourcePath {
-	return nil
-}
-
-func (c *config) PlatformVersion() string {
-	return "M"
+func (c *config) ResourceOverlays() []string {
+	if c.ProductVariables.ResourceOverlays == nil {
+		return nil
+	}
+	return *c.ProductVariables.ResourceOverlays
 }
 
 func (c *config) PlatformSdkVersionInt() int {
@@ -441,6 +447,10 @@ func (c *config) DefaultAppTargetSdkInt() int {
 	} else {
 		return 10000
 	}
+}
+
+func (c *config) AppsDefaultVersionName() string {
+	return String(c.ProductVariables.AppsDefaultVersionName)
 }
 
 // Codenames that are active in the current lunch target.
@@ -464,32 +474,38 @@ func (c *config) PlatformVersionCombinedCodenames() []string {
 	return combined
 }
 
-func (c *config) BuildNumber() string {
-	return "000000"
-}
-
 func (c *config) ProductAAPTConfig() []string {
-	return *c.ProductVariables.AAPTConfig
+	return stringSlice(c.ProductVariables.AAPTConfig)
 }
 
 func (c *config) ProductAAPTPreferredConfig() string {
-	return *c.ProductVariables.AAPTPreferredConfig
+	return String(c.ProductVariables.AAPTPreferredConfig)
 }
 
 func (c *config) ProductAAPTCharacteristics() string {
-	return *c.ProductVariables.AAPTCharacteristics
+	return String(c.ProductVariables.AAPTCharacteristics)
 }
 
 func (c *config) ProductAAPTPrebuiltDPI() []string {
-	return *c.ProductVariables.AAPTPrebuiltDPI
+	return stringSlice(c.ProductVariables.AAPTPrebuiltDPI)
 }
 
 func (c *config) DefaultAppCertificateDir(ctx PathContext) SourcePath {
-	return PathForSource(ctx, "build/target/product/security")
+	defaultCert := String(c.ProductVariables.DefaultAppCertificate)
+	if defaultCert != "" {
+		return PathForSource(ctx, filepath.Dir(defaultCert))
+	} else {
+		return PathForSource(ctx, "build/target/product/security")
+	}
 }
 
 func (c *config) DefaultAppCertificate(ctx PathContext) SourcePath {
-	return c.DefaultAppCertificateDir(ctx).Join(ctx, "testkey")
+	defaultCert := String(c.ProductVariables.DefaultAppCertificate)
+	if defaultCert != "" {
+		return PathForSource(ctx, defaultCert)
+	} else {
+		return c.DefaultAppCertificateDir(ctx).Join(ctx, "testkey")
+	}
 }
 
 func (c *config) AllowMissingDependencies() bool {
@@ -616,11 +632,12 @@ func (c *deviceConfig) VendorPath() string {
 	return "vendor"
 }
 
-func (c *deviceConfig) CompileVndk() bool {
-	if c.config.ProductVariables.DeviceVndkVersion == nil {
-		return false
-	}
-	return *c.config.ProductVariables.DeviceVndkVersion == "current"
+func (c *deviceConfig) VndkVersion() string {
+	return String(c.config.ProductVariables.DeviceVndkVersion)
+}
+
+func (c *deviceConfig) ExtraVndkVersions() []string {
+	return c.config.ProductVariables.ExtraVndkVersions
 }
 
 func (c *deviceConfig) BtConfigIncludeDir() string {
@@ -669,4 +686,12 @@ func (c *config) CFIEnabledForPath(path string) bool {
 		return false
 	}
 	return prefixInList(path, *c.ProductVariables.CFIIncludePaths)
+}
+
+func stringSlice(s *[]string) []string {
+	if s != nil {
+		return *s
+	} else {
+		return nil
+	}
 }

@@ -131,21 +131,17 @@ func (g *Module) GeneratedHeaderDirs() android.Paths {
 
 func (g *Module) DepsMutator(ctx android.BottomUpMutatorContext) {
 	android.ExtractSourcesDeps(ctx, g.properties.Srcs)
+	android.ExtractSourcesDeps(ctx, g.properties.Tool_files)
 	if g, ok := ctx.Module().(*Module); ok {
 		if len(g.properties.Tools) > 0 {
 			ctx.AddFarVariationDependencies([]blueprint.Variation{
-				{"arch", ctx.AConfig().BuildOsVariant},
+				{"arch", ctx.Config().BuildOsVariant},
 			}, hostToolDepTag, g.properties.Tools...)
 		}
 	}
 }
 
 func (g *Module) GenerateAndroidBuildActions(ctx android.ModuleContext) {
-	if len(g.properties.Tools) == 0 && len(g.properties.Tool_files) == 0 {
-		ctx.ModuleErrorf("at least one `tools` or `tool_files` is required")
-		return
-	}
-
 	if len(g.properties.Export_include_dirs) > 0 {
 		for _, dir := range g.properties.Export_include_dirs {
 			g.exportedIncludeDirs = append(g.exportedIncludeDirs,
@@ -158,7 +154,7 @@ func (g *Module) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 	tools := map[string]android.Path{}
 
 	if len(g.properties.Tools) > 0 {
-		ctx.VisitDirectDeps(func(module android.Module) {
+		ctx.VisitDirectDepsBlueprint(func(module blueprint.Module) {
 			switch ctx.OtherModuleDependencyTag(module) {
 			case android.SourceDepTag:
 				// Nothing to do
@@ -167,6 +163,14 @@ func (g *Module) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 				var path android.OptionalPath
 
 				if t, ok := module.(HostToolProvider); ok {
+					if !t.(android.Module).Enabled() {
+						if ctx.Config().AllowMissingDependencies() {
+							ctx.AddMissingDependencies([]string{tool})
+						} else {
+							ctx.ModuleErrorf("depends on disabled module %q", tool)
+						}
+						break
+					}
 					path = t.HostToolPath()
 				} else if t, ok := module.(bootstrap.GoBinaryTool); ok {
 					if s, err := filepath.Rel(android.PathForOutput(ctx).String(), t.InstallPath()); err == nil {
@@ -200,13 +204,13 @@ func (g *Module) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 		return
 	}
 
-	for _, tool := range g.properties.Tool_files {
-		toolPath := android.PathForModuleSrc(ctx, tool)
-		g.deps = append(g.deps, toolPath)
-		if _, exists := tools[tool]; !exists {
-			tools[tool] = toolPath
+	toolFiles := ctx.ExpandSources(g.properties.Tool_files, nil)
+	for _, tool := range toolFiles {
+		g.deps = append(g.deps, tool)
+		if _, exists := tools[tool.Rel()]; !exists {
+			tools[tool.Rel()] = tool
 		} else {
-			ctx.ModuleErrorf("multiple tools for %q, %q and %q", tool, tools[tool], toolPath.String())
+			ctx.ModuleErrorf("multiple tools for %q, %q and %q", tool, tools[tool.Rel()], tool.Rel())
 		}
 	}
 
@@ -218,10 +222,14 @@ func (g *Module) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 	rawCommand, err := android.Expand(task.cmd, func(name string) (string, error) {
 		switch name {
 		case "location":
+			if len(g.properties.Tools) == 0 && len(toolFiles) == 0 {
+				return "", fmt.Errorf("at least one `tools` or `tool_files` is required if $(location) is used")
+			}
+
 			if len(g.properties.Tools) > 0 {
 				return tools[g.properties.Tools[0]].String(), nil
 			} else {
-				return tools[g.properties.Tool_files[0]].String(), nil
+				return tools[toolFiles[0].Rel()].String(), nil
 			}
 		case "in":
 			return "${in}", nil
@@ -269,7 +277,10 @@ func (g *Module) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 	}
 
 	genDir := android.PathForModuleGen(ctx)
-	sandboxCommand := fmt.Sprintf("$sboxCmd --sandbox-path %s --output-root %s -c %q %s $allouts", sandboxPath, genDir, rawCommand, depfilePlaceholder)
+	// Escape the command for the shell
+	rawCommand = "'" + strings.Replace(rawCommand, "'", `'\''`, -1) + "'"
+	sandboxCommand := fmt.Sprintf("$sboxCmd --sandbox-path %s --output-root %s -c %s %s $allouts",
+		sandboxPath, genDir, rawCommand, depfilePlaceholder)
 
 	ruleParams := blueprint.RuleParams{
 		Command:     sandboxCommand,
@@ -343,7 +354,7 @@ func NewGenSrcs() *Module {
 		outFiles := android.WritablePaths{}
 		genPath := android.PathForModuleGen(ctx).String()
 		for _, in := range srcFiles {
-			outFile := android.GenPathWithExt(ctx, "", in, properties.Output_extension)
+			outFile := android.GenPathWithExt(ctx, "", in, String(properties.Output_extension))
 			outFiles = append(outFiles, outFile)
 
 			// replace "out" with "__SBOX_OUT_DIR__/<the value of ${out}>"
@@ -390,7 +401,7 @@ func GenSrcsFactory() android.Module {
 
 type genSrcsProperties struct {
 	// extension that will be substituted for each output file
-	Output_extension string
+	Output_extension *string
 }
 
 func NewGenRule() *Module {

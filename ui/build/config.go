@@ -34,11 +34,12 @@ type configImpl struct {
 	environ   *Environment
 
 	// From the arguments
-	parallel  int
-	keepGoing int
-	verbose   bool
-	dist      bool
-	skipMake  bool
+	parallel   int
+	keepGoing  int
+	verbose    bool
+	checkbuild bool
+	dist       bool
+	skipMake   bool
 
 	// From the product config
 	katiArgs     []string
@@ -149,7 +150,7 @@ func NewConfig(ctx Context, args ...string) Config {
 		if override, ok := ret.environ.Get("OVERRIDE_ANDROID_JAVA_HOME"); ok {
 			return override
 		}
-		if v, ok := ret.environ.Get("EXPERIMENTAL_USE_OPENJDK9"); ok && v != "" {
+		if v, ok := ret.environ.Get("EXPERIMENTAL_USE_OPENJDK9"); ok && v != "" && v != "false" {
 			return filepath.Join("prebuilts/jdk/jdk9", ret.HostPrebuiltTag())
 		}
 		return filepath.Join("prebuilts/jdk/jdk8", ret.HostPrebuiltTag())
@@ -206,6 +207,8 @@ func (c *configImpl) parseArgs(ctx Context, args []string) {
 		} else {
 			if arg == "dist" {
 				c.dist = true
+			} else if arg == "checkbuild" {
+				c.checkbuild = true
 			}
 			c.arguments = append(c.arguments, arg)
 		}
@@ -311,6 +314,12 @@ func (c *configImpl) KatiSuffix() string {
 		return c.katiSuffix
 	}
 	panic("SetKatiSuffix has not been called")
+}
+
+// Checkbuild returns true if "checkbuild" was one of the build goals, which means that the
+// user is interested in additional checks at the expense of build time.
+func (c *configImpl) Checkbuild() bool {
+	return c.checkbuild
 }
 
 func (c *configImpl) Dist() bool {
