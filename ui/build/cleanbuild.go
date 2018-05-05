@@ -185,6 +185,15 @@ func installCleanIfNecessary(ctx Context, config Config) {
 	writeConfig()
 }
 
+// Remove everything relevant for a clean ota package
+func deviceClean(ctx Context, config Config, what int) {
+
+	productOutPath := config.ProductOut()
+
+	removeGlobs(ctx, productOutPath)
+	ctx.Println(productOutPath, "removed.")
+}
+
 // cleanOldFiles takes an input file (with all paths relative to basePath), and removes files from
 // the filesystem if they were removed from the input file since the last execution.
 func cleanOldFiles(ctx Context, basePath, file string) {
