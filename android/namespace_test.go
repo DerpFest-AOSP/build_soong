@@ -582,6 +582,25 @@ func TestConsistentNamespaceNames(t *testing.T) {
 	}
 }
 
+// so that the generated .ninja file will have consistent names
+func TestRename(t *testing.T) {
+	_ = setupTest(t,
+		map[string]string{
+			"dir1": `
+			soong_namespace {
+			}
+			test_module {
+				name: "a",
+				deps: ["c"],
+			}
+			test_module {
+				name: "b",
+				rename: "c",
+			}
+		`})
+	// setupTest will report any errors
+}
+
 // some utils to support the tests
 
 func mockFiles(bps map[string]string) (files map[string][]byte) {
@@ -606,7 +625,10 @@ func setupTestFromFiles(bps map[string][]byte) (ctx *TestContext, errs []error) 
 	ctx.MockFileSystem(bps)
 	ctx.RegisterModuleType("test_module", ModuleFactoryAdaptor(newTestModule))
 	ctx.RegisterModuleType("soong_namespace", ModuleFactoryAdaptor(NamespaceFactory))
-	ctx.PreDepsMutators(RegisterNamespaceMutator)
+	ctx.PreArchMutators(RegisterNamespaceMutator)
+	ctx.PreDepsMutators(func(ctx RegisterMutatorsContext) {
+		ctx.BottomUp("rename", renameMutator)
+	})
 	ctx.Register()
 
 	_, errs = ctx.ParseBlueprintsFiles("Android.bp")
@@ -628,7 +650,7 @@ func setupTestExpectErrs(bps map[string]string) (ctx *TestContext, errs []error)
 
 func setupTest(t *testing.T, bps map[string]string) (ctx *TestContext) {
 	ctx, errs := setupTestExpectErrs(bps)
-	failIfErrored(t, errs)
+	FailIfErrored(t, errs)
 	return ctx
 }
 
@@ -672,12 +694,16 @@ func findModuleById(ctx *TestContext, id string) (module TestingModule) {
 type testModule struct {
 	ModuleBase
 	properties struct {
-		Deps []string
-		Id   string
+		Rename string
+		Deps   []string
+		Id     string
 	}
 }
 
 func (m *testModule) DepsMutator(ctx BottomUpMutatorContext) {
+	if m.properties.Rename != "" {
+		ctx.Rename(m.properties.Rename)
+	}
 	for _, d := range m.properties.Deps {
 		ctx.AddDependency(ctx.Module(), nil, d)
 	}
@@ -686,18 +712,17 @@ func (m *testModule) DepsMutator(ctx BottomUpMutatorContext) {
 func (m *testModule) GenerateAndroidBuildActions(ModuleContext) {
 }
 
+func renameMutator(ctx BottomUpMutatorContext) {
+	if m, ok := ctx.Module().(*testModule); ok {
+		if m.properties.Rename != "" {
+			ctx.Rename(m.properties.Rename)
+		}
+	}
+}
+
 func newTestModule() Module {
 	m := &testModule{}
 	m.AddProperties(&m.properties)
 	InitAndroidModule(m)
 	return m
-}
-
-func failIfErrored(t *testing.T, errs []error) {
-	if len(errs) > 0 {
-		for _, err := range errs {
-			t.Error(err)
-		}
-		t.FailNow()
-	}
 }

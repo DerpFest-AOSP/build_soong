@@ -47,8 +47,11 @@ var (
 // }
 //
 type vndkPrebuiltProperties struct {
-	// VNDK snapshot version that is formated as {SDK_ver}.{Major}.{Minor}.
-	Version string
+	// VNDK snapshot version.
+	Version *string
+
+	// Target arch name of the snapshot (e.g. 'arm64' for variant 'aosp_arm64_ab')
+	Target_arch *string
 
 	// Prebuilt files for each arch.
 	Srcs []string `android:"arch_variant"`
@@ -60,15 +63,26 @@ type vndkPrebuiltLibraryDecorator struct {
 }
 
 func (p *vndkPrebuiltLibraryDecorator) Name(name string) string {
-	return name + vndkSuffix + p.version()
+	return name + p.NameSuffix()
+}
+
+func (p *vndkPrebuiltLibraryDecorator) NameSuffix() string {
+	if p.arch() != "" {
+		return vndkSuffix + p.version() + "." + p.arch()
+	}
+	return vndkSuffix + p.version()
 }
 
 func (p *vndkPrebuiltLibraryDecorator) version() string {
-	return p.properties.Version
+	return String(p.properties.Version)
+}
+
+func (p *vndkPrebuiltLibraryDecorator) arch() string {
+	return String(p.properties.Target_arch)
 }
 
 func (p *vndkPrebuiltLibraryDecorator) linkerFlags(ctx ModuleContext, flags Flags) Flags {
-	p.libraryDecorator.libName = strings.TrimSuffix(ctx.ModuleName(), vndkSuffix+p.version())
+	p.libraryDecorator.libName = strings.TrimSuffix(ctx.ModuleName(), p.NameSuffix())
 	return p.libraryDecorator.linkerFlags(ctx, flags)
 }
 
@@ -96,13 +110,15 @@ func (p *vndkPrebuiltLibraryDecorator) link(ctx ModuleContext,
 }
 
 func (p *vndkPrebuiltLibraryDecorator) install(ctx ModuleContext, file android.Path) {
+	arches := ctx.DeviceConfig().Arches()
+	if len(arches) == 0 || arches[0].ArchType.String() != p.arch() {
+		return
+	}
 	if p.shared() {
-		if ctx.Device() && ctx.useVndk() {
-			if ctx.isVndkSp() {
-				p.baseInstaller.subDir = "vndk-sp-" + p.version()
-			} else if ctx.isVndk() {
-				p.baseInstaller.subDir = "vndk-" + p.version()
-			}
+		if ctx.isVndkSp() {
+			p.baseInstaller.subDir = "vndk-sp-" + p.version()
+		} else if ctx.isVndk() {
+			p.baseInstaller.subDir = "vndk-" + p.version()
 		}
 		p.baseInstaller.install(ctx, file)
 	}

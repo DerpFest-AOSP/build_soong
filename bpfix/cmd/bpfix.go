@@ -65,7 +65,7 @@ func processFile(filename string, in io.Reader, out io.Writer, fixRequest bpfix.
 	if err != nil {
 		return err
 	}
-	r := bytes.NewBuffer(src)
+	r := bytes.NewBuffer(append([]byte(nil), src...))
 	file, errs := parser.Parse(filename, r, parser.NewScope(nil))
 	if len(errs) > 0 {
 		for _, err := range errs {
@@ -75,13 +75,14 @@ func processFile(filename string, in io.Reader, out io.Writer, fixRequest bpfix.
 	}
 
 	// compute and apply any requested fixes
-	fixed, err := bpfix.FixTree(file, fixRequest)
+	fixer := bpfix.NewFixer(file)
+	file, err = fixer.Fix(fixRequest)
 	if err != nil {
 		return err
 	}
 
 	// output the results
-	res, err := parser.Print(fixed)
+	res, err := parser.Print(file)
 	if err != nil {
 		return err
 	}

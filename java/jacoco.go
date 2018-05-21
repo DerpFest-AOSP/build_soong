@@ -17,19 +17,24 @@ package java
 // Rules for instrumenting classes using jacoco
 
 import (
+	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/google/blueprint"
+	"github.com/google/blueprint/proptools"
 
 	"android/soong/android"
 )
 
 var (
 	jacoco = pctx.AndroidStaticRule("jacoco", blueprint.RuleParams{
-		Command: `${config.Zip2ZipCmd} -i $in -o $strippedJar $stripSpec && ` +
-			`${config.JavaCmd} -jar ${config.JacocoCLIJar} instrument -quiet -dest $instrumentedJar $strippedJar && ` +
-			`${config.Ziptime} $instrumentedJar && ` +
-			`${config.MergeZipsCmd} --ignore-duplicates -j $out $instrumentedJar $in`,
+		Command: `rm -rf $tmpDir && mkdir -p $tmpDir && ` +
+			`${config.Zip2ZipCmd} -i $in -o $strippedJar $stripSpec && ` +
+			`${config.JavaCmd} -jar ${config.JacocoCLIJar} ` +
+			`  instrument --quiet --dest $tmpDir $strippedJar && ` +
+			`${config.Ziptime} $tmpJar && ` +
+			`${config.MergeZipsCmd} --ignore-duplicates -j $out $tmpJar $in`,
 		CommandDeps: []string{
 			"${config.Zip2ZipCmd}",
 			"${config.JavaCmd}",
@@ -38,71 +43,99 @@ var (
 			"${config.MergeZipsCmd}",
 		},
 	},
-		"strippedJar", "stripSpec", "instrumentedJar")
+		"strippedJar", "stripSpec", "tmpDir", "tmpJar")
 )
 
-func jacocoInstrumentJar(ctx android.ModuleContext, outputJar, strippedJar android.WritablePath,
+// Instruments a jar using the Jacoco command line interface.  Uses stripSpec to extract a subset
+// of the classes in inputJar into strippedJar, instruments strippedJar into tmpJar, and then
+// combines the classes in tmpJar with inputJar (preferring the instrumented classes in tmpJar)
+// to produce instrumentedJar.
+func jacocoInstrumentJar(ctx android.ModuleContext, instrumentedJar, strippedJar android.WritablePath,
 	inputJar android.Path, stripSpec string) {
-	instrumentedJar := android.PathForModuleOut(ctx, "jacoco/instrumented.jar")
+
+	// The basename of tmpJar has to be the same as the basename of strippedJar
+	tmpJar := android.PathForModuleOut(ctx, "jacoco", "tmp", strippedJar.Base())
 
 	ctx.Build(pctx, android.BuildParams{
 		Rule:           jacoco,
 		Description:    "jacoco",
-		Output:         outputJar,
+		Output:         instrumentedJar,
 		ImplicitOutput: strippedJar,
 		Input:          inputJar,
 		Args: map[string]string{
-			"strippedJar":     strippedJar.String(),
-			"stripSpec":       stripSpec,
-			"instrumentedJar": instrumentedJar.String(),
+			"strippedJar": strippedJar.String(),
+			"stripSpec":   stripSpec,
+			"tmpDir":      filepath.Dir(tmpJar.String()),
+			"tmpJar":      tmpJar.String(),
 		},
 	})
 }
 
-func (j *Module) jacocoStripSpecs(ctx android.ModuleContext) string {
-	includes := jacocoFiltersToSpecs(ctx,
-		j.properties.Jacoco.Include_filter, "jacoco.include_filter")
-	excludes := jacocoFiltersToSpecs(ctx,
-		j.properties.Jacoco.Exclude_filter, "jacoco.exclude_filter")
-
-	specs := ""
-	if len(excludes) > 0 {
-		specs += android.JoinWithPrefix(excludes, "-x") + " "
+func (j *Module) jacocoModuleToZipCommand(ctx android.ModuleContext) string {
+	includes, err := jacocoFiltersToSpecs(j.properties.Jacoco.Include_filter)
+	if err != nil {
+		ctx.PropertyErrorf("jacoco.include_filter", "%s", err.Error())
+	}
+	excludes, err := jacocoFiltersToSpecs(j.properties.Jacoco.Exclude_filter)
+	if err != nil {
+		ctx.PropertyErrorf("jacoco.exclude_filter", "%s", err.Error())
 	}
 
+	return jacocoFiltersToZipCommand(includes, excludes)
+}
+
+func jacocoFiltersToZipCommand(includes, excludes []string) string {
+	specs := ""
+	if len(excludes) > 0 {
+		specs += android.JoinWithPrefix(excludes, "-x ") + " "
+	}
 	if len(includes) > 0 {
 		specs += strings.Join(includes, " ")
 	} else {
 		specs += "**/*.class"
 	}
-
 	return specs
 }
 
-func jacocoFiltersToSpecs(ctx android.ModuleContext, filters []string, property string) []string {
+func jacocoFiltersToSpecs(filters []string) ([]string, error) {
 	specs := make([]string, len(filters))
+	var err error
 	for i, f := range filters {
-		specs[i] = jacocoFilterToSpec(ctx, f, property)
+		specs[i], err = jacocoFilterToSpec(f)
+		if err != nil {
+			return nil, err
+		}
 	}
-	return specs
+	return proptools.NinjaAndShellEscape(specs), nil
 }
 
-func jacocoFilterToSpec(ctx android.ModuleContext, filter string, property string) string {
-	wildcard := strings.HasSuffix(filter, "*")
-	filter = strings.TrimSuffix(filter, "*")
-	recursiveWildcard := wildcard && (strings.HasSuffix(filter, ".") || filter == "")
+func jacocoFilterToSpec(filter string) (string, error) {
+	recursiveWildcard := strings.HasSuffix(filter, "**")
+	nonRecursiveWildcard := false
+	if !recursiveWildcard {
+		nonRecursiveWildcard = strings.HasSuffix(filter, "*")
+		filter = strings.TrimSuffix(filter, "*")
+	} else {
+		filter = strings.TrimSuffix(filter, "**")
+	}
+
+	if recursiveWildcard && !(strings.HasSuffix(filter, ".") || filter == "") {
+		return "", fmt.Errorf("only '**' or '.**' is supported as recursive wildcard in a filter")
+	}
 
 	if strings.ContainsRune(filter, '*') {
-		ctx.PropertyErrorf(property, "'*' is only supported as the last character in a filter")
+		return "", fmt.Errorf("'*' is only supported as the last character in a filter")
 	}
 
 	spec := strings.Replace(filter, ".", "/", -1)
 
 	if recursiveWildcard {
 		spec += "**/*.class"
-	} else if wildcard {
+	} else if nonRecursiveWildcard {
 		spec += "*.class"
+	} else {
+		spec += ".class"
 	}
 
-	return spec
+	return spec, nil
 }

@@ -42,6 +42,7 @@ func dumpMakeVars(ctx Context, config Config, goals, vars []string, write_soong_
 		config.PrebuiltBuildTool("ckati"),
 		"-f", "build/make/core/config.mk",
 		"--color_warnings",
+		"--kati_stats",
 		"dump-many-vars",
 		"MAKECMDGOALS="+strings.Join(goals, " "))
 	cmd.Environment.Set("CALLED_FROM_SETUP", "true")
@@ -51,15 +52,19 @@ func dumpMakeVars(ctx Context, config Config, goals, vars []string, write_soong_
 	}
 	cmd.Environment.Set("DUMP_MANY_VARS", strings.Join(vars, " "))
 	cmd.Sandbox = dumpvarsSandbox
-	// TODO: error out when Stderr contains any content
-	cmd.Stderr = ctx.Stderr()
-	output, err := cmd.Output()
+	output := bytes.Buffer{}
+	cmd.Stdout = &output
+	pipe, err := cmd.StderrPipe()
 	if err != nil {
-		return nil, err
+		ctx.Fatalln("Error getting output pipe for ckati:", err)
 	}
+	cmd.StartOrFatal()
+	// TODO: error out when Stderr contains any content
+	katiRewriteOutput(ctx, pipe)
+	cmd.WaitOrFatal()
 
 	ret := make(map[string]string, len(vars))
-	for _, line := range strings.Split(string(output), "\n") {
+	for _, line := range strings.Split(output.String(), "\n") {
 		if len(line) == 0 {
 			continue
 		}
@@ -151,6 +156,12 @@ func runMakeProductConfig(ctx Context, config Config) {
 
 		// To find target/product/<DEVICE>
 		"TARGET_DEVICE",
+
+		// So that later Kati runs can find BoardConfig.mk faster
+		"TARGET_DEVICE_DIR",
+
+		// Whether --werror_overriding_commands will work
+		"BUILD_BROKEN_DUP_RULES",
 	}, exportEnvVars...), BannerVars...)
 
 	make_vars, err := dumpMakeVars(ctx, config, config.Arguments(), allVars, true)
@@ -174,4 +185,7 @@ func runMakeProductConfig(ctx Context, config Config) {
 	config.SetKatiArgs(strings.Fields(make_vars["KATI_GOALS"]))
 	config.SetNinjaArgs(strings.Fields(make_vars["NINJA_GOALS"]))
 	config.SetTargetDevice(make_vars["TARGET_DEVICE"])
+	config.SetTargetDeviceDir(make_vars["TARGET_DEVICE_DIR"])
+
+	config.SetBuildBrokenDupRules(make_vars["BUILD_BROKEN_DUP_RULES"] != "false")
 }

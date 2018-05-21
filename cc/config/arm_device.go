@@ -39,6 +39,8 @@ var (
 		"-Wl,-m,armelf",
 	}
 
+	armLldflags = ClangFilterUnknownLldflags(armLdflags)
+
 	armArmCflags = []string{
 		"-fstrict-aliasing",
 	}
@@ -49,14 +51,6 @@ var (
 	}
 
 	armArchVariantCflags = map[string][]string{
-		"armv5te": []string{
-			"-march=armv5te",
-			"-mtune=xscale",
-			"-D__ARM_ARCH_5__",
-			"-D__ARM_ARCH_5T__",
-			"-D__ARM_ARCH_5E__",
-			"-D__ARM_ARCH_5TE__",
-		},
 		"armv7-a": []string{
 			"-march=armv7-a",
 			"-mfloat-abi=softfp",
@@ -105,6 +99,24 @@ var (
 			// better solution comes around. See Bug 27340895
 			"-D__ARM_FEATURE_LPAE=1",
 		},
+		"cortex-a55": []string{
+			"-mcpu=cortex-a53",
+			"-mfpu=neon-fp-armv8",
+			// Fake an ARM compiler flag as these processors support LPAE which GCC/clang
+			// don't advertise.
+			// TODO This is a hack and we need to add it for each processor that supports LPAE until some
+			// better solution comes around. See Bug 27340895
+			"-D__ARM_FEATURE_LPAE=1",
+		},
+		"cortex-a75": []string{
+			"-mcpu=cortex-a53",
+			"-mfpu=neon-fp-armv8",
+			// Fake an ARM compiler flag as these processors support LPAE which GCC/clang
+			// don't advertise.
+			// TODO This is a hack and we need to add it for each processor that supports LPAE until some
+			// better solution comes around. See Bug 27340895
+			"-D__ARM_FEATURE_LPAE=1",
+		},
 		"krait": []string{
 			"-mcpu=cortex-a15",
 			"-mfpu=neon-vfpv4",
@@ -140,7 +152,6 @@ func init() {
 		"neon")
 
 	android.RegisterArchVariants(android.Arm,
-		"armv5te",
 		"armv7-a",
 		"armv7-a-neon",
 		"armv8-a",
@@ -150,7 +161,9 @@ func init() {
 		"cortex-a15",
 		"cortex-a53",
 		"cortex-a53-a57",
+		"cortex-a55",
 		"cortex-a73",
+		"cortex-a75",
 		"krait",
 		"kryo",
 		"exynos-m1",
@@ -178,6 +191,7 @@ func init() {
 	pctx.StaticVariable("ArmToolchainCflags", strings.Join(armToolchainCflags, " "))
 	pctx.StaticVariable("ArmCflags", strings.Join(armCflags, " "))
 	pctx.StaticVariable("ArmLdflags", strings.Join(armLdflags, " "))
+	pctx.StaticVariable("ArmLldflags", strings.Join(armLldflags, " "))
 	pctx.StaticVariable("ArmCppflags", strings.Join(armCppflags, " "))
 	pctx.StaticVariable("ArmIncludeFlags", bionicHeaders("arm"))
 
@@ -188,7 +202,6 @@ func init() {
 	pctx.StaticVariable("ArmThumbCflags", strings.Join(armThumbCflags, " "))
 
 	// Architecture variant cflags
-	pctx.StaticVariable("ArmArmv5TECflags", strings.Join(armArchVariantCflags["armv5te"], " "))
 	pctx.StaticVariable("ArmArmv7ACflags", strings.Join(armArchVariantCflags["armv7-a"], " "))
 	pctx.StaticVariable("ArmArmv7ANeonCflags", strings.Join(armArchVariantCflags["armv7-a-neon"], " "))
 	pctx.StaticVariable("ArmArmv8ACflags", strings.Join(armArchVariantCflags["armv8-a"], " "))
@@ -199,6 +212,7 @@ func init() {
 	pctx.StaticVariable("ArmCortexA8Cflags", strings.Join(armCpuVariantCflags["cortex-a8"], " "))
 	pctx.StaticVariable("ArmCortexA15Cflags", strings.Join(armCpuVariantCflags["cortex-a15"], " "))
 	pctx.StaticVariable("ArmCortexA53Cflags", strings.Join(armCpuVariantCflags["cortex-a53"], " "))
+	pctx.StaticVariable("ArmCortexA55Cflags", strings.Join(armCpuVariantCflags["cortex-a55"], " "))
 	pctx.StaticVariable("ArmKraitCflags", strings.Join(armCpuVariantCflags["krait"], " "))
 	pctx.StaticVariable("ArmKryoCflags", strings.Join(armCpuVariantCflags["kryo"], " "))
 
@@ -206,6 +220,7 @@ func init() {
 	pctx.StaticVariable("ArmToolchainClangCflags", strings.Join(ClangFilterUnknownCflags(armToolchainCflags), " "))
 	pctx.StaticVariable("ArmClangCflags", strings.Join(ClangFilterUnknownCflags(armCflags), " "))
 	pctx.StaticVariable("ArmClangLdflags", strings.Join(ClangFilterUnknownCflags(armLdflags), " "))
+	pctx.StaticVariable("ArmClangLldflags", strings.Join(ClangFilterUnknownCflags(armLldflags), " "))
 	pctx.StaticVariable("ArmClangCppflags", strings.Join(ClangFilterUnknownCflags(armCppflags), " "))
 
 	// Clang ARM vs. Thumb instruction set cflags
@@ -213,8 +228,6 @@ func init() {
 	pctx.StaticVariable("ArmClangThumbCflags", strings.Join(ClangFilterUnknownCflags(armThumbCflags), " "))
 
 	// Clang arch variant cflags
-	pctx.StaticVariable("ArmClangArmv5TECflags",
-		strings.Join(armClangArchVariantCflags["armv5te"], " "))
 	pctx.StaticVariable("ArmClangArmv7ACflags",
 		strings.Join(armClangArchVariantCflags["armv7-a"], " "))
 	pctx.StaticVariable("ArmClangArmv7ANeonCflags",
@@ -233,6 +246,8 @@ func init() {
 		strings.Join(armClangCpuVariantCflags["cortex-a15"], " "))
 	pctx.StaticVariable("ArmClangCortexA53Cflags",
 		strings.Join(armClangCpuVariantCflags["cortex-a53"], " "))
+	pctx.StaticVariable("ArmClangCortexA55Cflags",
+		strings.Join(armClangCpuVariantCflags["cortex-a55"], " "))
 	pctx.StaticVariable("ArmClangKraitCflags",
 		strings.Join(armClangCpuVariantCflags["krait"], " "))
 	pctx.StaticVariable("ArmClangKryoCflags",
@@ -241,7 +256,6 @@ func init() {
 
 var (
 	armArchVariantCflagsVar = map[string]string{
-		"armv5te":      "${config.ArmArmv5TECflags}",
 		"armv7-a":      "${config.ArmArmv7ACflags}",
 		"armv7-a-neon": "${config.ArmArmv7ANeonCflags}",
 		"armv8-a":      "${config.ArmArmv8ACflags}",
@@ -254,7 +268,9 @@ var (
 		"cortex-a15":     "${config.ArmCortexA15Cflags}",
 		"cortex-a53":     "${config.ArmCortexA53Cflags}",
 		"cortex-a53.a57": "${config.ArmCortexA53Cflags}",
+		"cortex-a55":     "${config.ArmCortexA55Cflags}",
 		"cortex-a73":     "${config.ArmCortexA53Cflags}",
+		"cortex-a75":     "${config.ArmCortexA55Cflags}",
 		"krait":          "${config.ArmKraitCflags}",
 		"kryo":           "${config.ArmKryoCflags}",
 		"exynos-m1":      "${config.ArmCortexA53Cflags}",
@@ -263,7 +279,6 @@ var (
 	}
 
 	armClangArchVariantCflagsVar = map[string]string{
-		"armv5te":      "${config.ArmClangArmv5TECflags}",
 		"armv7-a":      "${config.ArmClangArmv7ACflags}",
 		"armv7-a-neon": "${config.ArmClangArmv7ANeonCflags}",
 		"armv8-a":      "${config.ArmClangArmv8ACflags}",
@@ -276,7 +291,9 @@ var (
 		"cortex-a15":     "${config.ArmClangCortexA15Cflags}",
 		"cortex-a53":     "${config.ArmClangCortexA53Cflags}",
 		"cortex-a53.a57": "${config.ArmClangCortexA53Cflags}",
+		"cortex-a55":     "${config.ArmClangCortexA55Cflags}",
 		"cortex-a73":     "${config.ArmClangCortexA53Cflags}",
+		"cortex-a75":     "${config.ArmClangCortexA55Cflags}",
 		"krait":          "${config.ArmClangKraitCflags}",
 		"kryo":           "${config.ArmClangKryoCflags}",
 		"exynos-m1":      "${config.ArmClangCortexA53Cflags}",
@@ -288,6 +305,7 @@ var (
 type toolchainArm struct {
 	toolchain32Bit
 	ldflags                               string
+	lldflags                              string
 	toolchainCflags, toolchainClangCflags string
 }
 
@@ -339,6 +357,12 @@ func (t *toolchainArm) InstructionSetFlags(isa string) (string, error) {
 }
 
 func (t *toolchainArm) ClangTriple() string {
+	// http://b/72619014 work around llvm LTO bug.
+	return "armv7a-linux-androideabi"
+}
+
+func (t *toolchainArm) ndkTriple() string {
+	// Use current NDK include path, while ClangTriple is changed.
 	return t.GccTriple()
 }
 
@@ -356,6 +380,10 @@ func (t *toolchainArm) ClangCppflags() string {
 
 func (t *toolchainArm) ClangLdflags() string {
 	return t.ldflags
+}
+
+func (t *toolchainArm) ClangLldflags() string {
+	return t.lldflags // TODO: handle V8 cases
 }
 
 func (t *toolchainArm) ClangInstructionSetFlags(isa string) (string, error) {
@@ -399,8 +427,6 @@ func armToolchainFactory(arch android.Arch) Toolchain {
 		}
 	case "armv7-a":
 		fixCortexA8 = "-Wl,--fix-cortex-a8"
-	case "armv5te":
-		// Nothing extra for armv5te
 	case "armv8-a":
 		// Nothing extra for armv8-a
 	default:
@@ -413,6 +439,7 @@ func armToolchainFactory(arch android.Arch) Toolchain {
 			"${config.ArmLdflags}",
 			fixCortexA8,
 		}, " "),
+		lldflags:             "${config.ArmLldflags}",
 		toolchainClangCflags: strings.Join(toolchainClangCflags, " "),
 	}
 }

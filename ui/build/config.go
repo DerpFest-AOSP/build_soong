@@ -15,12 +15,14 @@
 package build
 
 import (
+	"io/ioutil"
 	"log"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 
 	"android/soong/shared"
 )
@@ -42,10 +44,13 @@ type configImpl struct {
 	skipMake   bool
 
 	// From the product config
-	katiArgs     []string
-	ninjaArgs    []string
-	katiSuffix   string
-	targetDevice string
+	katiArgs        []string
+	ninjaArgs       []string
+	katiSuffix      string
+	targetDevice    string
+	targetDeviceDir string
+
+	brokenDupRules bool
 }
 
 const srcDirFileCheck = "build/soong/root.bp"
@@ -98,8 +103,10 @@ func NewConfig(ctx Context, args ...string) Config {
 		"OUT_DIR_COMMON_BASE",
 
 		// Variables that have caused problems in the past
+		"CDPATH",
 		"DISPLAY",
 		"GREP_OPTIONS",
+		"NDK_ROOT",
 
 		// Drop make flags
 		"MAKEFLAGS",
@@ -112,6 +119,8 @@ func NewConfig(ctx Context, args ...string) Config {
 
 	// Tell python not to spam the source tree with .pyc files.
 	ret.environ.Set("PYTHONDONTWRITEBYTECODE", "1")
+
+	ret.environ.Set("TMPDIR", absPath(ctx, ret.TempDir()))
 
 	// Precondition: the current directory is the top of the source tree
 	if _, err := os.Stat(srcDirFileCheck); err != nil {
@@ -146,16 +155,29 @@ func NewConfig(ctx Context, args ...string) Config {
 	}
 
 	// Configure Java-related variables, including adding it to $PATH
+	java8Home := filepath.Join("prebuilts/jdk/jdk8", ret.HostPrebuiltTag())
+	java9Home := filepath.Join("prebuilts/jdk/jdk9", ret.HostPrebuiltTag())
 	javaHome := func() string {
 		if override, ok := ret.environ.Get("OVERRIDE_ANDROID_JAVA_HOME"); ok {
 			return override
 		}
-		if v, ok := ret.environ.Get("EXPERIMENTAL_USE_OPENJDK9"); ok && v != "" && v != "false" {
-			return filepath.Join("prebuilts/jdk/jdk9", ret.HostPrebuiltTag())
+		v, ok := ret.environ.Get("EXPERIMENTAL_USE_OPENJDK9")
+		if !ok {
+			v2, ok2 := ret.environ.Get("RUN_ERROR_PRONE")
+			if ok2 && (v2 == "true") {
+				v = "false"
+			} else {
+				v = "1.8"
+			}
 		}
-		return filepath.Join("prebuilts/jdk/jdk8", ret.HostPrebuiltTag())
+		if v != "false" {
+			return java9Home
+		}
+		return java8Home
 	}()
 	absJavaHome := absPath(ctx, javaHome)
+
+	ret.configureLocale(ctx)
 
 	newPath := []string{filepath.Join(absJavaHome, "bin")}
 	if path, ok := ret.environ.Get("PATH"); ok && path != "" {
@@ -164,7 +186,23 @@ func NewConfig(ctx Context, args ...string) Config {
 	ret.environ.Unset("OVERRIDE_ANDROID_JAVA_HOME")
 	ret.environ.Set("JAVA_HOME", absJavaHome)
 	ret.environ.Set("ANDROID_JAVA_HOME", javaHome)
+	ret.environ.Set("ANDROID_JAVA8_HOME", java8Home)
+	ret.environ.Set("ANDROID_JAVA9_HOME", java9Home)
 	ret.environ.Set("PATH", strings.Join(newPath, string(filepath.ListSeparator)))
+
+	outDir := ret.OutDir()
+	buildDateTimeFile := filepath.Join(outDir, "build_date.txt")
+	var content string
+	if buildDateTime, ok := ret.environ.Get("BUILD_DATETIME"); ok && buildDateTime != "" {
+		content = buildDateTime
+	} else {
+		content = strconv.FormatInt(time.Now().Unix(), 10)
+	}
+	err := ioutil.WriteFile(buildDateTimeFile, []byte(content), 0777)
+	if err != nil {
+		ctx.Fatalln("Failed to write BUILD_DATETIME to file:", err)
+	}
+	ret.environ.Set("BUILD_DATETIME_FILE", buildDateTimeFile)
 
 	return Config{ret}
 }
@@ -215,6 +253,52 @@ func (c *configImpl) parseArgs(ctx Context, args []string) {
 	}
 }
 
+func (c *configImpl) configureLocale(ctx Context) {
+	cmd := Command(ctx, Config{c}, "locale", "locale", "-a")
+	output, err := cmd.Output()
+
+	var locales []string
+	if err == nil {
+		locales = strings.Split(string(output), "\n")
+	} else {
+		// If we're unable to list the locales, let's assume en_US.UTF-8
+		locales = []string{"en_US.UTF-8"}
+		ctx.Verbosef("Failed to list locales (%q), falling back to %q", err, locales)
+	}
+
+	// gettext uses LANGUAGE, which is passed directly through
+
+	// For LANG and LC_*, only preserve the evaluated version of
+	// LC_MESSAGES
+	user_lang := ""
+	if lc_all, ok := c.environ.Get("LC_ALL"); ok {
+		user_lang = lc_all
+	} else if lc_messages, ok := c.environ.Get("LC_MESSAGES"); ok {
+		user_lang = lc_messages
+	} else if lang, ok := c.environ.Get("LANG"); ok {
+		user_lang = lang
+	}
+
+	c.environ.UnsetWithPrefix("LC_")
+
+	if user_lang != "" {
+		c.environ.Set("LC_MESSAGES", user_lang)
+	}
+
+	// The for LANG, use C.UTF-8 if it exists (Debian currently, proposed
+	// for others)
+	if inList("C.UTF-8", locales) {
+		c.environ.Set("LANG", "C.UTF-8")
+	} else if inList("en_US.UTF-8", locales) {
+		c.environ.Set("LANG", "en_US.UTF-8")
+	} else if inList("en_US.utf8", locales) {
+		// These normalize to the same thing
+		c.environ.Set("LANG", "en_US.UTF-8")
+	} else {
+		ctx.Fatalln("System doesn't support either C.UTF-8 or en_US.UTF-8")
+	}
+}
+
 // Lunch configures the environment for a specific product similarly to the
 // `lunch` bash function.
 func (c *configImpl) Lunch(ctx Context, product, variant string) {
@@ -244,8 +328,6 @@ func (c *configImpl) Tapas(ctx Context, apps []string, arch, variant string) {
 
 	var product string
 	switch arch {
-	case "armv5":
-		product = "generic_armv5"
 	case "arm", "":
 		product = "aosp_arm"
 	case "arm64":
@@ -478,4 +560,20 @@ func (c *configImpl) PrebuiltBuildTool(name string) string {
 		}
 	}
 	return filepath.Join("prebuilts/build-tools", c.HostPrebuiltTag(), "bin", name)
+}
+
+func (c *configImpl) SetBuildBrokenDupRules(val bool) {
+	c.brokenDupRules = val
+}
+
+func (c *configImpl) BuildBrokenDupRules() bool {
+	return c.brokenDupRules
+}
+
+func (c *configImpl) SetTargetDeviceDir(dir string) {
+	c.targetDeviceDir = dir
+}
+
+func (c *configImpl) TargetDeviceDir() string {
+	return c.targetDeviceDir
 }

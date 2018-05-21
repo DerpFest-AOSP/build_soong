@@ -53,6 +53,7 @@ var rewriteProperties = map[string](func(variableAssignmentContext) error){
 	"LOCAL_SANITIZE_DIAG":         sanitize("diag."),
 	"LOCAL_CFLAGS":                cflags,
 	"LOCAL_UNINSTALLABLE_MODULE":  invert("installable"),
+	"LOCAL_PROGUARD_ENABLED":      proguardEnabled,
 
 	// composite functions
 	"LOCAL_MODULE_TAGS": includeVariableIf(bpVariable{"tags", bpparser.ListType}, not(valueDumpEquals("optional"))),
@@ -63,6 +64,9 @@ var rewriteProperties = map[string](func(variableAssignmentContext) error){
 	"LOCAL_MODULE_SUFFIX":           skip, // TODO
 	"LOCAL_PATH":                    skip, // Nothing to do, except maybe avoid the "./" in paths?
 	"LOCAL_PRELINK_MODULE":          skip, // Already phased out
+	"LOCAL_BUILT_MODULE_STEM":       skip,
+	"LOCAL_USE_AAPT2":               skip, // Always enabled in Soong
+	"LOCAL_JAR_EXCLUDE_FILES":       skip, // Soong never excludes files from jars
 }
 
 // adds a group of properties all having the same type
@@ -93,6 +97,7 @@ func init() {
 			"LOCAL_NOTICE_FILE":             "notice",
 			"LOCAL_JAVA_LANGUAGE_VERSION":   "java_version",
 			"LOCAL_INSTRUMENTATION_FOR":     "instrumentation_for",
+			"LOCAL_MANIFEST_FILE":           "manifest",
 
 			"LOCAL_DEX_PREOPT_PROFILE_CLASS_LISTING": "dex_preopt.profile",
 		})
@@ -110,6 +115,7 @@ func init() {
 			"LOCAL_CONLYFLAGS":                    "conlyflags",
 			"LOCAL_CPPFLAGS":                      "cppflags",
 			"LOCAL_REQUIRED_MODULES":              "required",
+			"LOCAL_OVERRIDES_MODULES":             "overrides",
 			"LOCAL_LDLIBS":                        "host_ldlibs",
 			"LOCAL_CLANG_CFLAGS":                  "clang_cflags",
 			"LOCAL_YACCFLAGS":                     "yaccflags",
@@ -119,6 +125,7 @@ func init() {
 			"LOCAL_EXPORT_SHARED_LIBRARY_HEADERS": "export_shared_lib_headers",
 			"LOCAL_EXPORT_STATIC_LIBRARY_HEADERS": "export_static_lib_headers",
 			"LOCAL_INIT_RC":                       "init_rc",
+			"LOCAL_VINTF_FRAGMENTS":               "vintf_fragments",
 			"LOCAL_TIDY_FLAGS":                    "tidy_flags",
 			// TODO: This is comma-separated, not space-separated
 			"LOCAL_TIDY_CHECKS":           "tidy_checks",
@@ -126,7 +133,9 @@ func init() {
 			"LOCAL_RENDERSCRIPT_FLAGS":    "renderscript.flags",
 
 			"LOCAL_JAVA_RESOURCE_DIRS":    "java_resource_dirs",
+			"LOCAL_RESOURCE_DIR":          "resource_dirs",
 			"LOCAL_JAVACFLAGS":            "javacflags",
+			"LOCAL_ERROR_PRONE_FLAGS":     "errorprone.javacflags",
 			"LOCAL_DX_FLAGS":              "dxflags",
 			"LOCAL_JAVA_LIBRARIES":        "libs",
 			"LOCAL_STATIC_JAVA_LIBRARIES": "static_libs",
@@ -136,7 +145,16 @@ func init() {
 
 			"LOCAL_ANNOTATION_PROCESSORS":        "annotation_processors",
 			"LOCAL_ANNOTATION_PROCESSOR_CLASSES": "annotation_processor_classes",
+
+			"LOCAL_PROGUARD_FLAGS":      "optimize.proguard_flags",
+			"LOCAL_PROGUARD_FLAG_FILES": "optimize.proguard_flag_files",
+
+			// These will be rewritten to libs/static_libs by bpfix, after their presence is used to convert
+			// java_library_static to android_library.
+			"LOCAL_SHARED_ANDROID_LIBRARIES": "android_libs",
+			"LOCAL_STATIC_ANDROID_LIBRARIES": "android_static_libs",
 		})
+
 	addStandardProperties(bpparser.BoolType,
 		map[string]string{
 			// Bool properties
@@ -150,9 +168,13 @@ func init() {
 			"LOCAL_NO_STANDARD_LIBRARIES":    "no_standard_libs",
 			"LOCAL_PACK_MODULE_RELOCATIONS":  "pack_relocations",
 			"LOCAL_TIDY":                     "tidy",
+			"LOCAL_USE_CLANG_LLD":            "use_clang_lld",
 			"LOCAL_PROPRIETARY_MODULE":       "proprietary",
 			"LOCAL_VENDOR_MODULE":            "vendor",
+			"LOCAL_ODM_MODULE":               "device_specific",
+			"LOCAL_PRODUCT_MODULE":           "product_specific",
 			"LOCAL_EXPORT_PACKAGE_RESOURCES": "export_package_resources",
+			"LOCAL_PRIVILEGED_MODULE":        "privileged",
 
 			"LOCAL_DEX_PREOPT":                  "dex_preopt.enabled",
 			"LOCAL_DEX_PREOPT_APP_IMAGE":        "dex_preopt.app_image",
@@ -250,7 +272,7 @@ func classifyLocalOrGlobalPath(value bpparser.Expression) (string, bpparser.Expr
 		}
 	case *bpparser.Operator:
 		if v.Type() != bpparser.StringType {
-			return "", nil, fmt.Errorf("classifyLocalOrGlobalPath expected a string, got %s", value.Type)
+			return "", nil, fmt.Errorf("classifyLocalOrGlobalPath expected a string, got %s", v.Type())
 		}
 
 		if v.Operator != '+' {
@@ -281,7 +303,7 @@ func classifyLocalOrGlobalPath(value bpparser.Expression) (string, bpparser.Expr
 	case *bpparser.String:
 		return "global", value, nil
 	default:
-		return "", nil, fmt.Errorf("classifyLocalOrGlobalPath expected a string, got %s", value.Type)
+		return "", nil, fmt.Errorf("classifyLocalOrGlobalPath expected a string, got %s", v.Type())
 
 	}
 }
@@ -514,6 +536,60 @@ func cflags(ctx variableAssignmentContext) error {
 	return includeVariableNow(bpVariable{"cflags", bpparser.ListType}, ctx)
 }
 
+func proguardEnabled(ctx variableAssignmentContext) error {
+	val, err := makeVariableToBlueprint(ctx.file, ctx.mkvalue, bpparser.ListType)
+	if err != nil {
+		return err
+	}
+
+	list, ok := val.(*bpparser.List)
+	if !ok {
+		return fmt.Errorf("unsupported proguard expression")
+	}
+
+	set := func(prop string, value bool) {
+		bpValue := &bpparser.Bool{
+			Value: value,
+		}
+		setVariable(ctx.file, false, ctx.prefix, prop, bpValue, true)
+	}
+
+	enable := false
+
+	for _, v := range list.Values {
+		s, ok := v.(*bpparser.String)
+		if !ok {
+			return fmt.Errorf("unsupported proguard expression")
+		}
+
+		switch s.Value {
+		case "disabled":
+			set("optimize.enabled", false)
+		case "obfuscation":
+			enable = true
+			set("optimize.obfuscate", true)
+		case "optimization":
+			enable = true
+			set("optimize.optimize", true)
+		case "full":
+			enable = true
+		case "custom":
+			set("optimize.no_aapt_flags", true)
+			enable = true
+		default:
+			return fmt.Errorf("unsupported proguard value %q", s)
+		}
+	}
+
+	if enable {
+		// This is only necessary for libraries which default to false, but we can't
+		// tell the difference between a library and an app here.
+		set("optimize.enabled", true)
+	}
+
+	return nil
+}
+
 func invert(name string) func(ctx variableAssignmentContext) error {
 	return func(ctx variableAssignmentContext) error {
 		val, err := makeVariableToBlueprint(ctx.file, ctx.mkvalue, bpparser.BoolType)
@@ -636,22 +712,15 @@ func mydir(args []string) string {
 	return "."
 }
 
-func allJavaFilesUnder(args []string) string {
-	dir := ""
-	if len(args) > 0 {
-		dir = strings.TrimSpace(args[0])
+func allFilesUnder(wildcard string) func(args []string) string {
+	return func(args []string) string {
+		dir := ""
+		if len(args) > 0 {
+			dir = strings.TrimSpace(args[0])
+		}
+
+		return fmt.Sprintf("%s/**/"+wildcard, dir)
 	}
-
-	return fmt.Sprintf("%s/**/*.java", dir)
-}
-
-func allProtoFilesUnder(args []string) string {
-	dir := ""
-	if len(args) > 0 {
-		dir = strings.TrimSpace(args[0])
-	}
-
-	return fmt.Sprintf("%s/**/*.proto", dir)
 }
 
 func allSubdirJavaFiles(args []string) string {
@@ -695,8 +764,11 @@ func androidScope() mkparser.Scope {
 	globalScope := mkparser.NewScope(nil)
 	globalScope.Set("CLEAR_VARS", clear_vars)
 	globalScope.SetFunc("my-dir", mydir)
-	globalScope.SetFunc("all-java-files-under", allJavaFilesUnder)
-	globalScope.SetFunc("all-proto-files-under", allProtoFilesUnder)
+	globalScope.SetFunc("all-java-files-under", allFilesUnder("*.java"))
+	globalScope.SetFunc("all-proto-files-under", allFilesUnder("*.proto"))
+	globalScope.SetFunc("all-aidl-files-under", allFilesUnder("*.aidl"))
+	globalScope.SetFunc("all-Iaidl-files-under", allFilesUnder("I*.aidl"))
+	globalScope.SetFunc("all-logtags-files-under", allFilesUnder("*.logtags"))
 	globalScope.SetFunc("all-subdir-java-files", allSubdirJavaFiles)
 	globalScope.SetFunc("all-makefiles-under", includeIgnored)
 	globalScope.SetFunc("first-makefiles-under", includeIgnored)

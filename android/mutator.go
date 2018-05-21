@@ -76,6 +76,7 @@ var preArch = []RegisterMutatorFunc{
 	func(ctx RegisterMutatorsContext) {
 		ctx.TopDown("load_hooks", loadHookMutator).Parallel()
 	},
+	RegisterNamespaceMutator,
 	RegisterPrebuiltsPreArchMutators,
 	RegisterDefaultsPreArchMutators,
 }
@@ -86,12 +87,12 @@ func registerArchMutator(ctx RegisterMutatorsContext) {
 }
 
 var preDeps = []RegisterMutatorFunc{
-	RegisterNamespaceMutator,
 	registerArchMutator,
 }
 
 var postDeps = []RegisterMutatorFunc{
 	RegisterPrebuiltsPostDepsMutators,
+	registerNeverallowMutator,
 }
 
 func PreArchMutators(f RegisterMutatorFunc) {
@@ -126,6 +127,7 @@ type TopDownMutatorContext interface {
 	GetDirectDep(name string) (blueprint.Module, blueprint.DependencyTag)
 
 	VisitDirectDeps(visit func(Module))
+	VisitDirectDepsWithTag(tag blueprint.DependencyTag, visit func(Module))
 	VisitDirectDepsIf(pred func(Module) bool, visit func(Module))
 	VisitDepsDepthFirst(visit func(Module))
 	VisitDepsDepthFirstIf(pred func(Module) bool, visit func(Module))
@@ -225,6 +227,16 @@ func (a *androidTopDownMutatorContext) VisitDirectDeps(visit func(Module)) {
 	a.TopDownMutatorContext.VisitDirectDeps(func(module blueprint.Module) {
 		if aModule, _ := module.(Module); aModule != nil {
 			visit(aModule)
+		}
+	})
+}
+
+func (a *androidTopDownMutatorContext) VisitDirectDepsWithTag(tag blueprint.DependencyTag, visit func(Module)) {
+	a.TopDownMutatorContext.VisitDirectDeps(func(module blueprint.Module) {
+		if aModule, _ := module.(Module); aModule != nil {
+			if a.TopDownMutatorContext.OtherModuleDependencyTag(aModule) == tag {
+				visit(aModule)
+			}
 		}
 	})
 }

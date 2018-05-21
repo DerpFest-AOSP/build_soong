@@ -239,12 +239,13 @@ func convertFile(filename string, buffer *bytes.Buffer) (string, []error) {
 	}
 
 	// check for common supported but undesirable structures and clean them up
-	fixed, err := bpfix.FixTree(tree, bpfix.NewFixRequest().AddAll())
+	fixer := bpfix.NewFixer(tree)
+	tree, err := fixer.Fix(bpfix.NewFixRequest().AddAll())
 	if err != nil {
 		return "", []error{err}
 	}
 
-	out, err := bpparser.Print(fixed)
+	out, err := bpparser.Print(tree)
 	if err != nil {
 		return "", []error{err}
 	}

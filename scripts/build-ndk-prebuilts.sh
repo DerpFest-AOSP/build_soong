@@ -48,14 +48,13 @@ cat > ${SOONG_OUT}/soong.variables << EOF
     "Platform_sdk_version": ${PLATFORM_SDK_VERSION},
     "Platform_version_active_codenames": ${PLATFORM_VERSION_ALL_CODENAMES},
 
-    "DeviceName": "flounder",
+    "DeviceName": "generic_arm64",
     "DeviceArch": "arm64",
     "DeviceArchVariant": "armv8-a",
     "DeviceCpuVariant": "denver64",
     "DeviceAbi": [
         "arm64-v8a"
     ],
-    "DeviceUsesClang": true,
     "DeviceSecondaryArch": "arm",
     "DeviceSecondaryArchVariant": "armv7-a-neon",
     "DeviceSecondaryCpuVariant": "denver",

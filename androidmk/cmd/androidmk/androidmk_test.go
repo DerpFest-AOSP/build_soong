@@ -17,11 +17,10 @@ package main
 import (
 	"bytes"
 	"fmt"
-	"os"
 	"strings"
 	"testing"
 
-	bpparser "github.com/google/blueprint/parser"
+	"android/soong/bpfix/bpfix"
 )
 
 var testCases = []struct {
@@ -332,7 +331,7 @@ cc_library_shared {
 `,
 	},
 	{
-		desc: "Keep LOCAL_MODULE_TAGS non-optional",
+		desc: "Warn for LOCAL_MODULE_TAGS non-optional",
 		in: `
 include $(CLEAR_VARS)
 LOCAL_MODULE_TAGS := debug
@@ -341,7 +340,41 @@ include $(BUILD_SHARED_LIBRARY)
 
 		expected: `
 cc_library_shared {
-	tags: ["debug"],
+	// WARNING: Module tags are not supported in Soong.
+	// Add this module to PRODUCT_PACKAGES_DEBUG in your product file if you want to
+	// force installation for -userdebug and -eng builds.
+}
+`,
+	},
+	{
+		desc: "Custom warning for LOCAL_MODULE_TAGS tests",
+		in: `
+include $(CLEAR_VARS)
+LOCAL_MODULE_TAGS := debug tests
+include $(BUILD_SHARED_LIBRARY)
+`,
+
+		expected: `
+cc_library_shared {
+	// WARNING: Module tags are not supported in Soong.
+	// Add this module to PRODUCT_PACKAGES_DEBUG in your product file if you want to
+	// force installation for -userdebug and -eng builds.
+	// WARNING: Module tags are not supported in Soong.
+	// To make a shared library only for tests, use the "cc_test_library" module
+	// type. If you don't use gtest, set "gtest: false".
+}
+`,
+	},
+	{
+		desc: "Ignore LOCAL_MODULE_TAGS tests for cc_test",
+		in: `
+include $(CLEAR_VARS)
+LOCAL_MODULE_TAGS := tests
+include $(BUILD_NATIVE_TEST)
+`,
+
+		expected: `
+cc_test {
 }
 `,
 	},
@@ -438,28 +471,166 @@ include $(call all-makefiles-under,$(LOCAL_PATH))
 `,
 		expected: ``,
 	},
-}
+	{
+		desc: "proguard options for java library",
+		in: `
+			include $(CLEAR_VARS)
+			# Empty
+			LOCAL_PROGUARD_ENABLED :=
+			# Disabled
+			LOCAL_PROGUARD_ENABLED := disabled
+			# Full
+			LOCAL_PROGUARD_ENABLED := full
+			# Obfuscation and optimization
+			LOCAL_PROGUARD_ENABLED := obfuscation optimization
+			# Custom
+			LOCAL_PROGUARD_ENABLED := custom
+			include $(BUILD_JAVA_LIBRARY)
+		`,
+		expected: `
+			java_library {
+				// Empty
 
-func reformatBlueprint(input string) string {
-	file, errs := bpparser.Parse("<testcase>", bytes.NewBufferString(input), bpparser.NewScope(nil))
-	if len(errs) > 0 {
-		for _, err := range errs {
-			fmt.Fprintln(os.Stderr, err)
-		}
-		panic(fmt.Sprintf("%d parsing errors in testcase:\n%s", len(errs), input))
-	}
+				// Disabled
+				optimize: {
+					enabled: false,
+					// Full
+					enabled: true,
+					// Obfuscation and optimization
+					obfuscate: true,
+					optimize: true,
+					enabled: true,
+					// Custom
+					no_aapt_flags: true,
+					enabled: true,
+				},
+			}
+		`,
+	},
+	{
+		desc: "errorprone options for java library",
+		in: `
+			include $(CLEAR_VARS)
+			LOCAL_ERROR_PRONE_FLAGS := -Xep:AsyncCallableReturnsNull:ERROR -Xep:AsyncFunctionReturnsNull:ERROR
+			include $(BUILD_JAVA_LIBRARY)
+		`,
+		expected: `
+			java_library {
+				errorprone: {
+					javacflags: [
+						"-Xep:AsyncCallableReturnsNull:ERROR",
+						"-Xep:AsyncFunctionReturnsNull:ERROR",
+					],
+				},
+			}
+		`,
+	},
+	{
+		desc: "java prebuilt",
+		in: `
+			include $(CLEAR_VARS)
+			LOCAL_SRC_FILES := test.jar
+			LOCAL_MODULE_CLASS := JAVA_LIBRARIES
+			LOCAL_STATIC_ANDROID_LIBRARIES :=
+			include $(BUILD_PREBUILT)
+		`,
+		expected: `
+			java_import {
+				jars: ["test.jar"],
 
-	res, err := bpparser.Print(file)
-	if err != nil {
-		panic(fmt.Sprintf("Error printing testcase: %q", err))
-	}
+			}
+		`,
+	},
+	{
+		desc: "aar prebuilt",
+		in: `
+			include $(CLEAR_VARS)
+			LOCAL_SRC_FILES := test.aar
+			LOCAL_MODULE_CLASS := JAVA_LIBRARIES
+			include $(BUILD_PREBUILT)
+		`,
+		expected: `
+			android_library_import {
+				aars: ["test.aar"],
 
-	return string(res)
+			}
+		`,
+	},
+
+	{
+		desc: "aar",
+		in: `
+			include $(CLEAR_VARS)
+			LOCAL_SRC_FILES := test.java
+			LOCAL_RESOURCE_DIR := res
+			include $(BUILD_STATIC_JAVA_LIBRARY)
+
+			include $(CLEAR_VARS)
+			LOCAL_SRC_FILES := test.java
+			LOCAL_STATIC_LIBRARIES := foo
+			LOCAL_STATIC_ANDROID_LIBRARIES := bar
+			include $(BUILD_STATIC_JAVA_LIBRARY)
+
+			include $(CLEAR_VARS)
+			LOCAL_SRC_FILES := test.java
+			LOCAL_SHARED_LIBRARIES := foo
+			LOCAL_SHARED_ANDROID_LIBRARIES := bar
+			include $(BUILD_STATIC_JAVA_LIBRARY)
+
+			include $(CLEAR_VARS)
+			LOCAL_SRC_FILES := test.java
+			LOCAL_STATIC_ANDROID_LIBRARIES :=
+			include $(BUILD_STATIC_JAVA_LIBRARY)
+		`,
+		expected: `
+			android_library {
+				srcs: ["test.java"],
+				resource_dirs: ["res"],
+			}
+
+			android_library {
+				srcs: ["test.java"],
+				static_libs: [
+					"foo",
+					"bar",
+				],
+			}
+
+			android_library {
+				srcs: ["test.java"],
+				libs: [
+					"foo",
+					"bar",
+				],
+			}
+
+			java_library_static {
+				srcs: ["test.java"],
+				static_libs: [],
+			}
+		`,
+	},
+	{
+		desc: "cc_library shared_libs",
+		in: `
+			include $(CLEAR_VARS)
+			LOCAL_SHARED_LIBRARIES := libfoo
+			include $(BUILD_SHARED_LIBRARY)
+		`,
+		expected: `
+			cc_library_shared {
+				shared_libs: ["libfoo"],
+			}
+		`,
+	},
 }
 
 func TestEndToEnd(t *testing.T) {
 	for i, test := range testCases {
-		expected := reformatBlueprint(test.expected)
+		expected, err := bpfix.Reformat(test.expected)
+		if err != nil {
+			t.Error(err)
+		}
 
 		got, errs := convertFile(fmt.Sprintf("<testcase %d>", i), bytes.NewBufferString(test.in))
 		if len(errs) > 0 {

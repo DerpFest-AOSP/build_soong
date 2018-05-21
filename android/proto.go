@@ -23,7 +23,8 @@ package android
 // generate the source.
 
 func ProtoFlags(ctx ModuleContext, p *ProtoProperties) []string {
-	var protoFlags []string
+	protoFlags := []string{}
+
 	if len(p.Proto.Local_include_dirs) > 0 {
 		localProtoIncludeDirs := PathsForModuleSrc(ctx, p.Proto.Local_include_dirs)
 		protoFlags = append(protoFlags, JoinWithPrefix(localProtoIncludeDirs.Strings(), "-I"))
@@ -33,9 +34,14 @@ func ProtoFlags(ctx ModuleContext, p *ProtoProperties) []string {
 		protoFlags = append(protoFlags, JoinWithPrefix(rootProtoIncludeDirs.Strings(), "-I"))
 	}
 
-	protoFlags = append(protoFlags, "-I .")
-
 	return protoFlags
+}
+
+func ProtoCanonicalPathFromRoot(ctx ModuleContext, p *ProtoProperties) bool {
+	if p.Proto.Canonical_path_from_root == nil {
+		return true
+	}
+	return *p.Proto.Canonical_path_from_root
 }
 
 // ProtoDir returns the module's "gen/proto" directory
@@ -59,5 +65,14 @@ type ProtoProperties struct {
 		// list of directories relative to the bp file that will
 		// be added to the protoc include paths.
 		Local_include_dirs []string
+
+		// whether to identify the proto files from the root of the
+		// source tree (the original method in Android, useful for
+		// android-specific protos), or relative from where they were
+		// specified (useful for external/third party protos).
+		//
+		// This defaults to true today, but is expected to default to
+		// false in the future.
+		Canonical_path_from_root *bool
 	} `android:"arch_variant"`
 }

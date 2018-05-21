@@ -25,22 +25,23 @@ import (
 )
 
 const (
-	modulesAddedWall     = "ModulesAddedWall"
-	modulesUsingWnoError = "ModulesUsingWnoError"
+	modulesAddedWall          = "ModulesAddedWall"
+	modulesUsingWnoError      = "ModulesUsingWnoError"
+	modulesMissingProfileFile = "ModulesMissingProfileFile"
 )
 
 func init() {
 	android.RegisterMakeVarsProvider(pctx, makeVarsProvider)
 }
 
-func getWallWerrorMap(config android.Config, name string) *sync.Map {
+func getNamedMapForConfig(config android.Config, name string) *sync.Map {
 	return config.Once(name, func() interface{} {
 		return &sync.Map{}
 	}).(*sync.Map)
 }
 
 func makeStringOfKeys(ctx android.MakeVarsContext, setName string) string {
-	set := getWallWerrorMap(ctx.Config(), setName)
+	set := getNamedMapForConfig(ctx.Config(), setName)
 	keys := []string{}
 	set.Range(func(key interface{}, value interface{}) bool {
 		keys = append(keys, key.(string))
@@ -88,20 +89,35 @@ func makeVarsProvider(ctx android.MakeVarsContext) {
 	ctx.Strict("GLOBAL_CLANG_CPPFLAGS_NO_OVERRIDE", "")
 	ctx.Strict("NDK_PREBUILT_SHARED_LIBRARIES", strings.Join(ndkPrebuiltSharedLibs, " "))
 
-	if ctx.Config().ProductVariables.DeviceVndkVersion != nil {
-		ctx.Strict("BOARD_VNDK_VERSION", *ctx.Config().ProductVariables.DeviceVndkVersion)
-	} else {
-		ctx.Strict("BOARD_VNDK_VERSION", "")
-	}
+	ctx.Strict("BOARD_VNDK_VERSION", ctx.DeviceConfig().VndkVersion())
 
 	ctx.Strict("VNDK_CORE_LIBRARIES", strings.Join(vndkCoreLibraries, " "))
 	ctx.Strict("VNDK_SAMEPROCESS_LIBRARIES", strings.Join(vndkSpLibraries, " "))
 	ctx.Strict("LLNDK_LIBRARIES", strings.Join(llndkLibraries, " "))
 	ctx.Strict("VNDK_PRIVATE_LIBRARIES", strings.Join(vndkPrivateLibraries, " "))
 
+	// Filter vendor_public_library that are exported to make
+	exportedVendorPublicLibraries := []string{}
+	ctx.SingletonContext().VisitAllModules(func(module android.Module) {
+		if ccModule, ok := module.(*Module); ok {
+			baseName := ccModule.BaseModuleName()
+			if inList(baseName, vendorPublicLibraries) && module.ExportedToMake() {
+				if !inList(baseName, exportedVendorPublicLibraries) {
+					exportedVendorPublicLibraries = append(exportedVendorPublicLibraries, baseName)
+				}
+			}
+		}
+	})
+	sort.Strings(exportedVendorPublicLibraries)
+	ctx.Strict("VENDOR_PUBLIC_LIBRARIES", strings.Join(exportedVendorPublicLibraries, " "))
+
+	sort.Strings(lsdumpPaths)
+	ctx.Strict("LSDUMP_PATHS", strings.Join(lsdumpPaths, " "))
+
 	ctx.Strict("ANDROID_WARNING_ALLOWED_PROJECTS", makeStringOfWarningAllowedProjects())
 	ctx.Strict("SOONG_MODULES_ADDED_WALL", makeStringOfKeys(ctx, modulesAddedWall))
 	ctx.Strict("SOONG_MODULES_USING_WNO_ERROR", makeStringOfKeys(ctx, modulesUsingWnoError))
+	ctx.Strict("SOONG_MODULES_MISSING_PGO_PROFILE_FILE", makeStringOfKeys(ctx, modulesMissingProfileFile))
 
 	ctx.Strict("ADDRESS_SANITIZER_CONFIG_EXTRA_CFLAGS", strings.Join(asanCflags, " "))
 	ctx.Strict("ADDRESS_SANITIZER_CONFIG_EXTRA_LDFLAGS", strings.Join(asanLdflags, " "))
@@ -191,10 +207,7 @@ func makeVarsToolchain(ctx android.MakeVarsContext, secondPrefix string,
 		hod = "Device"
 	}
 
-	if target.Os.Class == android.Device && Bool(ctx.Config().ProductVariables.Brillo) {
-		productExtraCflags += "-D__BRILLO__"
-	}
-	if target.Os.Class == android.Host && Bool(ctx.Config().ProductVariables.HostStaticBinaries) {
+	if target.Os.Class == android.Host && ctx.Config().HostStaticBinaries() {
 		productExtraLdflags += "-static"
 	}
 
@@ -215,6 +228,12 @@ func makeVarsToolchain(ctx android.MakeVarsContext, secondPrefix string,
 	}, " "))
 	ctx.Strict(makePrefix+"GLOBAL_LDFLAGS", strings.Join([]string{
 		fmt.Sprintf("${config.%sGlobalLdflags}", hod),
+		toolchain.Ldflags(),
+		toolchain.ToolchainLdflags(),
+		productExtraLdflags,
+	}, " "))
+	ctx.Strict(makePrefix+"GLOBAL_LLDFLAGS", strings.Join([]string{
+		fmt.Sprintf("${config.%sGlobalLldflags}", hod),
 		toolchain.Ldflags(),
 		toolchain.ToolchainLdflags(),
 		productExtraLdflags,
@@ -267,10 +286,18 @@ func makeVarsToolchain(ctx android.MakeVarsContext, secondPrefix string,
 			productExtraLdflags,
 			clangExtras,
 		}, " "))
+		ctx.Strict(clangPrefix+"GLOBAL_LLDFLAGS", strings.Join([]string{
+			fmt.Sprintf("${config.%sGlobalLldflags}", hod),
+			toolchain.ClangLldflags(),
+			toolchain.ToolchainClangLdflags(),
+			productExtraLdflags,
+			clangExtras,
+		}, " "))
 
 		if target.Os.Class == android.Device {
 			ctx.Strict(secondPrefix+"ADDRESS_SANITIZER_RUNTIME_LIBRARY", strings.TrimSuffix(config.AddressSanitizerRuntimeLibrary(toolchain), ".so"))
 			ctx.Strict(secondPrefix+"UBSAN_RUNTIME_LIBRARY", strings.TrimSuffix(config.UndefinedBehaviorSanitizerRuntimeLibrary(toolchain), ".so"))
+			ctx.Strict(secondPrefix+"UBSAN_MINIMAL_RUNTIME_LIBRARY", strings.TrimSuffix(config.UndefinedBehaviorSanitizerMinimalRuntimeLibrary(toolchain), ".a"))
 			ctx.Strict(secondPrefix+"TSAN_RUNTIME_LIBRARY", strings.TrimSuffix(config.ThreadSanitizerRuntimeLibrary(toolchain), ".so"))
 		}
 
@@ -289,7 +316,7 @@ func makeVarsToolchain(ctx android.MakeVarsContext, secondPrefix string,
 	if target.Os == android.Darwin {
 		ctx.Strict(makePrefix+"AR", "${config.MacArPath}")
 	} else {
-		ctx.Strict(makePrefix+"AR", gccCmd(toolchain, "ar"))
+		ctx.Strict(makePrefix+"AR", "${config.ClangBin}/llvm-ar")
 		ctx.Strict(makePrefix+"READELF", gccCmd(toolchain, "readelf"))
 		ctx.Strict(makePrefix+"NM", gccCmd(toolchain, "nm"))
 	}
@@ -304,7 +331,7 @@ func makeVarsToolchain(ctx android.MakeVarsContext, secondPrefix string,
 		ctx.Strict(makePrefix+"STRIP", gccCmd(toolchain, "strip"))
 		ctx.Strict(makePrefix+"GCC_VERSION", toolchain.GccVersion())
 		ctx.Strict(makePrefix+"NDK_GCC_VERSION", toolchain.GccVersion())
-		ctx.Strict(makePrefix+"NDK_TRIPLE", toolchain.ClangTriple())
+		ctx.Strict(makePrefix+"NDK_TRIPLE", config.NDKTriple(toolchain))
 	}
 
 	if target.Os.Class == android.Host || target.Os.Class == android.HostCross {

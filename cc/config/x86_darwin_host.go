@@ -15,7 +15,6 @@
 package config
 
 import (
-	"fmt"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -74,9 +73,15 @@ var (
 
 	darwinClangLdflags = ClangFilterUnknownCflags(darwinLdflags)
 
+	darwinClangLldflags = ClangFilterUnknownLldflags(darwinClangLdflags)
+
 	darwinX86ClangLdflags = ClangFilterUnknownCflags(darwinX86Ldflags)
 
+	darwinX86ClangLldflags = ClangFilterUnknownLldflags(darwinX86ClangLdflags)
+
 	darwinX8664ClangLdflags = ClangFilterUnknownCflags(darwinX8664Ldflags)
+
+	darwinX8664ClangLldflags = ClangFilterUnknownLldflags(darwinX8664ClangLdflags)
 
 	darwinSupportedSdkVersions = []string{
 		"10.10",
@@ -107,26 +112,28 @@ const (
 )
 
 func init() {
-	pctx.VariableFunc("macSdkPath", func(config android.Config) (string, error) {
-		xcodeselect := config.HostSystemTool("xcode-select")
+	pctx.VariableFunc("macSdkPath", func(ctx android.PackageVarContext) string {
+		xcodeselect := ctx.Config().HostSystemTool("xcode-select")
 		bytes, err := exec.Command(xcodeselect, "--print-path").Output()
-		return strings.TrimSpace(string(bytes)), err
+		if err != nil {
+			ctx.Errorf("xcode-select failed with: %q", err.Error())
+		}
+		return strings.TrimSpace(string(bytes))
 	})
-	pctx.VariableFunc("macSdkRoot", func(config android.Config) (string, error) {
-		return xcrunSdk(config, "--show-sdk-path")
+	pctx.VariableFunc("macSdkRoot", func(ctx android.PackageVarContext) string {
+		return xcrunSdk(ctx, "--show-sdk-path")
 	})
 	pctx.StaticVariable("macMinVersion", "10.8")
-	pctx.VariableFunc("MacArPath", func(config android.Config) (string, error) {
-		return xcrun(config, "--find", "ar")
+	pctx.VariableFunc("MacArPath", func(ctx android.PackageVarContext) string {
+		return xcrun(ctx, "--find", "ar")
 	})
 
-	pctx.VariableFunc("MacStripPath", func(config android.Config) (string, error) {
-		return xcrun(config, "--find", "strip")
+	pctx.VariableFunc("MacStripPath", func(ctx android.PackageVarContext) string {
+		return xcrun(ctx, "--find", "strip")
 	})
 
-	pctx.VariableFunc("MacToolPath", func(config android.Config) (string, error) {
-		path, err := xcrun(config, "--find", "ld")
-		return filepath.Dir(path), err
+	pctx.VariableFunc("MacToolPath", func(ctx android.PackageVarContext) string {
+		return filepath.Dir(xcrun(ctx, "--find", "ld"))
 	})
 
 	pctx.StaticVariable("DarwinGccVersion", darwinGccVersion)
@@ -140,6 +147,7 @@ func init() {
 
 	pctx.StaticVariable("DarwinClangCflags", strings.Join(darwinClangCflags, " "))
 	pctx.StaticVariable("DarwinClangLdflags", strings.Join(darwinClangLdflags, " "))
+	pctx.StaticVariable("DarwinClangLldflags", strings.Join(darwinClangLldflags, " "))
 
 	// Extended cflags
 	pctx.StaticVariable("DarwinX86Cflags", strings.Join(darwinX86Cflags, " "))
@@ -151,38 +159,45 @@ func init() {
 	pctx.StaticVariable("DarwinX8664ClangCflags",
 		strings.Join(ClangFilterUnknownCflags(darwinX8664Cflags), " "))
 	pctx.StaticVariable("DarwinX86ClangLdflags", strings.Join(darwinX86ClangLdflags, " "))
+	pctx.StaticVariable("DarwinX86ClangLldflags", strings.Join(darwinX86ClangLldflags, " "))
 	pctx.StaticVariable("DarwinX8664ClangLdflags", strings.Join(darwinX8664ClangLdflags, " "))
+	pctx.StaticVariable("DarwinX8664ClangLldflags", strings.Join(darwinX8664ClangLldflags, " "))
 	pctx.StaticVariable("DarwinX86YasmFlags", "-f macho -m x86")
 	pctx.StaticVariable("DarwinX8664YasmFlags", "-f macho -m amd64")
 }
 
-func xcrun(config android.Config, args ...string) (string, error) {
-	xcrun := config.HostSystemTool("xcrun")
+func xcrun(ctx android.PackageVarContext, args ...string) string {
+	xcrun := ctx.Config().HostSystemTool("xcrun")
 	bytes, err := exec.Command(xcrun, args...).Output()
-	return strings.TrimSpace(string(bytes)), err
+	if err != nil {
+		ctx.Errorf("xcrun failed with: %q", err.Error())
+	}
+	return strings.TrimSpace(string(bytes))
 }
 
-func xcrunSdk(config android.Config, arg string) (string, error) {
-	xcrun := config.HostSystemTool("xcrun")
-	if selected := config.Getenv("MAC_SDK_VERSION"); selected != "" {
+func xcrunSdk(ctx android.PackageVarContext, arg string) string {
+	xcrun := ctx.Config().HostSystemTool("xcrun")
+	if selected := ctx.Config().Getenv("MAC_SDK_VERSION"); selected != "" {
 		if !inList(selected, darwinSupportedSdkVersions) {
-			return "", fmt.Errorf("MAC_SDK_VERSION %s isn't supported: %q", selected, darwinSupportedSdkVersions)
+			ctx.Errorf("MAC_SDK_VERSION %s isn't supported: %q", selected, darwinSupportedSdkVersions)
+			return ""
 		}
 
 		bytes, err := exec.Command(xcrun, "--sdk", "macosx"+selected, arg).Output()
-		if err == nil {
-			return strings.TrimSpace(string(bytes)), err
+		if err != nil {
+			ctx.Errorf("MAC_SDK_VERSION %s is not installed", selected)
 		}
-		return "", fmt.Errorf("MAC_SDK_VERSION %s is not installed", selected)
+		return strings.TrimSpace(string(bytes))
 	}
 
 	for _, sdk := range darwinSupportedSdkVersions {
 		bytes, err := exec.Command(xcrun, "--sdk", "macosx"+sdk, arg).Output()
 		if err == nil {
-			return strings.TrimSpace(string(bytes)), err
+			return strings.TrimSpace(string(bytes))
 		}
 	}
-	return "", fmt.Errorf("Could not find a supported mac sdk: %q", darwinSupportedSdkVersions)
+	ctx.Errorf("Could not find a supported mac sdk: %q", darwinSupportedSdkVersions)
+	return ""
 }
 
 type toolchainDarwin struct {
@@ -267,8 +282,16 @@ func (t *toolchainDarwinX86) ClangLdflags() string {
 	return "${config.DarwinClangLdflags} ${config.DarwinX86ClangLdflags}"
 }
 
+func (t *toolchainDarwinX86) ClangLldflags() string {
+	return "${config.DarwinClangLldflags} ${config.DarwinX86ClangLldflags}"
+}
+
 func (t *toolchainDarwinX8664) ClangLdflags() string {
 	return "${config.DarwinClangLdflags} ${config.DarwinX8664ClangLdflags}"
+}
+
+func (t *toolchainDarwinX8664) ClangLldflags() string {
+	return "${config.DarwinClangLldflags} ${config.DarwinX8664ClangLldflags}"
 }
 
 func (t *toolchainDarwinX86) YasmFlags() string {

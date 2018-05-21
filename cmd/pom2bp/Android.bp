@@ -12,25 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//
-// mock filesystem
-//
-
-bootstrap_go_package {
-    name: "soong-fs",
-    pkgPath: "android/soong/fs",
-    srcs: [
-        "fs.go",
+blueprint_go_binary {
+    name: "pom2bp",
+    deps: [
+        "blueprint-proptools",
+        "bpfix-lib",
     ],
-    darwin: {
-        srcs: [
-            "fs_darwin.go",
-        ],
-    },
-    linux: {
-        srcs: [
-            "fs_linux.go",
-        ],
-    },
+    srcs: ["pom2bp.go"],
 }
-

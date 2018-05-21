@@ -119,12 +119,12 @@ func RegisterArchFeatures(arch ArchType, features ...string) {
 
 func RegisterArchVariantFeatures(arch ArchType, variant string, features ...string) {
 	checkCalledFromInit()
-	if variant != "" && !inList(variant, archVariants[arch]) {
+	if variant != "" && !InList(variant, archVariants[arch]) {
 		panic(fmt.Errorf("Invalid variant %q for arch %q", variant, arch))
 	}
 
 	for _, feature := range features {
-		if !inList(feature, archFeatures[arch]) {
+		if !InList(feature, archFeatures[arch]) {
 			panic(fmt.Errorf("Invalid feature %q for arch %q variant %q", feature, arch, variant))
 		}
 	}
@@ -481,13 +481,13 @@ func createArchType(props reflect.Type) reflect.Type {
 
 			if os.Linux() {
 				target := "Linux_" + archType.Name
-				if !inList(target, targets) {
+				if !InList(target, targets) {
 					targets = append(targets, target)
 				}
 			}
 			if os.Bionic() {
 				target := "Bionic_" + archType.Name
-				if !inList(target, targets) {
+				if !InList(target, targets) {
 					targets = append(targets, target)
 				}
 			}
@@ -784,14 +784,18 @@ func (a *ModuleBase) setArchProperties(ctx BottomUpMutatorContext) {
 				a.appendProperties(ctx, genProps, targetProp, field, prefix)
 			}
 
-			if arch.ArchType == X86 && (hasArmAbi(arch) ||
-				hasArmAndroidArch(ctx.Config().Targets[Device])) {
+			if (arch.ArchType == X86 && (hasArmAbi(arch) ||
+				hasArmAndroidArch(ctx.Config().Targets[Device]))) ||
+				(arch.ArchType == Arm &&
+					hasX86AndroidArch(ctx.Config().Targets[Device])) {
 				field := "Arm_on_x86"
 				prefix := "target.arm_on_x86"
 				a.appendProperties(ctx, genProps, targetProp, field, prefix)
 			}
-			if arch.ArchType == X86_64 && (hasArmAbi(arch) ||
-				hasArmAndroidArch(ctx.Config().Targets[Device])) {
+			if (arch.ArchType == X86_64 && (hasArmAbi(arch) ||
+				hasArmAndroidArch(ctx.Config().Targets[Device]))) ||
+				(arch.ArchType == Arm &&
+					hasX8664AndroidArch(ctx.Config().Targets[Device])) {
 				field := "Arm_on_x86_64"
 				prefix := "target.arm_on_x86_64"
 				a.appendProperties(ctx, genProps, targetProp, field, prefix)
@@ -817,7 +821,7 @@ func forEachInterface(v reflect.Value, f func(reflect.Value)) {
 
 // Convert the arch product variables into a list of targets for each os class structs
 func decodeTargetProductVariables(config *config) (map[OsClass][]Target, error) {
-	variables := config.ProductVariables
+	variables := config.productVariables
 
 	targets := make(map[OsClass][]Target)
 	var targetErr error
@@ -850,17 +854,17 @@ func decodeTargetProductVariables(config *config) (map[OsClass][]Target, error) 
 		addTarget(BuildOs, *variables.HostSecondaryArch, nil, nil, nil)
 	}
 
-	if config.Host_bionic != nil && *config.Host_bionic {
+	if Bool(config.Host_bionic) {
 		addTarget(LinuxBionic, "x86_64", nil, nil, nil)
 	}
 
-	if variables.CrossHost != nil && *variables.CrossHost != "" {
+	if String(variables.CrossHost) != "" {
 		crossHostOs := osByName(*variables.CrossHost)
 		if crossHostOs == NoOsType {
 			return nil, fmt.Errorf("Unknown cross host OS %q", *variables.CrossHost)
 		}
 
-		if variables.CrossHostArch == nil || *variables.CrossHostArch == "" {
+		if String(variables.CrossHostArch) == "" {
 			return nil, fmt.Errorf("No cross-host primary architecture set")
 		}
 
@@ -914,6 +918,26 @@ func hasArmAndroidArch(targets []Target) bool {
 	return false
 }
 
+// hasX86Arch returns true if targets has at least x86 Android arch
+func hasX86AndroidArch(targets []Target) bool {
+	for _, target := range targets {
+		if target.Os == Android && target.Arch.ArchType == X86 {
+			return true
+		}
+	}
+	return false
+}
+
+// hasX8664Arch returns true if targets has at least x86_64 Android arch
+func hasX8664AndroidArch(targets []Target) bool {
+	for _, target := range targets {
+		if target.Os == Android && target.Arch.ArchType == X86_64 {
+			return true
+		}
+	}
+	return false
+}
+
 type archConfig struct {
 	arch        string
 	archVariant string
@@ -923,8 +947,6 @@ type archConfig struct {
 
 func getMegaDeviceConfig() []archConfig {
 	return []archConfig{
-		// armv5 is only used for unbundled apps
-		//{"arm", "armv5te", "", []string{"armeabi"}},
 		{"arm", "armv7-a", "generic", []string{"armeabi-v7a"}},
 		{"arm", "armv7-a-neon", "generic", []string{"armeabi-v7a"}},
 		{"arm", "armv7-a-neon", "cortex-a7", []string{"armeabi-v7a"}},
@@ -934,6 +956,7 @@ func getMegaDeviceConfig() []archConfig {
 		{"arm", "armv7-a-neon", "cortex-a53", []string{"armeabi-v7a"}},
 		{"arm", "armv7-a-neon", "cortex-a53.a57", []string{"armeabi-v7a"}},
 		{"arm", "armv7-a-neon", "cortex-a73", []string{"armeabi-v7a"}},
+		{"arm", "armv7-a-neon", "cortex-a75", []string{"armeabi-v7a"}},
 		{"arm", "armv7-a-neon", "denver", []string{"armeabi-v7a"}},
 		{"arm", "armv7-a-neon", "krait", []string{"armeabi-v7a"}},
 		{"arm", "armv7-a-neon", "kryo", []string{"armeabi-v7a"}},
@@ -945,6 +968,7 @@ func getMegaDeviceConfig() []archConfig {
 		{"arm64", "armv8-a", "kryo", []string{"arm64-v8a"}},
 		{"arm64", "armv8-a", "exynos-m1", []string{"arm64-v8a"}},
 		{"arm64", "armv8-a", "exynos-m2", []string{"arm64-v8a"}},
+		{"arm64", "armv8-2a", "cortex-a75", []string{"arm64-v8a"}},
 		{"mips", "mips32-fp", "", []string{"mips"}},
 		{"mips", "mips32r2-fp", "", []string{"mips"}},
 		{"mips", "mips32r2-fp-xburst", "", []string{"mips"}},
@@ -971,7 +995,7 @@ func getMegaDeviceConfig() []archConfig {
 
 func getNdkAbisConfig() []archConfig {
 	return []archConfig{
-		{"arm", "armv5te", "", []string{"armeabi"}},
+		{"arm", "armv7-a", "", []string{"armeabi"}},
 		{"arm64", "armv8-a", "", []string{"arm64-v8a"}},
 		{"x86", "", "", []string{"x86"}},
 		{"x86_64", "", "", []string{"x86_64"}},

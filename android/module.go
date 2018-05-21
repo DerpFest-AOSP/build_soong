@@ -65,7 +65,10 @@ type androidBaseContext interface {
 	Windows() bool
 	Debug() bool
 	PrimaryArch() bool
-	InstallOnVendorPartition() bool
+	Platform() bool
+	DeviceSpecific() bool
+	SocSpecific() bool
+	ProductSpecific() bool
 	AConfig() Config
 	DeviceConfig() DeviceConfig
 }
@@ -107,8 +110,10 @@ type ModuleContext interface {
 
 	ExpandSources(srcFiles, excludes []string) Paths
 	ExpandSource(srcFile, prop string) Path
+	ExpandOptionalSource(srcFile *string, prop string) OptionalPath
 	ExpandSourcesSubDir(srcFiles, excludes []string, subDir string) Paths
 	Glob(globPattern string, excludes []string) Paths
+	GlobFiles(globPattern string, excludes []string) Paths
 
 	InstallExecutable(installPath OutputPath, name string, srcPath Path, deps ...Path) OutputPath
 	InstallFile(installPath OutputPath, name string, srcPath Path, deps ...Path) OutputPath
@@ -119,6 +124,7 @@ type ModuleContext interface {
 
 	InstallInData() bool
 	InstallInSanitizerDir() bool
+	InstallInRecovery() bool
 
 	RequiredModuleNames() []string
 
@@ -136,6 +142,7 @@ type ModuleContext interface {
 
 	VisitDirectDepsBlueprint(visit func(blueprint.Module))
 	VisitDirectDeps(visit func(Module))
+	VisitDirectDepsWithTag(tag blueprint.DependencyTag, visit func(Module))
 	VisitDirectDepsIf(pred func(Module) bool, visit func(Module))
 	VisitDepsDepthFirst(visit func(Module))
 	VisitDepsDepthFirstIf(pred func(Module) bool, visit func(Module))
@@ -170,7 +177,9 @@ type Module interface {
 	Target() Target
 	InstallInData() bool
 	InstallInSanitizerDir() bool
+	InstallInRecovery() bool
 	SkipInstall()
+	ExportedToMake() bool
 
 	AddProperties(props ...interface{})
 	GetProperties() []interface{}
@@ -184,8 +193,6 @@ type nameProperties struct {
 }
 
 type commonProperties struct {
-	Tags []string
-
 	// emit build rules for this module
 	Enabled *bool `android:"arch_variant"`
 
@@ -212,11 +219,34 @@ type commonProperties struct {
 	// vendor who owns this module
 	Owner *string
 
-	// whether this module is device specific and should be installed into /vendor
+	// whether this module is specific to an SoC (System-On-a-Chip). When set to true,
+	// it is installed into /vendor (or /system/vendor if vendor partition does not exist).
+	// Use `soc_specific` instead for better meaning.
 	Vendor *bool
+
+	// whether this module is specific to an SoC (System-On-a-Chip). When set to true,
+	// it is installed into /vendor (or /system/vendor if vendor partition does not exist).
+	Soc_specific *bool
+
+	// whether this module is specific to a device, not only for SoC, but also for off-chip
+	// peripherals. When set to true, it is installed into /odm (or /vendor/odm if odm partition
+	// does not exist, or /system/vendor/odm if both odm and vendor partitions do not exist).
+	// This implies `soc_specific:true`.
+	Device_specific *bool
+
+	// whether this module is specific to a software configuration of a product (e.g. country,
+	// network operator, etc). When set to true, it is installed into /product (or
+	// /system/product if product partition does not exist).
+	Product_specific *bool
+
+	// Whether this module is installed to recovery partition
+	Recovery *bool
 
 	// init.rc files to be installed if this module is installed
 	Init_rc []string
+
+	// VINTF manifest fragments to be installed if this module is installed
+	Vintf_fragments []string
 
 	// names of other modules to install if this module is installed
 	Required []string `android:"arch_variant"`
@@ -264,6 +294,30 @@ const (
 	NeitherHostNorDeviceSupported
 )
 
+type moduleKind int
+
+const (
+	platformModule moduleKind = iota
+	deviceSpecificModule
+	socSpecificModule
+	productSpecificModule
+)
+
+func (k moduleKind) String() string {
+	switch k {
+	case platformModule:
+		return "platform"
+	case deviceSpecificModule:
+		return "device-specific"
+	case socSpecificModule:
+		return "soc-specific"
+	case productSpecificModule:
+		return "product-specific"
+	default:
+		panic(fmt.Errorf("unknown module kind %d", k))
+	}
+}
+
 func InitAndroidModule(m Module) {
 	base := m.base()
 	base.module = m
@@ -272,6 +326,7 @@ func InitAndroidModule(m Module) {
 		&base.nameProperties,
 		&base.commonProperties,
 		&base.variableProperties)
+	base.customizableProperties = m.GetProperties()
 }
 
 func InitAndroidArchModule(m Module, hod HostOrDeviceSupported, defaultMultilib Multilib) {
@@ -449,6 +504,22 @@ func (a *ModuleBase) DeviceSupported() bool {
 				*a.hostAndDeviceProperties.Device_supported)
 }
 
+func (a *ModuleBase) Platform() bool {
+	return !a.DeviceSpecific() && !a.SocSpecific() && !a.ProductSpecific()
+}
+
+func (a *ModuleBase) DeviceSpecific() bool {
+	return Bool(a.commonProperties.Device_specific)
+}
+
+func (a *ModuleBase) SocSpecific() bool {
+	return Bool(a.commonProperties.Vendor) || Bool(a.commonProperties.Proprietary) || Bool(a.commonProperties.Soc_specific)
+}
+
+func (a *ModuleBase) ProductSpecific() bool {
+	return Bool(a.commonProperties.Product_specific)
+}
+
 func (a *ModuleBase) Enabled() bool {
 	if a.commonProperties.Enabled == nil {
 		return !a.Os().DefaultDisabled
@@ -458,6 +529,10 @@ func (a *ModuleBase) Enabled() bool {
 
 func (a *ModuleBase) SkipInstall() {
 	a.commonProperties.SkipInstall = true
+}
+
+func (a *ModuleBase) ExportedToMake() bool {
+	return a.commonProperties.NamespaceExportedToMake
 }
 
 func (a *ModuleBase) computeInstallDeps(
@@ -488,6 +563,10 @@ func (p *ModuleBase) InstallInData() bool {
 
 func (p *ModuleBase) InstallInSanitizerDir() bool {
 	return false
+}
+
+func (p *ModuleBase) InstallInRecovery() bool {
+	return Bool(p.commonProperties.Recovery)
 }
 
 func (a *ModuleBase) generateModuleTarget(ctx ModuleContext) {
@@ -546,11 +625,48 @@ func (a *ModuleBase) generateModuleTarget(ctx ModuleContext) {
 	}
 }
 
+func determineModuleKind(a *ModuleBase, ctx blueprint.BaseModuleContext) moduleKind {
+	var socSpecific = Bool(a.commonProperties.Vendor) || Bool(a.commonProperties.Proprietary) || Bool(a.commonProperties.Soc_specific)
+	var deviceSpecific = Bool(a.commonProperties.Device_specific)
+	var productSpecific = Bool(a.commonProperties.Product_specific)
+
+	if ((socSpecific || deviceSpecific) && productSpecific) || (socSpecific && deviceSpecific) {
+		msg := "conflicting value set here"
+		if productSpecific {
+			ctx.PropertyErrorf("product_specific", "a module cannot be specific to SoC or device and product at the same time.")
+			if deviceSpecific {
+				ctx.PropertyErrorf("device_specific", msg)
+			}
+		} else {
+			ctx.PropertyErrorf("device_specific", "a module cannot be specific to SoC and device at the same time.")
+		}
+		if Bool(a.commonProperties.Vendor) {
+			ctx.PropertyErrorf("vendor", msg)
+		}
+		if Bool(a.commonProperties.Proprietary) {
+			ctx.PropertyErrorf("proprietary", msg)
+		}
+		if Bool(a.commonProperties.Soc_specific) {
+			ctx.PropertyErrorf("soc_specific", msg)
+		}
+	}
+
+	if productSpecific {
+		return productSpecificModule
+	} else if deviceSpecific {
+		return deviceSpecificModule
+	} else if socSpecific {
+		return socSpecificModule
+	} else {
+		return platformModule
+	}
+}
+
 func (a *ModuleBase) androidBaseContextFactory(ctx blueprint.BaseModuleContext) androidBaseContextImpl {
 	return androidBaseContextImpl{
 		target:        a.commonProperties.CompileTarget,
 		targetPrimary: a.commonProperties.CompilePrimary,
-		vendor:        Bool(a.commonProperties.Proprietary) || Bool(a.commonProperties.Vendor),
+		kind:          determineModuleKind(a, ctx),
 		config:        ctx.Config().(Config),
 	}
 }
@@ -606,7 +722,7 @@ type androidBaseContextImpl struct {
 	target        Target
 	targetPrimary bool
 	debug         bool
-	vendor        bool
+	kind          moduleKind
 	config        Config
 }
 
@@ -750,6 +866,16 @@ func (a *androidModuleContext) VisitDirectDeps(visit func(Module)) {
 	})
 }
 
+func (a *androidModuleContext) VisitDirectDepsWithTag(tag blueprint.DependencyTag, visit func(Module)) {
+	a.ModuleContext.VisitDirectDeps(func(module blueprint.Module) {
+		if aModule := a.validateAndroidModule(module); aModule != nil {
+			if a.ModuleContext.OtherModuleDependencyTag(aModule) == tag {
+				visit(aModule)
+			}
+		}
+	})
+}
+
 func (a *androidModuleContext) VisitDirectDepsIf(pred func(Module) bool, visit func(Module)) {
 	a.ModuleContext.VisitDirectDepsIf(
 		// pred
@@ -867,8 +993,20 @@ func (a *androidBaseContextImpl) DeviceConfig() DeviceConfig {
 	return DeviceConfig{a.config.deviceConfig}
 }
 
-func (a *androidBaseContextImpl) InstallOnVendorPartition() bool {
-	return a.vendor
+func (a *androidBaseContextImpl) Platform() bool {
+	return a.kind == platformModule
+}
+
+func (a *androidBaseContextImpl) DeviceSpecific() bool {
+	return a.kind == deviceSpecificModule
+}
+
+func (a *androidBaseContextImpl) SocSpecific() bool {
+	return a.kind == socSpecificModule
+}
+
+func (a *androidBaseContextImpl) ProductSpecific() bool {
+	return a.kind == productSpecificModule
 }
 
 func (a *androidModuleContext) InstallInData() bool {
@@ -879,8 +1017,19 @@ func (a *androidModuleContext) InstallInSanitizerDir() bool {
 	return a.module.InstallInSanitizerDir()
 }
 
+func (a *androidModuleContext) InstallInRecovery() bool {
+	return a.module.InstallInRecovery()
+}
+
 func (a *androidModuleContext) skipInstall(fullInstallPath OutputPath) bool {
 	if a.module.base().commonProperties.SkipInstall {
+		return true
+	}
+
+	// We'll need a solution for choosing which of modules with the same name in different
+	// namespaces to install.  For now, reuse the list of namespaces exported to Make as the
+	// list of namespaces to install in a Soong-only build.
+	if !a.module.base().commonProperties.NamespaceExportedToMake {
 		return true
 	}
 
@@ -1058,18 +1207,40 @@ func (ctx *androidModuleContext) ExpandSource(srcFile, prop string) Path {
 	}
 }
 
+// Returns an optional single path expanded from globs and modules referenced using ":module" syntax if
+// the srcFile is non-nil.
+// ExtractSourceDeps must have already been called during the dependency resolution phase.
+func (ctx *androidModuleContext) ExpandOptionalSource(srcFile *string, prop string) OptionalPath {
+	if srcFile != nil {
+		return OptionalPathForPath(ctx.ExpandSource(*srcFile, prop))
+	}
+	return OptionalPath{}
+}
+
 func (ctx *androidModuleContext) ExpandSourcesSubDir(srcFiles, excludes []string, subDir string) Paths {
 	prefix := PathForModuleSrc(ctx).String()
 
-	for i, e := range excludes {
-		j := findStringInSlice(e, srcFiles)
-		if j != -1 {
-			srcFiles = append(srcFiles[:j], srcFiles[j+1:]...)
-		}
-
-		excludes[i] = filepath.Join(prefix, e)
+	var expandedExcludes []string
+	if excludes != nil {
+		expandedExcludes = make([]string, 0, len(excludes))
 	}
 
+	for _, e := range excludes {
+		if m := SrcIsModule(e); m != "" {
+			module := ctx.GetDirectDepWithTag(m, SourceDepTag)
+			if module == nil {
+				// Error will have been handled by ExtractSourcesDeps
+				continue
+			}
+			if srcProducer, ok := module.(SourceFileProducer); ok {
+				expandedExcludes = append(expandedExcludes, srcProducer.Srcs().Strings()...)
+			} else {
+				ctx.ModuleErrorf("srcs dependency %q is not a source file producing module", m)
+			}
+		} else {
+			expandedExcludes = append(expandedExcludes, filepath.Join(prefix, e))
+		}
+	}
 	expandedSrcFiles := make(Paths, 0, len(srcFiles))
 	for _, s := range srcFiles {
 		if m := SrcIsModule(s); m != "" {
@@ -1079,22 +1250,33 @@ func (ctx *androidModuleContext) ExpandSourcesSubDir(srcFiles, excludes []string
 				continue
 			}
 			if srcProducer, ok := module.(SourceFileProducer); ok {
-				expandedSrcFiles = append(expandedSrcFiles, srcProducer.Srcs()...)
+				moduleSrcs := srcProducer.Srcs()
+				for _, e := range expandedExcludes {
+					for j, ms := range moduleSrcs {
+						if ms.String() == e {
+							moduleSrcs = append(moduleSrcs[:j], moduleSrcs[j+1:]...)
+						}
+					}
+				}
+				expandedSrcFiles = append(expandedSrcFiles, moduleSrcs...)
 			} else {
 				ctx.ModuleErrorf("srcs dependency %q is not a source file producing module", m)
 			}
 		} else if pathtools.IsGlob(s) {
-			globbedSrcFiles := ctx.Glob(filepath.Join(prefix, s), excludes)
+			globbedSrcFiles := ctx.GlobFiles(filepath.Join(prefix, s), expandedExcludes)
 			for i, s := range globbedSrcFiles {
 				globbedSrcFiles[i] = s.(ModuleSrcPath).WithSubDir(ctx, subDir)
 			}
 			expandedSrcFiles = append(expandedSrcFiles, globbedSrcFiles...)
 		} else {
-			s := PathForModuleSrc(ctx, s).WithSubDir(ctx, subDir)
-			expandedSrcFiles = append(expandedSrcFiles, s)
+			p := PathForModuleSrc(ctx, s).WithSubDir(ctx, subDir)
+			j := findStringInSlice(p.String(), expandedExcludes)
+			if j == -1 {
+				expandedSrcFiles = append(expandedSrcFiles, p)
+			}
+
 		}
 	}
-
 	return expandedSrcFiles
 }
 
@@ -1107,7 +1289,15 @@ func (ctx *androidModuleContext) Glob(globPattern string, excludes []string) Pat
 	if err != nil {
 		ctx.ModuleErrorf("glob: %s", err.Error())
 	}
-	return pathsForModuleSrcFromFullPath(ctx, ret)
+	return pathsForModuleSrcFromFullPath(ctx, ret, true)
+}
+
+func (ctx *androidModuleContext) GlobFiles(globPattern string, excludes []string) Paths {
+	ret, err := ctx.GlobWithDeps(globPattern, excludes)
+	if err != nil {
+		ctx.ModuleErrorf("glob: %s", err.Error())
+	}
+	return pathsForModuleSrcFromFullPath(ctx, ret, false)
 }
 
 func init() {

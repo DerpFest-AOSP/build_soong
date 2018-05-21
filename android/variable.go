@@ -42,11 +42,6 @@ type variableProperties struct {
 			Enabled *bool `android:"arch_variant"`
 		} `android:"arch_variant"`
 
-		Brillo struct {
-			Cflags         []string
-			Version_script *string `android:"arch_variant"`
-		} `android:"arch_variant"`
-
 		Malloc_not_svelte struct {
 			Cflags []string
 		}
@@ -67,10 +62,13 @@ type variableProperties struct {
 			Cflags []string
 		}
 
-		// treble is true when a build is a Treble compliant device.  This is automatically set when
-		// a build is shipped with Android O, but can be overriden.  This controls such things as
-		// the sepolicy split and enabling the Treble linker namespaces.
-		Treble struct {
+		// treble_linker_namespaces is true when the system/vendor linker namespace separation is
+		// enabled.
+		Treble_linker_namespaces struct {
+			Cflags []string
+		}
+		// enforce_vintf_manifest is true when a device is required to have a vintf manifest.
+		Enforce_vintf_manifest struct {
 			Cflags []string
 		}
 
@@ -107,18 +105,26 @@ type productVariables struct {
 	// Suffix to add to generated Makefiles
 	Make_suffix *string `json:",omitempty"`
 
+	BuildId             *string `json:",omitempty"`
+	BuildNumberFromFile *string `json:",omitempty"`
+	DateFromFile        *string `json:",omitempty"`
+
+	Platform_version_name             *string  `json:",omitempty"`
 	Platform_sdk_version              *int     `json:",omitempty"`
+	Platform_sdk_codename             *string  `json:",omitempty"`
 	Platform_sdk_final                *bool    `json:",omitempty"`
 	Platform_version_active_codenames []string `json:",omitempty"`
 	Platform_version_future_codenames []string `json:",omitempty"`
+	Platform_vndk_version             *string  `json:",omitempty"`
+	Platform_systemsdk_versions       []string `json:",omitempty"`
 
-	DeviceName        *string   `json:",omitempty"`
-	DeviceArch        *string   `json:",omitempty"`
-	DeviceArchVariant *string   `json:",omitempty"`
-	DeviceCpuVariant  *string   `json:",omitempty"`
-	DeviceAbi         *[]string `json:",omitempty"`
-	DeviceUsesClang   *bool     `json:",omitempty"`
-	DeviceVndkVersion *string   `json:",omitempty"`
+	DeviceName              *string   `json:",omitempty"`
+	DeviceArch              *string   `json:",omitempty"`
+	DeviceArchVariant       *string   `json:",omitempty"`
+	DeviceCpuVariant        *string   `json:",omitempty"`
+	DeviceAbi               *[]string `json:",omitempty"`
+	DeviceVndkVersion       *string   `json:",omitempty"`
+	DeviceSystemSdkVersions *[]string `json:",omitempty"`
 
 	DeviceSecondaryArch        *string   `json:",omitempty"`
 	DeviceSecondaryArchVariant *string   `json:",omitempty"`
@@ -147,7 +153,6 @@ type productVariables struct {
 
 	Allow_missing_dependencies *bool `json:",omitempty"`
 	Unbundled_build            *bool `json:",omitempty"`
-	Brillo                     *bool `json:",omitempty"`
 	Malloc_not_svelte          *bool `json:",omitempty"`
 	Safestack                  *bool `json:",omitempty"`
 	HostStaticBinaries         *bool `json:",omitempty"`
@@ -156,7 +161,9 @@ type productVariables struct {
 	Debuggable                 *bool `json:",omitempty"`
 	Eng                        *bool `json:",omitempty"`
 	Device_uses_hwc2           *bool `json:",omitempty"`
-	Treble                     *bool `json:",omitempty"`
+	Treble_linker_namespaces   *bool `json:",omitempty"`
+	Sepolicy_split             *bool `json:",omitempty"`
+	Enforce_vintf_manifest     *bool `json:",omitempty"`
 	Pdk                        *bool `json:",omitempty"`
 	Uml                        *bool `json:",omitempty"`
 	MinimizeJavaDebugInfo      *bool `json:",omitempty"`
@@ -167,7 +174,11 @@ type productVariables struct {
 	CFIExcludePaths *[]string `json:",omitempty"`
 	CFIIncludePaths *[]string `json:",omitempty"`
 
-	VendorPath *string `json:",omitempty"`
+	VendorPath  *string `json:",omitempty"`
+	OdmPath     *string `json:",omitempty"`
+	ProductPath *string `json:",omitempty"`
+
+	UseClangLld *bool `json:",omitempty"`
 
 	ClangTidy  *bool   `json:",omitempty"`
 	TidyChecks *string `json:",omitempty"`
@@ -196,6 +207,15 @@ type productVariables struct {
 	ExtraVndkVersions []string `json:",omitempty"`
 
 	NamespacesToExport []string `json:",omitempty"`
+
+	PgoAdditionalProfileDirs []string `json:",omitempty"`
+
+	BoardVendorSepolicyDirs     []string `json:",omitempty"`
+	BoardOdmSepolicyDirs        []string `json:",omitempty"`
+	BoardPlatPublicSepolicyDir  string   `json:",omitempty"`
+	BoardPlatPrivateSepolicyDir string   `json:",omitempty"`
+
+	VendorVars map[string]map[string]string `json:",omitempty"`
 }
 
 func boolPtr(v bool) *bool {
@@ -223,7 +243,6 @@ func (v *productVariables) SetDefaultConfig() {
 		DeviceArchVariant:          stringPtr("armv8-a"),
 		DeviceCpuVariant:           stringPtr("generic"),
 		DeviceAbi:                  &[]string{"arm64-v8a"},
-		DeviceUsesClang:            boolPtr(true),
 		DeviceSecondaryArch:        stringPtr("arm"),
 		DeviceSecondaryArchVariant: stringPtr("armv8-a"),
 		DeviceSecondaryCpuVariant:  stringPtr("generic"),
@@ -264,7 +283,7 @@ func variableMutator(mctx BottomUpMutatorContext) {
 		property := "product_variables." + proptools.PropertyNameForField(name)
 
 		// Check that the variable was set for the product
-		val := reflect.ValueOf(mctx.Config().ProductVariables).FieldByName(name)
+		val := reflect.ValueOf(mctx.Config().productVariables).FieldByName(name)
 		if !val.IsValid() || val.Kind() != reflect.Ptr || val.IsNil() {
 			continue
 		}

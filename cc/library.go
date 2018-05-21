@@ -21,6 +21,7 @@ import (
 	"github.com/google/blueprint/pathtools"
 
 	"android/soong/android"
+	"android/soong/cc/config"
 )
 
 type LibraryProperties struct {
@@ -100,7 +101,7 @@ type FlagExporterProperties struct {
 			// export_include_dirs, that will be applied to the
 			// vendor variant of this library. This will overwrite
 			// any other declarations.
-			Export_include_dirs []string
+			Override_export_include_dirs []string
 		}
 	}
 }
@@ -164,8 +165,8 @@ type flagExporter struct {
 }
 
 func (f *flagExporter) exportedIncludes(ctx ModuleContext) android.Paths {
-	if ctx.useVndk() && f.Properties.Target.Vendor.Export_include_dirs != nil {
-		return android.PathsForModuleSrc(ctx, f.Properties.Target.Vendor.Export_include_dirs)
+	if ctx.useVndk() && f.Properties.Target.Vendor.Override_export_include_dirs != nil {
+		return android.PathsForModuleSrc(ctx, f.Properties.Target.Vendor.Override_export_include_dirs)
 	} else {
 		return android.PathsForModuleSrc(ctx, f.Properties.Export_include_dirs)
 	}
@@ -384,11 +385,11 @@ func (library *libraryDecorator) compile(ctx ModuleContext, flags Flags, deps Pa
 	if library.static() {
 		srcs := android.PathsForModuleSrc(ctx, library.Properties.Static.Srcs)
 		objs = objs.Append(compileObjs(ctx, buildFlags, android.DeviceStaticLibrary,
-			srcs, library.baseCompiler.deps))
+			srcs, library.baseCompiler.pathDeps, library.baseCompiler.cFlagsDeps))
 	} else if library.shared() {
 		srcs := android.PathsForModuleSrc(ctx, library.Properties.Shared.Srcs)
 		objs = objs.Append(compileObjs(ctx, buildFlags, android.DeviceSharedLibrary,
-			srcs, library.baseCompiler.deps))
+			srcs, library.baseCompiler.pathDeps, library.baseCompiler.cFlagsDeps))
 	}
 
 	return objs
@@ -414,6 +415,10 @@ func (library *libraryDecorator) getLibName(ctx ModuleContext) string {
 	name := library.libName
 	if name == "" {
 		name = ctx.baseModuleName()
+	}
+
+	if ctx.isVndkExt() {
+		name = ctx.getVndkExtendsModuleName()
 	}
 
 	if ctx.Host() && Bool(library.Properties.Unique_host_soname) {
@@ -472,6 +477,18 @@ func (library *libraryDecorator) linkerDeps(ctx DepsContext, deps Deps) Deps {
 		deps.SharedLibs = removeListFromList(deps.SharedLibs, library.baseLinker.Properties.Target.Vendor.Exclude_shared_libs)
 		deps.StaticLibs = removeListFromList(deps.StaticLibs, library.baseLinker.Properties.Target.Vendor.Exclude_static_libs)
 	}
+	if ctx.inRecovery() {
+		deps.WholeStaticLibs = removeListFromList(deps.WholeStaticLibs, library.baseLinker.Properties.Target.Recovery.Exclude_static_libs)
+		deps.SharedLibs = removeListFromList(deps.SharedLibs, library.baseLinker.Properties.Target.Recovery.Exclude_shared_libs)
+		deps.StaticLibs = removeListFromList(deps.StaticLibs, library.baseLinker.Properties.Target.Recovery.Exclude_static_libs)
+	}
+
+	android.ExtractSourceDeps(ctx, library.Properties.Version_script)
+	android.ExtractSourceDeps(ctx, library.Properties.Unexported_symbols_list)
+	android.ExtractSourceDeps(ctx, library.Properties.Force_symbols_not_weak_list)
+	android.ExtractSourceDeps(ctx, library.Properties.Force_symbols_weak_list)
+	android.ExtractSourceDeps(ctx, library.Properties.Target.Vendor.Version_script)
+
 	return deps
 }
 
@@ -481,9 +498,15 @@ func (library *libraryDecorator) linkStatic(ctx ModuleContext,
 	library.objects = deps.WholeStaticLibObjs.Copy()
 	library.objects = library.objects.Append(objs)
 
-	outputFile := android.PathForModuleOut(ctx,
-		ctx.ModuleName()+library.MutatedProperties.VariantName+staticLibraryExtension)
+	fileName := ctx.ModuleName() + library.MutatedProperties.VariantName + staticLibraryExtension
+	outputFile := android.PathForModuleOut(ctx, fileName)
 	builderFlags := flagsToBuilderFlags(flags)
+
+	if Bool(library.baseLinker.Properties.Use_version_lib) && ctx.Host() {
+		versionedOutputFile := outputFile
+		outputFile = android.PathForModuleOut(ctx, "unversioned", fileName)
+		library.injectVersionSymbol(ctx, outputFile, versionedOutputFile)
+	}
 
 	TransformObjToStaticLib(ctx, library.objects.objFiles, builderFlags, outputFile, objs.tidyFiles)
 
@@ -503,18 +526,19 @@ func (library *libraryDecorator) linkShared(ctx ModuleContext,
 	var linkerDeps android.Paths
 	linkerDeps = append(linkerDeps, flags.LdFlagsDeps...)
 
-	versionScript := android.OptionalPathForModuleSrc(ctx, library.Properties.Version_script)
-	unexportedSymbols := android.OptionalPathForModuleSrc(ctx, library.Properties.Unexported_symbols_list)
-	forceNotWeakSymbols := android.OptionalPathForModuleSrc(ctx, library.Properties.Force_symbols_not_weak_list)
-	forceWeakSymbols := android.OptionalPathForModuleSrc(ctx, library.Properties.Force_symbols_weak_list)
+	versionScript := ctx.ExpandOptionalSource(library.Properties.Version_script, "version_script")
+	unexportedSymbols := ctx.ExpandOptionalSource(library.Properties.Unexported_symbols_list, "unexported_symbols_list")
+	forceNotWeakSymbols := ctx.ExpandOptionalSource(library.Properties.Force_symbols_not_weak_list, "force_symbols_not_weak_list")
+	forceWeakSymbols := ctx.ExpandOptionalSource(library.Properties.Force_symbols_weak_list, "force_symbols_weak_list")
 	if ctx.useVndk() && library.Properties.Target.Vendor.Version_script != nil {
-		versionScript = android.OptionalPathForModuleSrc(ctx, library.Properties.Target.Vendor.Version_script)
+		versionScript = ctx.ExpandOptionalSource(library.Properties.Target.Vendor.Version_script, "target.vendor.version_script")
 	}
 	if !ctx.Darwin() {
 		if versionScript.Valid() {
 			flags.LdFlags = append(flags.LdFlags, "-Wl,--version-script,"+versionScript.String())
 			linkerDeps = append(linkerDeps, versionScript.Path())
 			if library.sanitize.isSanitizerEnabled(cfi) {
+				cfiExportsMap := android.PathForSource(ctx, cfiExportsMapPath)
 				flags.LdFlags = append(flags.LdFlags, "-Wl,--version-script,"+cfiExportsMap.String())
 				linkerDeps = append(linkerDeps, cfiExportsMap)
 			}
@@ -574,27 +598,14 @@ func (library *libraryDecorator) linkShared(ctx ModuleContext,
 		library.stripper.strip(ctx, outputFile, strippedOutputFile, builderFlags)
 	}
 
+	if Bool(library.baseLinker.Properties.Use_version_lib) && ctx.Host() {
+		versionedOutputFile := outputFile
+		outputFile = android.PathForModuleOut(ctx, "unversioned", fileName)
+		library.injectVersionSymbol(ctx, outputFile, versionedOutputFile)
+	}
+
 	sharedLibs := deps.SharedLibs
 	sharedLibs = append(sharedLibs, deps.LateSharedLibs...)
-
-	// TODO(danalbert): Clean this up when soong supports prebuilts.
-	if strings.HasPrefix(ctx.selectedStl(), "ndk_libc++") {
-		libDir := getNdkStlLibDir(ctx, flags.Toolchain, "libc++")
-
-		if strings.HasSuffix(ctx.selectedStl(), "_shared") {
-			deps.StaticLibs = append(deps.StaticLibs,
-				libDir.Join(ctx, "libandroid_support.a"))
-		} else {
-			deps.StaticLibs = append(deps.StaticLibs,
-				libDir.Join(ctx, "libc++abi.a"),
-				libDir.Join(ctx, "libandroid_support.a"))
-		}
-
-		if ctx.Arch().ArchType == android.Arm {
-			deps.StaticLibs = append(deps.StaticLibs,
-				libDir.Join(ctx, "libunwind.a"))
-		}
-	}
 
 	linkerDeps = append(linkerDeps, deps.SharedLibsDeps...)
 	linkerDeps = append(linkerDeps, deps.LateSharedLibsDeps...)
@@ -619,12 +630,12 @@ func (library *libraryDecorator) linkShared(ctx ModuleContext,
 func (library *libraryDecorator) linkSAbiDumpFiles(ctx ModuleContext, objs Objects, fileName string, soFile android.Path) {
 	//Also take into account object re-use.
 	if len(objs.sAbiDumpFiles) > 0 && ctx.createVndkSourceAbiDump() {
-		refSourceDumpFile := android.PathForVndkRefAbiDump(ctx, "current", fileName, vndkVsNdk(ctx), true)
-		versionScript := android.OptionalPathForModuleSrc(ctx, library.Properties.Version_script)
-		var symbolFile android.OptionalPath
-		if versionScript.Valid() {
-			symbolFile = versionScript
+		vndkVersion := ctx.DeviceConfig().PlatformVndkVersion()
+		if ver := ctx.DeviceConfig().VndkVersion(); ver != "" && ver != "current" {
+			vndkVersion = ver
 		}
+
+		refSourceDumpFile := android.PathForVndkRefAbiDump(ctx, vndkVersion, fileName, vndkVsNdk(ctx), true)
 		exportIncludeDirs := library.flagExporter.exportedIncludes(ctx)
 		var SourceAbiFlags []string
 		for _, dir := range exportIncludeDirs.Strings() {
@@ -634,10 +645,11 @@ func (library *libraryDecorator) linkSAbiDumpFiles(ctx ModuleContext, objs Objec
 			SourceAbiFlags = append(SourceAbiFlags, reexportedInclude)
 		}
 		exportedHeaderFlags := strings.Join(SourceAbiFlags, " ")
-		library.sAbiOutputFile = TransformDumpToLinkedDump(ctx, objs.sAbiDumpFiles, soFile, symbolFile, "current", fileName, exportedHeaderFlags)
+		library.sAbiOutputFile = TransformDumpToLinkedDump(ctx, objs.sAbiDumpFiles, soFile, fileName, exportedHeaderFlags)
 		if refSourceDumpFile.Valid() {
 			unzippedRefDump := UnzipRefDump(ctx, refSourceDumpFile.Path(), fileName)
-			library.sAbiDiff = SourceAbiDiff(ctx, library.sAbiOutputFile.Path(), unzippedRefDump, fileName)
+			library.sAbiDiff = SourceAbiDiff(ctx, library.sAbiOutputFile.Path(),
+				unzippedRefDump, fileName, exportedHeaderFlags, ctx.isVndkExt())
 		}
 	}
 }
@@ -671,21 +683,22 @@ func (library *libraryDecorator) link(ctx ModuleContext,
 			}
 			library.reexportFlags(flags)
 			library.reuseExportedFlags = append(library.reuseExportedFlags, flags...)
-			library.reexportDeps(library.baseCompiler.deps) // TODO: restrict to aidl deps
-			library.reuseExportedDeps = append(library.reuseExportedDeps, library.baseCompiler.deps...)
+			library.reexportDeps(library.baseCompiler.pathDeps) // TODO: restrict to aidl deps
+			library.reuseExportedDeps = append(library.reuseExportedDeps, library.baseCompiler.pathDeps...)
 		}
 	}
 
 	if Bool(library.Properties.Proto.Export_proto_headers) {
 		if library.baseCompiler.hasSrcExt(".proto") {
-			flags := []string{
-				"-I" + android.ProtoSubDir(ctx).String(),
-				"-I" + android.ProtoDir(ctx).String(),
+			includes := []string{}
+			if flags.ProtoRoot {
+				includes = append(includes, "-I"+android.ProtoSubDir(ctx).String())
 			}
-			library.reexportFlags(flags)
-			library.reuseExportedFlags = append(library.reuseExportedFlags, flags...)
-			library.reexportDeps(library.baseCompiler.deps) // TODO: restrict to proto deps
-			library.reuseExportedDeps = append(library.reuseExportedDeps, library.baseCompiler.deps...)
+			includes = append(includes, "-I"+android.ProtoDir(ctx).String())
+			library.reexportFlags(includes)
+			library.reuseExportedFlags = append(library.reuseExportedFlags, includes...)
+			library.reexportDeps(library.baseCompiler.pathDeps) // TODO: restrict to proto deps
+			library.reuseExportedDeps = append(library.reuseExportedDeps, library.baseCompiler.pathDeps...)
 		}
 	}
 
@@ -693,17 +706,15 @@ func (library *libraryDecorator) link(ctx ModuleContext,
 }
 
 func (library *libraryDecorator) buildStatic() bool {
-	return library.MutatedProperties.BuildStatic &&
-		(library.Properties.Static.Enabled == nil || *library.Properties.Static.Enabled)
+	return library.MutatedProperties.BuildStatic && BoolDefault(library.Properties.Static.Enabled, true)
 }
 
 func (library *libraryDecorator) buildShared() bool {
-	return library.MutatedProperties.BuildShared &&
-		(library.Properties.Shared.Enabled == nil || *library.Properties.Shared.Enabled)
+	return library.MutatedProperties.BuildShared && BoolDefault(library.Properties.Shared.Enabled, true)
 }
 
 func (library *libraryDecorator) getWholeStaticMissingDeps() []string {
-	return library.wholeStaticMissingDeps
+	return append([]string(nil), library.wholeStaticMissingDeps...)
 }
 
 func (library *libraryDecorator) objs() Objects {
@@ -720,21 +731,29 @@ func (library *libraryDecorator) toc() android.OptionalPath {
 
 func (library *libraryDecorator) install(ctx ModuleContext, file android.Path) {
 	if library.shared() {
-		if ctx.Device() {
-			if ctx.useVndk() {
-				if ctx.isVndkSp() {
-					library.baseInstaller.subDir = "vndk-sp"
-				} else if ctx.isVndk() {
-					library.baseInstaller.subDir = "vndk"
+		if ctx.Device() && ctx.useVndk() {
+			if ctx.isVndkSp() {
+				library.baseInstaller.subDir = "vndk-sp"
+			} else if ctx.isVndk() {
+				library.baseInstaller.subDir = "vndk"
+			}
+
+			// Append a version to vndk or vndk-sp directories on the system partition.
+			if ctx.isVndk() && !ctx.isVndkExt() {
+				vndkVersion := ctx.DeviceConfig().PlatformVndkVersion()
+				if vndkVersion != "current" && vndkVersion != "" {
+					library.baseInstaller.subDir += "-" + vndkVersion
 				}
 			}
 		}
 		library.baseInstaller.install(ctx, file)
 	}
 
-	if Bool(library.Properties.Static_ndk_lib) && library.static() {
+	if Bool(library.Properties.Static_ndk_lib) && library.static() &&
+		!ctx.useVndk() && !ctx.inRecovery() && ctx.Device() &&
+		library.sanitize.isUnsanitizedVariant() {
 		installPath := getNdkSysrootBase(ctx).Join(
-			ctx, "usr/lib", ctx.toolchain().ClangTriple(), file.Base())
+			ctx, "usr/lib", config.NDKTriple(ctx.toolchain()), file.Base())
 
 		ctx.ModuleBuild(pctx, android.ModuleBuildParams{
 			Rule:        android.Cp,

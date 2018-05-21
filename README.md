@@ -32,6 +32,14 @@ all Android.bp files.
 For a list of valid module types and their properties see
 [$OUT_DIR/soong/.bootstrap/docs/soong_build.html](https://go/Android.bp).
 
+### Globs
+
+Properties that take a list of files can also take glob patterns.  Glob
+patterns can contain the normal Unix wildcard `*`, for example "*.java". Glob
+patterns can also contain a single `**` wildcard as a path element, which will
+match zero or more path elements.  For example, `java/**/*.java` will match
+`java/Main.java` and `java/com/android/Main.java`.
+
 ### Variables
 
 An Android.bp file may contain top-level variable assignments:
@@ -169,6 +177,14 @@ The build logic is written in Go using the
 logic receives module definitions parsed into Go structures using reflection
 and produces build rules.  The build rules are collected by blueprint and
 written to a [ninja](http://ninja-build.org) build file.
+
+## Other documentation
+
+* [Best Practices](docs/best_practices.md)
+* [Build Performance](docs/perf.md)
+* [Generating CLion Projects](docs/clion.md)
+* [Generating YouCompleteMe/VSCode compile\_commands.json file](docs/compdb.md)
+* Make-specific documentation: [build/make/README.md](https://android.googlesource.com/platform/build/+/master/README.md)
 
 ## FAQ
 

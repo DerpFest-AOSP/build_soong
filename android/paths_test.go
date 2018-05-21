@@ -110,17 +110,27 @@ var validatePathTestCases = append(commonValidatePathTestCases, []strsTestCase{
 
 func TestValidateSafePath(t *testing.T) {
 	for _, testCase := range validateSafePathTestCases {
-		ctx := &configErrorWrapper{}
-		out := validateSafePath(ctx, testCase.in...)
-		check(t, "validateSafePath", p(testCase.in), out, ctx.errors, testCase.out, testCase.err)
+		t.Run(strings.Join(testCase.in, ","), func(t *testing.T) {
+			ctx := &configErrorWrapper{}
+			out, err := validateSafePath(testCase.in...)
+			if err != nil {
+				reportPathError(ctx, err)
+			}
+			check(t, "validateSafePath", p(testCase.in), out, ctx.errors, testCase.out, testCase.err)
+		})
 	}
 }
 
 func TestValidatePath(t *testing.T) {
 	for _, testCase := range validatePathTestCases {
-		ctx := &configErrorWrapper{}
-		out := validatePath(ctx, testCase.in...)
-		check(t, "validatePath", p(testCase.in), out, ctx.errors, testCase.out, testCase.err)
+		t.Run(strings.Join(testCase.in, ","), func(t *testing.T) {
+			ctx := &configErrorWrapper{}
+			out, err := validatePath(testCase.in...)
+			if err != nil {
+				reportPathError(ctx, err)
+			}
+			check(t, "validatePath", p(testCase.in), out, ctx.errors, testCase.out, testCase.err)
+		})
 	}
 }
 
@@ -133,6 +143,7 @@ func TestOptionalPath(t *testing.T) {
 }
 
 func checkInvalidOptionalPath(t *testing.T, path OptionalPath) {
+	t.Helper()
 	if path.Valid() {
 		t.Errorf("Uninitialized OptionalPath should not be valid")
 	}
@@ -150,9 +161,11 @@ func checkInvalidOptionalPath(t *testing.T, path OptionalPath) {
 func check(t *testing.T, testType, testString string,
 	got interface{}, err []error,
 	expected interface{}, expectedErr []error) {
+	t.Helper()
 
 	printedTestCase := false
 	e := func(s string, expected, got interface{}) {
+		t.Helper()
 		if !printedTestCase {
 			t.Errorf("test case %s: %s", testType, testString)
 			printedTestCase = true
@@ -188,6 +201,7 @@ type moduleInstallPathContextImpl struct {
 
 	inData         bool
 	inSanitizerDir bool
+	inRecovery     bool
 }
 
 func (moduleInstallPathContextImpl) Fs() pathtools.FileSystem {
@@ -206,6 +220,10 @@ func (m moduleInstallPathContextImpl) InstallInData() bool {
 
 func (m moduleInstallPathContextImpl) InstallInSanitizerDir() bool {
 	return m.inSanitizerDir
+}
+
+func (m moduleInstallPathContextImpl) InstallInRecovery() bool {
+	return m.inRecovery
 }
 
 func TestPathForModuleInstall(t *testing.T) {
@@ -246,11 +264,33 @@ func TestPathForModuleInstall(t *testing.T) {
 			ctx: &moduleInstallPathContextImpl{
 				androidBaseContextImpl: androidBaseContextImpl{
 					target: deviceTarget,
-					vendor: true,
+					kind:   socSpecificModule,
 				},
 			},
 			in:  []string{"bin", "my_test"},
 			out: "target/product/test_device/vendor/bin/my_test",
+		},
+		{
+			name: "odm binary",
+			ctx: &moduleInstallPathContextImpl{
+				androidBaseContextImpl: androidBaseContextImpl{
+					target: deviceTarget,
+					kind:   deviceSpecificModule,
+				},
+			},
+			in:  []string{"bin", "my_test"},
+			out: "target/product/test_device/odm/bin/my_test",
+		},
+		{
+			name: "product binary",
+			ctx: &moduleInstallPathContextImpl{
+				androidBaseContextImpl: androidBaseContextImpl{
+					target: deviceTarget,
+					kind:   productSpecificModule,
+				},
+			},
+			in:  []string{"bin", "my_test"},
+			out: "target/product/test_device/product/bin/my_test",
 		},
 
 		{
@@ -269,7 +309,31 @@ func TestPathForModuleInstall(t *testing.T) {
 			ctx: &moduleInstallPathContextImpl{
 				androidBaseContextImpl: androidBaseContextImpl{
 					target: deviceTarget,
-					vendor: true,
+					kind:   socSpecificModule,
+				},
+				inData: true,
+			},
+			in:  []string{"nativetest", "my_test"},
+			out: "target/product/test_device/data/nativetest/my_test",
+		},
+		{
+			name: "odm native test binary",
+			ctx: &moduleInstallPathContextImpl{
+				androidBaseContextImpl: androidBaseContextImpl{
+					target: deviceTarget,
+					kind:   deviceSpecificModule,
+				},
+				inData: true,
+			},
+			in:  []string{"nativetest", "my_test"},
+			out: "target/product/test_device/data/nativetest/my_test",
+		},
+		{
+			name: "product native test binary",
+			ctx: &moduleInstallPathContextImpl{
+				androidBaseContextImpl: androidBaseContextImpl{
+					target: deviceTarget,
+					kind:   productSpecificModule,
 				},
 				inData: true,
 			},
@@ -293,12 +357,36 @@ func TestPathForModuleInstall(t *testing.T) {
 			ctx: &moduleInstallPathContextImpl{
 				androidBaseContextImpl: androidBaseContextImpl{
 					target: deviceTarget,
-					vendor: true,
+					kind:   socSpecificModule,
 				},
 				inSanitizerDir: true,
 			},
 			in:  []string{"bin", "my_test"},
 			out: "target/product/test_device/data/asan/vendor/bin/my_test",
+		},
+		{
+			name: "sanitized odm binary",
+			ctx: &moduleInstallPathContextImpl{
+				androidBaseContextImpl: androidBaseContextImpl{
+					target: deviceTarget,
+					kind:   deviceSpecificModule,
+				},
+				inSanitizerDir: true,
+			},
+			in:  []string{"bin", "my_test"},
+			out: "target/product/test_device/data/asan/odm/bin/my_test",
+		},
+		{
+			name: "sanitized product binary",
+			ctx: &moduleInstallPathContextImpl{
+				androidBaseContextImpl: androidBaseContextImpl{
+					target: deviceTarget,
+					kind:   productSpecificModule,
+				},
+				inSanitizerDir: true,
+			},
+			in:  []string{"bin", "my_test"},
+			out: "target/product/test_device/data/asan/product/bin/my_test",
 		},
 
 		{
@@ -318,7 +406,33 @@ func TestPathForModuleInstall(t *testing.T) {
 			ctx: &moduleInstallPathContextImpl{
 				androidBaseContextImpl: androidBaseContextImpl{
 					target: deviceTarget,
-					vendor: true,
+					kind:   socSpecificModule,
+				},
+				inData:         true,
+				inSanitizerDir: true,
+			},
+			in:  []string{"nativetest", "my_test"},
+			out: "target/product/test_device/data/asan/data/nativetest/my_test",
+		},
+		{
+			name: "sanitized odm native test binary",
+			ctx: &moduleInstallPathContextImpl{
+				androidBaseContextImpl: androidBaseContextImpl{
+					target: deviceTarget,
+					kind:   deviceSpecificModule,
+				},
+				inData:         true,
+				inSanitizerDir: true,
+			},
+			in:  []string{"nativetest", "my_test"},
+			out: "target/product/test_device/data/asan/data/nativetest/my_test",
+		},
+		{
+			name: "sanitized product native test binary",
+			ctx: &moduleInstallPathContextImpl{
+				androidBaseContextImpl: androidBaseContextImpl{
+					target: deviceTarget,
+					kind:   productSpecificModule,
 				},
 				inData:         true,
 				inSanitizerDir: true,
@@ -365,10 +479,7 @@ func TestDirectorySortedPaths(t *testing.T) {
 	}
 
 	paths := makePaths()
-	reversePaths := make(Paths, len(paths))
-	for i, v := range paths {
-		reversePaths[len(paths)-i-1] = v
-	}
+	reversePaths := ReversePaths(paths)
 
 	sortedPaths := PathsToDirectorySortedPaths(paths)
 	reverseSortedPaths := PathsToDirectorySortedPaths(reversePaths)

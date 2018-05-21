@@ -15,39 +15,58 @@
 package cc
 
 import (
+	"strings"
+
 	"github.com/google/blueprint"
+	"github.com/google/blueprint/pathtools"
 
 	"android/soong/android"
 )
 
 func init() {
 	pctx.HostBinToolVariable("protocCmd", "aprotoc")
+	pctx.HostBinToolVariable("depFixCmd", "dep_fixer")
 }
 
 var (
 	proto = pctx.AndroidStaticRule("protoc",
 		blueprint.RuleParams{
-			Command:     "$protocCmd --cpp_out=$outDir $protoFlags $in",
-			CommandDeps: []string{"$protocCmd"},
-		}, "protoFlags", "outDir")
+			Command: "$protocCmd --cpp_out=$protoOutParams:$outDir --dependency_out=$out.d -I $protoBase $protoFlags $in && " +
+				`$depFixCmd $out.d`,
+			CommandDeps: []string{"$protocCmd", "$depFixCmd"},
+			Depfile:     "${out}.d",
+			Deps:        blueprint.DepsGCC,
+		}, "protoFlags", "protoOutParams", "protoBase", "outDir")
 )
 
 // genProto creates a rule to convert a .proto file to generated .pb.cc and .pb.h files and returns
 // the paths to the generated files.
 func genProto(ctx android.ModuleContext, protoFile android.Path,
-	protoFlags string) (ccFile, headerFile android.WritablePath) {
+	protoFlags, protoOutParams string, root bool) (ccFile, headerFile android.WritablePath) {
 
-	ccFile = android.GenPathWithExt(ctx, "proto", protoFile, "pb.cc")
-	headerFile = android.GenPathWithExt(ctx, "proto", protoFile, "pb.h")
+	var protoBase string
+	if root {
+		protoBase = "."
+		ccFile = android.GenPathWithExt(ctx, "proto", protoFile, "pb.cc")
+		headerFile = android.GenPathWithExt(ctx, "proto", protoFile, "pb.h")
+	} else {
+		rel := protoFile.Rel()
+		protoBase = strings.TrimSuffix(protoFile.String(), rel)
+		ccFile = android.PathForModuleGen(ctx, "proto", pathtools.ReplaceExtension(rel, "pb.cc"))
+		headerFile = android.PathForModuleGen(ctx, "proto", pathtools.ReplaceExtension(rel, "pb.h"))
+	}
 
 	ctx.Build(pctx, android.BuildParams{
-		Rule:        proto,
-		Description: "protoc " + protoFile.Rel(),
-		Outputs:     android.WritablePaths{ccFile, headerFile},
-		Input:       protoFile,
+		Rule:           proto,
+		Description:    "protoc " + protoFile.Rel(),
+		Output:         ccFile,
+		ImplicitOutput: headerFile,
+		Input:          protoFile,
 		Args: map[string]string{
-			"outDir":     android.ProtoDir(ctx).String(),
-			"protoFlags": protoFlags,
+			"outDir":         android.ProtoDir(ctx).String(),
+			"protoFlags":     protoFlags,
+			"protoOutParams": protoOutParams,
+			"protoBase":      protoBase,
 		},
 	})
 
@@ -90,12 +109,18 @@ func protoDeps(ctx BaseModuleContext, deps Deps, p *android.ProtoProperties, sta
 
 func protoFlags(ctx ModuleContext, flags Flags, p *android.ProtoProperties) Flags {
 	flags.CFlags = append(flags.CFlags, "-DGOOGLE_PROTOBUF_NO_RTTI")
-	flags.GlobalFlags = append(flags.GlobalFlags,
-		"-I"+android.ProtoSubDir(ctx).String(),
-		"-I"+android.ProtoDir(ctx).String(),
-	)
+
+	flags.ProtoRoot = android.ProtoCanonicalPathFromRoot(ctx, p)
+	if flags.ProtoRoot {
+		flags.GlobalFlags = append(flags.GlobalFlags, "-I"+android.ProtoSubDir(ctx).String())
+	}
+	flags.GlobalFlags = append(flags.GlobalFlags, "-I"+android.ProtoDir(ctx).String())
 
 	flags.protoFlags = android.ProtoFlags(ctx, p)
+
+	if String(p.Proto.Type) == "lite" {
+		flags.protoOutParams = append(flags.protoOutParams, "lite")
+	}
 
 	return flags
 }

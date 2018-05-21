@@ -76,7 +76,17 @@ func (stub *llndkStubDecorator) compilerFlags(ctx ModuleContext, flags Flags, de
 }
 
 func (stub *llndkStubDecorator) compile(ctx ModuleContext, flags Flags, deps PathDeps) Objects {
-	objs, versionScript := compileStubLibrary(ctx, flags, String(stub.Properties.Symbol_file), "current", "--vndk")
+	vndk_ver := ctx.DeviceConfig().VndkVersion()
+	if vndk_ver == "current" {
+		platform_vndk_ver := ctx.DeviceConfig().PlatformVndkVersion()
+		if !inList(platform_vndk_ver, ctx.Config().PlatformVersionCombinedCodenames()) {
+			vndk_ver = platform_vndk_ver
+		}
+	} else if vndk_ver == "" {
+		// For non-enforcing devices, use "current"
+		vndk_ver = "current"
+	}
+	objs, versionScript := compileStubLibrary(ctx, flags, String(stub.Properties.Symbol_file), vndk_ver, "--vndk")
 	stub.versionScriptPath = versionScript
 	return objs
 }
@@ -100,7 +110,7 @@ func (stub *llndkStubDecorator) linkerFlags(ctx ModuleContext, flags Flags) Flag
 
 func (stub *llndkStubDecorator) processHeaders(ctx ModuleContext, srcHeaderDir string, outDir android.ModuleGenPath) android.Path {
 	srcDir := android.PathForModuleSrc(ctx, srcHeaderDir)
-	srcFiles := ctx.Glob(filepath.Join(srcDir.String(), "**/*.h"), nil)
+	srcFiles := ctx.GlobFiles(filepath.Join(srcDir.String(), "**/*.h"), nil)
 
 	var installPaths []android.WritablePath
 	for _, header := range srcFiles {
@@ -191,7 +201,6 @@ func (headers *llndkHeadersDecorator) Name(name string) string {
 func llndkHeadersFactory() android.Module {
 	module, library := NewLibrary(android.DeviceSupported)
 	library.HeaderOnly()
-	library.setStatic()
 
 	decorator := &llndkHeadersDecorator{
 		libraryDecorator: library,

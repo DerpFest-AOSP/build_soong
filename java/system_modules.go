@@ -112,11 +112,9 @@ type SystemModulesProperties struct {
 func (system *SystemModules) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 	var jars android.Paths
 
-	ctx.VisitDirectDeps(func(module android.Module) {
-		if ctx.OtherModuleDependencyTag(module) == libTag {
-			dep, _ := module.(Dependency)
-			jars = append(jars, dep.HeaderJars()...)
-		}
+	ctx.VisitDirectDepsWithTag(libTag, func(module android.Module) {
+		dep, _ := module.(Dependency)
+		jars = append(jars, dep.HeaderJars()...)
 	})
 
 	jars = append(jars, android.PathsForModuleSrc(ctx, system.properties.Jars)...)
@@ -139,6 +137,10 @@ func (system *SystemModules) AndroidMk() android.AndroidMkData {
 				fmt.Fprintln(w, makevar, ":=", system.outputFile.String())
 				fmt.Fprintln(w, ".KATI_READONLY", ":=", makevar)
 				fmt.Fprintln(w, name+":", "$("+makevar+")")
+				fmt.Fprintln(w)
+				makevar = "SOONG_SYSTEM_MODULES_LIBS_" + name
+				fmt.Fprintln(w, makevar, ":=", strings.Join(system.properties.Libs, " "))
+				fmt.Fprintln(w, ".KATI_READONLY :=", makevar)
 			}
 		},
 	}

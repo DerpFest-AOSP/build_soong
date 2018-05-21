@@ -16,7 +16,10 @@ package cc
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
+
+	"github.com/google/blueprint/proptools"
 
 	"android/soong/android"
 	"android/soong/cc/config"
@@ -26,14 +29,28 @@ var (
 	// Add flags to ignore warnings that profiles are old or missing for
 	// some functions
 	profileUseOtherFlags = []string{"-Wno-backend-plugin"}
+
+	globalPgoProfileProjects = []string{
+		"toolchain/pgo-profiles",
+		"vendor/google_data/pgo-profiles",
+	}
 )
 
-const pgoProfileProject = "toolchain/pgo-profiles"
-
+const pgoProfileProjectsConfigKey = "PgoProfileProjects"
 const profileInstrumentFlag = "-fprofile-generate=/data/local/tmp"
 const profileSamplingFlag = "-gline-tables-only"
 const profileUseInstrumentFormat = "-fprofile-use=%s"
 const profileUseSamplingFormat = "-fprofile-sample-use=%s"
+
+func getPgoProfileProjects(config android.DeviceConfig) []string {
+	return config.OnceStringSlice(pgoProfileProjectsConfigKey, func() []string {
+		return append(globalPgoProfileProjects, config.PgoAdditionalProfileDirs()...)
+	})
+}
+
+func recordMissingProfileFile(ctx BaseModuleContext, missing string) {
+	getNamedMapForConfig(ctx.Config(), modulesMissingProfileFile).Store(missing, true)
+}
 
 type PgoProperties struct {
 	Pgo struct {
@@ -42,10 +59,14 @@ type PgoProperties struct {
 		Profile_file       *string `android:"arch_variant"`
 		Benchmarks         []string
 		Enable_profile_use *bool `android:"arch_variant"`
+		// Additional compiler flags to use when building this module
+		// for profiling (either instrumentation or sampling).
+		Cflags []string `android:"arch_variant"`
 	} `android:"arch_variant"`
 
 	PgoPresent          bool `blueprint:"mutated"`
 	ShouldProfileModule bool `blueprint:"mutated"`
+	PgoCompile          bool `blueprint:"mutated"`
 }
 
 type pgo struct {
@@ -65,6 +86,8 @@ func (pgo *pgo) props() []interface{} {
 }
 
 func (props *PgoProperties) addProfileGatherFlags(ctx ModuleContext, flags Flags) Flags {
+	flags.CFlags = append(flags.CFlags, props.Pgo.Cflags...)
+
 	if props.isInstrumentation() {
 		flags.CFlags = append(flags.CFlags, profileInstrumentFlag)
 		// The profile runtime is added below in deps().  Add the below
@@ -77,6 +100,44 @@ func (props *PgoProperties) addProfileGatherFlags(ctx ModuleContext, flags Flags
 		flags.LdFlags = append(flags.LdFlags, profileSamplingFlag)
 	}
 	return flags
+}
+
+func (props *PgoProperties) getPgoProfileFile(ctx BaseModuleContext) android.OptionalPath {
+	profile_file := *props.Pgo.Profile_file
+
+	// Test if the profile_file is present in any of the PGO profile projects
+	for _, profileProject := range getPgoProfileProjects(ctx.DeviceConfig()) {
+		// Bug: http://b/74395273 If the profile_file is unavailable,
+		// use a versioned file named
+		// <profile_file>.<arbitrary-version> when available.  This
+		// works around an issue where ccache serves stale cache
+		// entries when the profile file has changed.
+		globPattern := filepath.Join(profileProject, profile_file+".*")
+		versioned_profiles, err := ctx.GlobWithDeps(globPattern, nil)
+		if err != nil {
+			ctx.ModuleErrorf("glob: %s", err.Error())
+		}
+
+		path := android.ExistentPathForSource(ctx, profileProject, profile_file)
+		if path.Valid() {
+			if len(versioned_profiles) != 0 {
+				ctx.PropertyErrorf("pgo.profile_file", "Profile_file has multiple versions: "+filepath.Join(profileProject, profile_file)+", "+strings.Join(versioned_profiles, ", "))
+			}
+			return path
+		}
+
+		if len(versioned_profiles) > 1 {
+			ctx.PropertyErrorf("pgo.profile_file", "Profile_file has multiple versions: "+strings.Join(versioned_profiles, ", "))
+		} else if len(versioned_profiles) == 1 {
+			return android.OptionalPathForPath(android.PathForSource(ctx, versioned_profiles[0]))
+		}
+	}
+
+	// Record that this module's profile file is absent
+	missing := *props.Pgo.Profile_file + ":" + ctx.ModuleDir() + "/Android.bp:" + ctx.ModuleName()
+	recordMissingProfileFile(ctx, missing)
+
+	return android.OptionalPathForPath(nil)
 }
 
 func (props *PgoProperties) profileUseFlag(ctx ModuleContext, file string) string {
@@ -96,24 +157,23 @@ func (props *PgoProperties) profileUseFlags(ctx ModuleContext, file string) []st
 }
 
 func (props *PgoProperties) addProfileUseFlags(ctx ModuleContext, flags Flags) Flags {
-	// Skip -fprofile-use if 'enable_profile_use' property is set
-	if props.Pgo.Enable_profile_use != nil && *props.Pgo.Enable_profile_use == false {
+	// Return if 'pgo' property is not present in this module.
+	if !props.PgoPresent {
 		return flags
 	}
 
-	// If the PGO profiles project is found, and this module has PGO
-	// enabled, add flags to use the profile
-	if profilesDir := getPgoProfilesDir(ctx); props.PgoPresent && profilesDir.Valid() {
-		profileFile := android.PathForSource(ctx, profilesDir.String(), *props.Pgo.Profile_file)
-		profileUseFlags := props.profileUseFlags(ctx, profileFile.String())
+	if props.PgoCompile {
+		profileFile := props.getPgoProfileFile(ctx)
+		profileFilePath := profileFile.Path()
+		profileUseFlags := props.profileUseFlags(ctx, profileFilePath.String())
 
 		flags.CFlags = append(flags.CFlags, profileUseFlags...)
 		flags.LdFlags = append(flags.LdFlags, profileUseFlags...)
 
 		// Update CFlagsDeps and LdFlagsDeps so the module is rebuilt
 		// if profileFile gets updated
-		flags.CFlagsDeps = append(flags.CFlagsDeps, profileFile)
-		flags.LdFlagsDeps = append(flags.LdFlagsDeps, profileFile)
+		flags.CFlagsDeps = append(flags.CFlagsDeps, profileFilePath)
+		flags.LdFlagsDeps = append(flags.LdFlagsDeps, profileFilePath)
 	}
 	return flags
 }
@@ -159,10 +219,6 @@ func (props *PgoProperties) isPGO(ctx BaseModuleContext) bool {
 	return true
 }
 
-func getPgoProfilesDir(ctx ModuleContext) android.OptionalPath {
-	return android.ExistentPathForSource(ctx, "", pgoProfileProject)
-}
-
 func (pgo *pgo) begin(ctx BaseModuleContext) {
 	// TODO Evaluate if we need to support PGO for host modules
 	if ctx.Host() {
@@ -177,7 +233,7 @@ func (pgo *pgo) begin(ctx BaseModuleContext) {
 	}
 
 	// This module should be instrumented if ANDROID_PGO_INSTRUMENT is set
-	// and includes a benchmark listed for this module
+	// and includes 'all', 'ALL' or a benchmark listed for this module.
 	//
 	// TODO Validate that each benchmark instruments at least one module
 	pgo.Properties.ShouldProfileModule = false
@@ -187,10 +243,21 @@ func (pgo *pgo) begin(ctx BaseModuleContext) {
 		pgoBenchmarksMap[b] = true
 	}
 
-	for _, b := range pgo.Properties.Pgo.Benchmarks {
-		if pgoBenchmarksMap[b] == true {
-			pgo.Properties.ShouldProfileModule = true
-			break
+	if pgoBenchmarksMap["all"] == true || pgoBenchmarksMap["ALL"] == true {
+		pgo.Properties.ShouldProfileModule = true
+	} else {
+		for _, b := range pgo.Properties.Pgo.Benchmarks {
+			if pgoBenchmarksMap[b] == true {
+				pgo.Properties.ShouldProfileModule = true
+				break
+			}
+		}
+	}
+
+	if !ctx.Config().IsEnvTrue("ANDROID_PGO_NO_PROFILE_USE") &&
+		proptools.BoolDefault(pgo.Properties.Pgo.Enable_profile_use, true) {
+		if profileFile := pgo.Properties.getPgoProfileFile(ctx); profileFile.Valid() {
+			pgo.Properties.PgoCompile = true
 		}
 	}
 }

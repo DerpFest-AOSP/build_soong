@@ -45,6 +45,13 @@ type BinaryLinkerProperties struct {
 	No_pie *bool `android:"arch_variant"`
 
 	DynamicLinker string `blueprint:"mutated"`
+
+	// Names of modules to be overridden. Listed modules can only be other binaries
+	// (in Make or Soong).
+	// This does not completely prevent installation of the overridden binaries, but if both
+	// binaries would be installed by default (in PRODUCT_PACKAGES) the other binary will be removed
+	// from PRODUCT_PACKAGES.
+	Overrides []string
 }
 
 func init() {
@@ -158,6 +165,9 @@ func (binary *binaryDecorator) linkerDeps(ctx DepsContext, deps Deps) Deps {
 		ctx.ModuleErrorf("statically linking libc to dynamic executable, please remove libc\n" +
 			"from static libs or set static_executable: true")
 	}
+
+	android.ExtractSourceDeps(ctx, binary.Properties.Version_script)
+
 	return deps
 }
 
@@ -182,7 +192,7 @@ func (binary *binaryDecorator) linkerInit(ctx BaseModuleContext) {
 
 	if !ctx.toolchain().Bionic() {
 		if ctx.Os() == android.Linux {
-			if binary.Properties.Static_executable == nil && Bool(ctx.Config().ProductVariables.HostStaticBinaries) {
+			if binary.Properties.Static_executable == nil && ctx.Config().HostStaticBinaries() {
 				binary.Properties.Static_executable = BoolPtr(true)
 			}
 		} else {
@@ -277,7 +287,7 @@ func (binary *binaryDecorator) linkerFlags(ctx ModuleContext, flags Flags) Flags
 func (binary *binaryDecorator) link(ctx ModuleContext,
 	flags Flags, deps PathDeps, objs Objects) android.Path {
 
-	versionScript := android.OptionalPathForModuleSrc(ctx, binary.Properties.Version_script)
+	versionScript := ctx.ExpandOptionalSource(binary.Properties.Version_script, "version_script")
 	fileName := binary.getStem(ctx) + flags.Toolchain.ExecutableSuffix()
 	outputFile := android.PathForModuleOut(ctx, fileName)
 	ret := outputFile
@@ -320,6 +330,12 @@ func (binary *binaryDecorator) link(ctx ModuleContext,
 			flagsToBuilderFlags(flags), afterPrefixSymbols)
 	}
 
+	if Bool(binary.baseLinker.Properties.Use_version_lib) && ctx.Host() {
+		versionedOutputFile := outputFile
+		outputFile = android.PathForModuleOut(ctx, "unversioned", fileName)
+		binary.injectVersionSymbol(ctx, outputFile, versionedOutputFile)
+	}
+
 	linkerDeps = append(linkerDeps, deps.SharedLibsDeps...)
 	linkerDeps = append(linkerDeps, deps.LateSharedLibsDeps...)
 	linkerDeps = append(linkerDeps, objs.tidyFiles...)
@@ -337,6 +353,11 @@ func (binary *binaryDecorator) link(ctx ModuleContext,
 }
 
 func (binary *binaryDecorator) install(ctx ModuleContext, file android.Path) {
+	// <recovery>/bin is a symlink to /system/bin. Recovery binaries are all in /sbin.
+	if ctx.inRecovery() {
+		binary.baseInstaller.dir = "sbin"
+	}
+
 	binary.baseInstaller.install(ctx, file)
 	for _, symlink := range binary.Properties.Symlinks {
 		binary.symlinks = append(binary.symlinks,

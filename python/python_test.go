@@ -29,12 +29,11 @@ import (
 )
 
 type pyModule struct {
-	name           string
-	actualVersion  string
-	pyRunfiles     []string
-	depsPyRunfiles []string
-	parSpec        string
-	depsParSpecs   []string
+	name          string
+	actualVersion string
+	pyRunfiles    []string
+	srcsZip       string
+	depsSrcsZips  []string
 }
 
 var (
@@ -49,8 +48,8 @@ var (
 		" First file: in module %s at path %q." +
 		" Second file: in module %s at path %q."
 	noSrcFileErr      = moduleVariantErrTemplate + "doesn't have any source files!"
-	badSrcFileExtErr  = moduleVariantErrTemplate + "srcs: found non (.py) file: %q!"
-	badDataFileExtErr = moduleVariantErrTemplate + "data: found (.py) file: %q!"
+	badSrcFileExtErr  = moduleVariantErrTemplate + "srcs: found non (.py|.proto) file: %q!"
+	badDataFileExtErr = moduleVariantErrTemplate + "data: found (.py|.proto) file: %q!"
 	bpFile            = "Blueprints"
 
 	data = []struct {
@@ -313,14 +312,10 @@ var (
 						"runfiles/e/default_py3.py",
 						"runfiles/e/file4.py",
 					},
-					depsPyRunfiles: []string{
-						"runfiles/a/b/file1.py",
-						"runfiles/c/d/file2.py",
-					},
-					parSpec: "-P runfiles/e -C dir/ -l @prefix@/.intermediates/dir/bin/PY3/dir_.list",
-					depsParSpecs: []string{
-						"-P runfiles/a/b -C dir/ -l @prefix@/.intermediates/dir/lib5/PY3/dir_.list",
-						"-P runfiles/c/d -C dir/ -l @prefix@/.intermediates/dir/lib6/PY3/dir_.list",
+					srcsZip: "@prefix@/.intermediates/dir/bin/PY3/bin.py.srcszip",
+					depsSrcsZips: []string{
+						"@prefix@/.intermediates/dir/lib5/PY3/lib5.py.srcszip",
+						"@prefix@/.intermediates/dir/lib6/PY3/lib6.py.srcszip",
 					},
 				},
 			},
@@ -347,7 +342,7 @@ func TestPythonModule(t *testing.T) {
 			ctx.Register()
 			ctx.MockFileSystem(d.mockFiles)
 			_, testErrs := ctx.ParseBlueprintsFiles(bpFile)
-			fail(t, testErrs)
+			android.FailIfErrored(t, testErrs)
 			_, actErrs := ctx.PrepareBuildActions(config)
 			if len(actErrs) > 0 {
 				testErrs = append(testErrs, expectErrors(t, actErrs, d.errors)...)
@@ -356,11 +351,12 @@ func TestPythonModule(t *testing.T) {
 					testErrs = append(testErrs,
 						expectModule(t, ctx, buildDir, e.name,
 							e.actualVersion,
-							e.pyRunfiles, e.depsPyRunfiles,
-							e.parSpec, e.depsParSpecs)...)
+							e.srcsZip,
+							e.pyRunfiles,
+							e.depsSrcsZips)...)
 				}
 			}
-			fail(t, testErrs)
+			android.FailIfErrored(t, testErrs)
 		})
 	}
 }
@@ -388,9 +384,8 @@ func expectErrors(t *testing.T, actErrs []error, expErrs []string) (testErrs []e
 	return
 }
 
-func expectModule(t *testing.T, ctx *android.TestContext, buildDir, name, variant string,
-	expPyRunfiles, expDepsPyRunfiles []string,
-	expParSpec string, expDepsParSpecs []string) (testErrs []error) {
+func expectModule(t *testing.T, ctx *android.TestContext, buildDir, name, variant, expectedSrcsZip string,
+	expectedPyRunfiles, expectedDepsSrcsZips []string) (testErrs []error) {
 	module := ctx.ModuleForTests(name, variant)
 
 	base, baseOk := module.Module().(*Module)
@@ -398,47 +393,36 @@ func expectModule(t *testing.T, ctx *android.TestContext, buildDir, name, varian
 		t.Fatalf("%s is not Python module!", name)
 	}
 
-	actPyRunfiles := []string{}
+	actualPyRunfiles := []string{}
 	for _, path := range base.srcsPathMappings {
-		actPyRunfiles = append(actPyRunfiles, path.dest)
+		actualPyRunfiles = append(actualPyRunfiles, path.dest)
 	}
 
-	if !reflect.DeepEqual(actPyRunfiles, expPyRunfiles) {
+	if !reflect.DeepEqual(actualPyRunfiles, expectedPyRunfiles) {
 		testErrs = append(testErrs, errors.New(fmt.Sprintf(
 			`binary "%s" variant "%s" has unexpected pyRunfiles: %q!`,
 			base.Name(),
 			base.properties.Actual_version,
-			actPyRunfiles)))
+			actualPyRunfiles)))
 	}
 
-	if !reflect.DeepEqual(base.depsPyRunfiles, expDepsPyRunfiles) {
+	if base.srcsZip.String() != strings.Replace(expectedSrcsZip, "@prefix@", buildDir, 1) {
 		testErrs = append(testErrs, errors.New(fmt.Sprintf(
-			`binary "%s" variant "%s" has unexpected depsPyRunfiles: %q!`,
+			`binary "%s" variant "%s" has unexpected srcsZip: %q!`,
 			base.Name(),
 			base.properties.Actual_version,
-			base.depsPyRunfiles)))
+			base.srcsZip)))
 	}
 
-	if base.parSpec.soongParArgs() != strings.Replace(expParSpec, "@prefix@", buildDir, 1) {
+	for i, _ := range expectedDepsSrcsZips {
+		expectedDepsSrcsZips[i] = strings.Replace(expectedDepsSrcsZips[i], "@prefix@", buildDir, 1)
+	}
+	if !reflect.DeepEqual(base.depsSrcsZips.Strings(), expectedDepsSrcsZips) {
 		testErrs = append(testErrs, errors.New(fmt.Sprintf(
-			`binary "%s" variant "%s" has unexpected parSpec: %q!`,
+			`binary "%s" variant "%s" has unexpected depsSrcsZips: %q!`,
 			base.Name(),
 			base.properties.Actual_version,
-			base.parSpec.soongParArgs())))
-	}
-
-	actDepsParSpecs := []string{}
-	for i, p := range base.depsParSpecs {
-		actDepsParSpecs = append(actDepsParSpecs, p.soongParArgs())
-		expDepsParSpecs[i] = strings.Replace(expDepsParSpecs[i], "@prefix@", buildDir, 1)
-	}
-
-	if !reflect.DeepEqual(actDepsParSpecs, expDepsParSpecs) {
-		testErrs = append(testErrs, errors.New(fmt.Sprintf(
-			`binary "%s" variant "%s" has unexpected depsParSpecs: %q!`,
-			base.Name(),
-			base.properties.Actual_version,
-			actDepsParSpecs)))
+			base.depsSrcsZips)))
 	}
 
 	return
@@ -457,13 +441,4 @@ func setupBuildEnv(t *testing.T) (config android.Config, buildDir string) {
 
 func tearDownBuildEnv(buildDir string) {
 	os.RemoveAll(buildDir)
-}
-
-func fail(t *testing.T, errs []error) {
-	if len(errs) > 0 {
-		for _, err := range errs {
-			t.Error(err)
-		}
-		t.FailNow()
-	}
 }

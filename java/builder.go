@@ -35,13 +35,13 @@ var (
 	// Compiling java is not conducive to proper dependency tracking.  The path-matches-class-name
 	// requirement leads to unpredictable generated source file names, and a single .java file
 	// will get compiled into multiple .class files if it contains inner classes.  To work around
-	// this, all java rules write into separate directories and then a post-processing step lists
-	// the files in the the directory into a list file that later rules depend on (and sometimes
-	// read from directly using @<listfile>)
+	// this, all java rules write into separate directories and then are combined into a .jar file
+	// (if the rule produces .class files) or a .srcjar file (if the rule produces .java files).
+	// .srcjar files are unzipped into a temporary directory when compiled with javac.
 	javac = pctx.AndroidGomaStaticRule("javac",
 		blueprint.RuleParams{
 			Command: `rm -rf "$outDir" "$annoDir" "$srcJarDir" && mkdir -p "$outDir" "$annoDir" "$srcJarDir" && ` +
-				`${config.ExtractSrcJarsCmd} $srcJarDir $srcJarDir/list $srcJars && ` +
+				`${config.ZipSyncCmd} -d $srcJarDir -l $srcJarDir/list -f "*.java" $srcJars && ` +
 				`${config.SoongJavacWrapper} ${config.JavacWrapper}${config.JavacCmd} ${config.JavacHeapFlags} ${config.CommonJdkFlags} ` +
 				`$javacFlags $bootClasspath $classpath ` +
 				`-source $javaVersion -target $javaVersion ` +
@@ -50,7 +50,7 @@ var (
 			CommandDeps: []string{
 				"${config.JavacCmd}",
 				"${config.SoongZipCmd}",
-				"${config.ExtractSrcJarsCmd}",
+				"${config.ZipSyncCmd}",
 			},
 			CommandOrderOnly: []string{"${config.SoongJavacWrapper}"},
 			Rspfile:          "$out.rsp",
@@ -61,24 +61,29 @@ var (
 
 	kotlinc = pctx.AndroidGomaStaticRule("kotlinc",
 		blueprint.RuleParams{
-			// TODO(ccross): kotlinc doesn't support @ file for arguments, which will limit the
-			// maximum number of input files, especially on darwin.
-			Command: `rm -rf "$outDir" && mkdir -p "$outDir" && ` +
-				`${config.KotlincCmd} $classpath $kotlincFlags ` +
-				`-jvm-target $kotlinJvmTarget -d $outDir $in && ` +
+			Command: `rm -rf "$outDir" "$srcJarDir" && mkdir -p "$outDir" "$srcJarDir" && ` +
+				`${config.ZipSyncCmd} -d $srcJarDir -l $srcJarDir/list -f "*.java" $srcJars && ` +
+				`${config.GenKotlinBuildFileCmd} $classpath $outDir $out.rsp $srcJarDir/list > $outDir/kotlinc-build.xml &&` +
+				`${config.KotlincCmd} $kotlincFlags ` +
+				`-jvm-target $kotlinJvmTarget -Xbuild-file=$outDir/kotlinc-build.xml && ` +
+				`rm $outDir/kotlinc-build.xml && ` +
 				`${config.SoongZipCmd} -jar -o $out -C $outDir -D $outDir`,
 			CommandDeps: []string{
 				"${config.KotlincCmd}",
 				"${config.KotlinCompilerJar}",
+				"${config.GenKotlinBuildFileCmd}",
 				"${config.SoongZipCmd}",
+				"${config.ZipSyncCmd}",
 			},
+			Rspfile:        "$out.rsp",
+			RspfileContent: `$in`,
 		},
-		"kotlincFlags", "classpath", "outDir", "kotlinJvmTarget")
+		"kotlincFlags", "classpath", "srcJars", "srcJarDir", "outDir", "kotlinJvmTarget")
 
 	errorprone = pctx.AndroidStaticRule("errorprone",
 		blueprint.RuleParams{
 			Command: `rm -rf "$outDir" "$annoDir" "$srcJarDir" && mkdir -p "$outDir" "$annoDir" "$srcJarDir" && ` +
-				`${config.ExtractSrcJarsCmd} $srcJarDir $srcJarDir/list $srcJars && ` +
+				`${config.ZipSyncCmd} -d $srcJarDir -l $srcJarDir/list -f "*.java" $srcJars && ` +
 				`${config.SoongJavacWrapper} ${config.ErrorProneCmd} ` +
 				`$javacFlags $bootClasspath $classpath ` +
 				`-source $javaVersion -target $javaVersion ` +
@@ -89,7 +94,7 @@ var (
 				"${config.ErrorProneJavacJar}",
 				"${config.ErrorProneJar}",
 				"${config.SoongZipCmd}",
-				"${config.ExtractSrcJarsCmd}",
+				"${config.ZipSyncCmd}",
 			},
 			CommandOrderOnly: []string{"${config.SoongJavacWrapper}"},
 			Rspfile:          "$out.rsp",
@@ -100,80 +105,39 @@ var (
 
 	turbine = pctx.AndroidStaticRule("turbine",
 		blueprint.RuleParams{
-			Command: `rm -rf "$outDir" "$srcJarDir" && mkdir -p "$outDir" "$srcJarDir" && ` +
-				`${config.ExtractSrcJarsCmd} $srcJarDir $srcJarDir/list $srcJars && ` +
+			Command: `rm -rf "$outDir" && mkdir -p "$outDir" && ` +
 				`${config.JavaCmd} -jar ${config.TurbineJar} --output $out.tmp ` +
-				`--temp_dir "$outDir" --sources @$out.rsp @$srcJarDir/list ` +
+				`--temp_dir "$outDir" --sources @$out.rsp  --source_jars $srcJars ` +
 				`--javacopts ${config.CommonJdkFlags} ` +
-				`$javacFlags -source $javaVersion -target $javaVersion $bootClasspath $classpath && ` +
+				`$javacFlags -source $javaVersion -target $javaVersion -- $bootClasspath $classpath && ` +
 				`${config.Ziptime} $out.tmp && ` +
 				`(if cmp -s $out.tmp $out ; then rm $out.tmp ; else mv $out.tmp $out ; fi )`,
 			CommandDeps: []string{
 				"${config.TurbineJar}",
 				"${config.JavaCmd}",
 				"${config.Ziptime}",
-				"${config.ExtractSrcJarsCmd}",
 			},
 			Rspfile:        "$out.rsp",
 			RspfileContent: "$in",
 			Restat:         true,
 		},
-		"javacFlags", "bootClasspath", "classpath", "srcJars", "srcJarDir",
-		"outDir", "javaVersion")
+		"javacFlags", "bootClasspath", "classpath", "srcJars", "outDir", "javaVersion")
 
 	jar = pctx.AndroidStaticRule("jar",
 		blueprint.RuleParams{
-			Command:     `${config.SoongZipCmd} -jar -o $out $jarArgs`,
-			CommandDeps: []string{"${config.SoongZipCmd}"},
+			Command:        `${config.SoongZipCmd} -jar -o $out @$out.rsp`,
+			CommandDeps:    []string{"${config.SoongZipCmd}"},
+			Rspfile:        "$out.rsp",
+			RspfileContent: "$jarArgs",
 		},
 		"jarArgs")
 
 	combineJar = pctx.AndroidStaticRule("combineJar",
 		blueprint.RuleParams{
-			Command:     `${config.MergeZipsCmd} -j $jarArgs $out $in`,
+			Command:     `${config.MergeZipsCmd} --ignore-duplicates -j $jarArgs $out $in`,
 			CommandDeps: []string{"${config.MergeZipsCmd}"},
 		},
 		"jarArgs")
-
-	desugar = pctx.AndroidStaticRule("desugar",
-		blueprint.RuleParams{
-			Command: `rm -rf $dumpDir && mkdir -p $dumpDir && ` +
-				`${config.JavaCmd} ` +
-				`-Djdk.internal.lambda.dumpProxyClasses=$$(cd $dumpDir && pwd) ` +
-				`$javaFlags ` +
-				`-jar ${config.DesugarJar} $classpathFlags $desugarFlags ` +
-				`-i $in -o $out`,
-			CommandDeps: []string{"${config.DesugarJar}", "${config.JavaCmd}"},
-		},
-		"javaFlags", "classpathFlags", "desugarFlags", "dumpDir")
-
-	dx = pctx.AndroidStaticRule("dx",
-		blueprint.RuleParams{
-			Command: `rm -rf "$outDir" && mkdir -p "$outDir" && ` +
-				`${config.DxCmd} --dex --output=$outDir $dxFlags $in && ` +
-				`${config.SoongZipCmd} -o $outDir/classes.dex.jar -C $outDir -D $outDir && ` +
-				`${config.MergeZipsCmd} -D -stripFile "*.class" $out $outDir/classes.dex.jar $in`,
-			CommandDeps: []string{
-				"${config.DxCmd}",
-				"${config.SoongZipCmd}",
-				"${config.MergeZipsCmd}",
-			},
-		},
-		"outDir", "dxFlags")
-
-	d8 = pctx.AndroidStaticRule("d8",
-		blueprint.RuleParams{
-			Command: `rm -rf "$outDir" && mkdir -p "$outDir" && ` +
-				`${config.D8Cmd} --output $outDir $dxFlags $in && ` +
-				`${config.SoongZipCmd} -o $outDir/classes.dex.jar -C $outDir -D $outDir && ` +
-				`${config.MergeZipsCmd} -D -stripFile "*.class" $out $outDir/classes.dex.jar $in`,
-			CommandDeps: []string{
-				"${config.DxCmd}",
-				"${config.SoongZipCmd}",
-				"${config.MergeZipsCmd}",
-			},
-		},
-		"outDir", "dxFlags")
 
 	jarjar = pctx.AndroidStaticRule("jarjar",
 		blueprint.RuleParams{
@@ -189,39 +153,45 @@ func init() {
 
 type javaBuilderFlags struct {
 	javacFlags    string
-	dxFlags       string
 	bootClasspath classpath
 	classpath     classpath
 	systemModules classpath
-	desugarFlags  string
 	aidlFlags     string
 	javaVersion   string
+
+	errorProneExtraJavacFlags string
 
 	kotlincFlags     string
 	kotlincClasspath classpath
 
-	protoFlags   []string
-	protoOutFlag string
+	protoFlags       []string
+	protoOutTypeFlag string // The flag itself: --java_out
+	protoOutParams   string // Parameters to that flag: --java_out=$protoOutParams:$outDir
+	protoRoot        bool
 }
 
 func TransformKotlinToClasses(ctx android.ModuleContext, outputFile android.WritablePath,
 	srcFiles, srcJars android.Paths,
 	flags javaBuilderFlags) {
 
-	classDir := android.PathForModuleOut(ctx, "kotlinc", "classes")
-
 	inputs := append(android.Paths(nil), srcFiles...)
-	inputs = append(inputs, srcJars...)
+
+	var deps android.Paths
+	deps = append(deps, flags.kotlincClasspath...)
+	deps = append(deps, srcJars...)
 
 	ctx.Build(pctx, android.BuildParams{
 		Rule:        kotlinc,
 		Description: "kotlinc",
 		Output:      outputFile,
 		Inputs:      inputs,
+		Implicits:   deps,
 		Args: map[string]string{
 			"classpath":    flags.kotlincClasspath.FormJavaClassPath("-classpath"),
 			"kotlincFlags": flags.kotlincFlags,
-			"outDir":       classDir.String(),
+			"srcJars":      strings.Join(srcJars.Strings(), " "),
+			"outDir":       android.PathForModuleOut(ctx, "kotlinc", "classes").String(),
+			"srcJarDir":    android.PathForModuleOut(ctx, "kotlinc", "srcJars").String(),
 			// http://b/69160377 kotlinc only supports -jvm-target 1.6 and 1.8
 			"kotlinJvmTarget": "1.8",
 		},
@@ -247,6 +217,14 @@ func RunErrorProne(ctx android.ModuleContext, outputFile android.WritablePath,
 		ctx.ModuleErrorf("cannot build with Error Prone, missing external/error_prone?")
 	}
 
+	if len(flags.errorProneExtraJavacFlags) > 0 {
+		if len(flags.javacFlags) > 0 {
+			flags.javacFlags = flags.errorProneExtraJavacFlags + " " + flags.javacFlags
+		} else {
+			flags.javacFlags = flags.errorProneExtraJavacFlags
+		}
+	}
+
 	transformJavaToClasses(ctx, outputFile, -1, srcFiles, srcJars, flags, nil,
 		"errorprone", "errorprone", errorprone)
 }
@@ -265,7 +243,7 @@ func TransformJavaToHeaderClasses(ctx android.ModuleContext, outputFile android.
 		// ensure java does not fall back to the default bootclasspath.
 		bootClasspath = `--bootclasspath ""`
 	} else {
-		bootClasspath = flags.bootClasspath.FormJavaClassPath("--bootclasspath")
+		bootClasspath = strings.Join(flags.bootClasspath.FormDesugarClasspath("--bootclasspath"), " ")
 	}
 
 	ctx.Build(pctx, android.BuildParams{
@@ -278,8 +256,7 @@ func TransformJavaToHeaderClasses(ctx android.ModuleContext, outputFile android.
 			"javacFlags":    flags.javacFlags,
 			"bootClasspath": bootClasspath,
 			"srcJars":       strings.Join(srcJars.Strings(), " "),
-			"srcJarDir":     android.PathForModuleOut(ctx, "turbine", "srcjars").String(),
-			"classpath":     flags.classpath.FormJavaClassPath("--classpath"),
+			"classpath":     strings.Join(flags.classpath.FormDesugarClasspath("--classpath"), " "),
 			"outDir":        android.PathForModuleOut(ctx, "turbine", "classes").String(),
 			"javaVersion":   flags.javaVersion,
 		},
@@ -378,6 +355,15 @@ func TransformJarsToJar(ctx android.ModuleContext, outputFile android.WritablePa
 		}
 	}
 
+	// Remove any module-info.class files that may have come from prebuilt jars, they cause problems
+	// for downstream tools like desugar.
+	jarArgs = append(jarArgs, "-stripFile module-info.class")
+
+	// Remove any kotlin-reflect related files
+	// TODO(pszczepaniak): Support kotlin-reflect
+	jarArgs = append(jarArgs, "-stripFile \"*.kotlin_module\"")
+	jarArgs = append(jarArgs, "-stripFile \"*.kotlin_builtin\"")
+
 	if stripDirs {
 		jarArgs = append(jarArgs, "-D")
 	}
@@ -390,64 +376,6 @@ func TransformJarsToJar(ctx android.ModuleContext, outputFile android.WritablePa
 		Implicits:   deps,
 		Args: map[string]string{
 			"jarArgs": strings.Join(jarArgs, " "),
-		},
-	})
-}
-
-func TransformDesugar(ctx android.ModuleContext, outputFile android.WritablePath,
-	classesJar android.Path, flags javaBuilderFlags) {
-
-	dumpDir := android.PathForModuleOut(ctx, "desugar", "classes")
-
-	javaFlags := ""
-	if ctx.Config().UseOpenJDK9() {
-		javaFlags = "--add-opens java.base/java.lang.invoke=ALL-UNNAMED"
-	}
-
-	var desugarFlags []string
-	desugarFlags = append(desugarFlags, flags.bootClasspath.FormDesugarClasspath("--bootclasspath_entry")...)
-	desugarFlags = append(desugarFlags, flags.classpath.FormDesugarClasspath("--classpath_entry")...)
-
-	var deps android.Paths
-	deps = append(deps, flags.bootClasspath...)
-	deps = append(deps, flags.classpath...)
-
-	ctx.Build(pctx, android.BuildParams{
-		Rule:        desugar,
-		Description: "desugar",
-		Output:      outputFile,
-		Input:       classesJar,
-		Implicits:   deps,
-		Args: map[string]string{
-			"dumpDir":        dumpDir.String(),
-			"javaFlags":      javaFlags,
-			"classpathFlags": strings.Join(desugarFlags, " "),
-			"desugarFlags":   flags.desugarFlags,
-		},
-	})
-}
-
-// Converts a classes.jar file to classes*.dex, then combines the dex files with any resources
-// in the classes.jar file into a dex jar.
-func TransformClassesJarToDexJar(ctx android.ModuleContext, outputFile android.WritablePath,
-	classesJar android.Path, flags javaBuilderFlags) {
-
-	outDir := android.PathForModuleOut(ctx, "dex")
-
-	rule := dx
-	desc := "dx"
-	if ctx.AConfig().IsEnvTrue("USE_D8_DESUGAR") {
-		rule = d8
-		desc = "d8"
-	}
-	ctx.Build(pctx, android.BuildParams{
-		Rule:        rule,
-		Description: desc,
-		Output:      outputFile,
-		Input:       classesJar,
-		Args: map[string]string{
-			"dxFlags": flags.dxFlags,
-			"outDir":  outDir.String(),
 		},
 	})
 }
@@ -501,13 +429,6 @@ func (x *classpath) FormDesugarClasspath(optName string) []string {
 	}
 
 	return flags
-}
-
-// Append an android.Paths to the end of the classpath list
-func (x *classpath) AddPaths(paths android.Paths) {
-	for _, path := range paths {
-		*x = append(*x, path)
-	}
 }
 
 // Convert a classpath to an android.Paths

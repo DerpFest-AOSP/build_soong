@@ -106,6 +106,9 @@ type BaseCompilerProperties struct {
 		// list of directories relative to the Blueprints file that will
 		// be added to the aidl include paths.
 		Local_include_dirs []string
+
+		// whether to generate traces (for systrace) for this interface
+		Generate_traces *bool
 	}
 
 	Renderscript struct {
@@ -139,6 +142,19 @@ type BaseCompilerProperties struct {
 			// variant of the C/C++ module.
 			Cflags []string
 		}
+		Recovery struct {
+			// list of source files that should only be used in the
+			// recovery variant of the C/C++ module.
+			Srcs []string
+
+			// list of source files that should not be used to
+			// build the recovery variant of the C/C++ module.
+			Exclude_srcs []string
+
+			// List of additional cflags that should be used to build the recovery
+			// variant of the C/C++ module.
+			Cflags []string
+		}
 	}
 
 	Proto struct {
@@ -148,6 +164,9 @@ type BaseCompilerProperties struct {
 
 	// Stores the original list of source files before being cleared by library reuse
 	OriginalSrcs []string `blueprint:"mutated"`
+
+	// Build and link with OpenMP
+	Openmp *bool `android:"arch_variant"`
 }
 
 func NewBaseCompiler() *baseCompiler {
@@ -157,7 +176,8 @@ func NewBaseCompiler() *baseCompiler {
 type baseCompiler struct {
 	Properties BaseCompilerProperties
 	Proto      android.ProtoProperties
-	deps       android.Paths
+	cFlagsDeps android.Paths
+	pathDeps   android.Paths
 	flags      builderFlags
 
 	// Sources that were passed to the C/C++ compiler
@@ -176,7 +196,7 @@ type CompiledInterface interface {
 }
 
 func (compiler *baseCompiler) Srcs() android.Paths {
-	return compiler.srcs
+	return append(android.Paths{}, compiler.srcs...)
 }
 
 func (compiler *baseCompiler) appendCflags(flags []string) {
@@ -198,9 +218,14 @@ func (compiler *baseCompiler) compilerDeps(ctx DepsContext, deps Deps) Deps {
 	deps.GeneratedHeaders = append(deps.GeneratedHeaders, compiler.Properties.Generated_headers...)
 
 	android.ExtractSourcesDeps(ctx, compiler.Properties.Srcs)
+	android.ExtractSourcesDeps(ctx, compiler.Properties.Exclude_srcs)
 
 	if compiler.hasSrcExt(".proto") {
 		deps = protoDeps(ctx, deps, &compiler.Proto, Bool(compiler.Properties.Proto.Static))
+	}
+
+	if Bool(compiler.Properties.Openmp) {
+		deps.StaticLibs = append(deps.StaticLibs, "libomp")
 	}
 
 	return deps
@@ -218,7 +243,7 @@ func warningsAreAllowed(subdir string) bool {
 }
 
 func addToModuleList(ctx ModuleContext, list string, module string) {
-	getWallWerrorMap(ctx.Config(), list).Store(module, true)
+	getNamedMapForConfig(ctx.Config(), list).Store(module, true)
 }
 
 // Create a Flags struct that collects the compile flags from global values,
@@ -274,7 +299,7 @@ func (compiler *baseCompiler) compilerFlags(ctx ModuleContext, flags Flags, deps
 		// behavior here, and the NDK always has all the NDK headers available.
 		flags.SystemIncludeFlags = append(flags.SystemIncludeFlags,
 			"-isystem "+getCurrentIncludePath(ctx).String(),
-			"-isystem "+getCurrentIncludePath(ctx).Join(ctx, tc.ClangTriple()).String())
+			"-isystem "+getCurrentIncludePath(ctx).Join(ctx, config.NDKTriple(tc)).String())
 
 		// Traditionally this has come from android/api-level.h, but with the
 		// libc headers unified it must be set by the build system since we
@@ -296,8 +321,13 @@ func (compiler *baseCompiler) compilerFlags(ctx ModuleContext, flags Flags, deps
 	}
 
 	if ctx.useVndk() {
+		// sdkVersion() returns VNDK version for vendor modules.
+		version := ctx.sdkVersion()
+		if version == "current" {
+			version = "__ANDROID_API_FUTURE__"
+		}
 		flags.GlobalFlags = append(flags.GlobalFlags,
-			"-D__ANDROID_API__=__ANDROID_API_FUTURE__", "-D__ANDROID_VNDK__")
+			"-D__ANDROID_API__="+version, "-D__ANDROID_VNDK__")
 	}
 
 	instructionSet := String(compiler.Properties.Instruction_set)
@@ -360,10 +390,6 @@ func (compiler *baseCompiler) compilerFlags(ctx ModuleContext, flags Flags, deps
 			fmt.Sprintf("${config.%sGlobalCflags}", hod))
 	}
 
-	if Bool(ctx.Config().ProductVariables.Brillo) {
-		flags.GlobalFlags = append(flags.GlobalFlags, "-D__BRILLO__")
-	}
-
 	if ctx.Device() {
 		if Bool(compiler.Properties.Rtti) {
 			flags.CppFlags = append(flags.CppFlags, "-frtti")
@@ -388,44 +414,41 @@ func (compiler *baseCompiler) compilerFlags(ctx ModuleContext, flags Flags, deps
 		flags.GlobalFlags = append(flags.GlobalFlags, tc.ToolchainCflags())
 	}
 
-	if !ctx.useSdk() {
-		cStd := config.CStdVersion
-		if String(compiler.Properties.C_std) == "experimental" {
-			cStd = config.ExperimentalCStdVersion
-		} else if String(compiler.Properties.C_std) != "" {
-			cStd = String(compiler.Properties.C_std)
-		}
-
-		cppStd := String(compiler.Properties.Cpp_std)
-		switch String(compiler.Properties.Cpp_std) {
-		case "":
-			cppStd = config.CppStdVersion
-		case "experimental":
-			cppStd = config.ExperimentalCppStdVersion
-		case "c++17", "gnu++17":
-			// Map c++17 and gnu++17 to their 1z equivalents, until 17 is finalized.
-			cppStd = strings.Replace(String(compiler.Properties.Cpp_std), "17", "1z", 1)
-		}
-
-		if !flags.Clang {
-			// GCC uses an invalid C++14 ABI (emits calls to
-			// __cxa_throw_bad_array_length, which is not a valid C++ RT ABI).
-			// http://b/25022512
-			cppStd = config.GccCppStdVersion
-		} else if ctx.Host() && !flags.Clang {
-			// The host GCC doesn't support C++14 (and is deprecated, so likely
-			// never will). Build these modules with C++11.
-			cppStd = config.GccCppStdVersion
-		}
-
-		if compiler.Properties.Gnu_extensions != nil && *compiler.Properties.Gnu_extensions == false {
-			cStd = gnuToCReplacer.Replace(cStd)
-			cppStd = gnuToCReplacer.Replace(cppStd)
-		}
-
-		flags.ConlyFlags = append([]string{"-std=" + cStd}, flags.ConlyFlags...)
-		flags.CppFlags = append([]string{"-std=" + cppStd}, flags.CppFlags...)
+	cStd := config.CStdVersion
+	if String(compiler.Properties.C_std) == "experimental" {
+		cStd = config.ExperimentalCStdVersion
+	} else if String(compiler.Properties.C_std) != "" {
+		cStd = String(compiler.Properties.C_std)
 	}
+
+	cppStd := String(compiler.Properties.Cpp_std)
+	switch String(compiler.Properties.Cpp_std) {
+	case "":
+		cppStd = config.CppStdVersion
+	case "experimental":
+		cppStd = config.ExperimentalCppStdVersion
+	case "c++17", "gnu++17":
+		// Map c++17 and gnu++17 to their 1z equivalents, until 17 is finalized.
+		cppStd = strings.Replace(String(compiler.Properties.Cpp_std), "17", "1z", 1)
+	}
+
+	if !flags.Clang {
+		// GCC uses an invalid C++14 ABI (emits calls to
+		// __cxa_throw_bad_array_length, which is not a valid C++ RT ABI).
+		// http://b/25022512
+		// The host GCC doesn't support C++14 (and is deprecated, so likely
+		// never will).
+		// Build these modules with C++11.
+		cppStd = config.GccCppStdVersion
+	}
+
+	if compiler.Properties.Gnu_extensions != nil && *compiler.Properties.Gnu_extensions == false {
+		cStd = gnuToCReplacer.Replace(cStd)
+		cppStd = gnuToCReplacer.Replace(cppStd)
+	}
+
+	flags.ConlyFlags = append([]string{"-std=" + cStd}, flags.ConlyFlags...)
+	flags.CppFlags = append([]string{"-std=" + cppStd}, flags.CppFlags...)
 
 	if ctx.useVndk() {
 		flags.CFlags = append(flags.CFlags, esc(compiler.Properties.Target.Vendor.Cflags)...)
@@ -471,6 +494,10 @@ func (compiler *baseCompiler) compilerFlags(ctx ModuleContext, flags Flags, deps
 			flags.aidlFlags = append(flags.aidlFlags, includeDirsToFlags(rootAidlIncludeDirs))
 		}
 
+		if Bool(compiler.Properties.Aidl.Generate_traces) {
+			flags.aidlFlags = append(flags.aidlFlags, "-t")
+		}
+
 		flags.GlobalFlags = append(flags.GlobalFlags,
 			"-I"+android.PathForModuleGen(ctx, "aidl").String())
 	}
@@ -491,6 +518,10 @@ func (compiler *baseCompiler) compilerFlags(ctx ModuleContext, flags Flags, deps
 				flags.CFlags = append([]string{"-Wall", "-Werror"}, flags.CFlags...)
 			}
 		}
+	}
+
+	if Bool(compiler.Properties.Openmp) {
+		flags.CFlags = append(flags.CFlags, "-fopenmp")
 	}
 
 	return flags
@@ -522,7 +553,7 @@ func ndkPathDeps(ctx ModuleContext) android.Paths {
 	if ctx.useSdk() {
 		// The NDK sysroot timestamp file depends on all the NDK sysroot files
 		// (headers and libraries).
-		return android.Paths{getNdkSysrootTimestampFile(ctx)}
+		return android.Paths{getNdkBaseTimestampFile(ctx)}
 	}
 	return nil
 }
@@ -536,17 +567,16 @@ func (compiler *baseCompiler) compile(ctx ModuleContext, flags Flags, deps PathD
 	srcs := append(android.Paths(nil), compiler.srcsBeforeGen...)
 
 	srcs, genDeps := genSources(ctx, srcs, buildFlags)
-
 	pathDeps = append(pathDeps, genDeps...)
-	pathDeps = append(pathDeps, flags.CFlagsDeps...)
 
-	compiler.deps = pathDeps
+	compiler.pathDeps = pathDeps
+	compiler.cFlagsDeps = flags.CFlagsDeps
 
 	// Save src, buildFlags and context
 	compiler.srcs = srcs
 
 	// Compile files listed in c.Properties.Srcs into objects
-	objs := compileObjs(ctx, buildFlags, "", srcs, compiler.deps)
+	objs := compileObjs(ctx, buildFlags, "", srcs, pathDeps, compiler.cFlagsDeps)
 
 	if ctx.Failed() {
 		return Objects{}
@@ -557,7 +587,7 @@ func (compiler *baseCompiler) compile(ctx ModuleContext, flags Flags, deps PathD
 
 // Compile a list of source files into objects a specified subdirectory
 func compileObjs(ctx android.ModuleContext, flags builderFlags,
-	subdir string, srcFiles, deps android.Paths) Objects {
+	subdir string, srcFiles, pathDeps android.Paths, cFlagsDeps android.Paths) Objects {
 
-	return TransformSourceToObj(ctx, subdir, srcFiles, flags, deps)
+	return TransformSourceToObj(ctx, subdir, srcFiles, flags, pathDeps, cFlagsDeps)
 }

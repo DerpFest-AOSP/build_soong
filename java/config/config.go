@@ -66,9 +66,9 @@ func init() {
 
 	pctx.VariableConfigMethod("hostPrebuiltTag", android.Config.PrebuiltOS)
 
-	pctx.VariableFunc("JavaHome", func(config android.Config) (string, error) {
+	pctx.VariableFunc("JavaHome", func(ctx android.PackageVarContext) string {
 		// This is set up and guaranteed by soong_ui
-		return config.Getenv("ANDROID_JAVA_HOME"), nil
+		return ctx.Config().Getenv("ANDROID_JAVA_HOME")
 	})
 
 	pctx.SourcePathVariable("JavaToolchain", "${JavaHome}/bin")
@@ -82,74 +82,61 @@ func init() {
 	pctx.SourcePathVariable("JrtFsJar", "${JavaHome}/lib/jrt-fs.jar")
 	pctx.SourcePathVariable("Ziptime", "prebuilts/build-tools/${hostPrebuiltTag}/bin/ziptime")
 
-	pctx.SourcePathVariable("ExtractSrcJarsCmd", "build/soong/scripts/extract-srcjars.sh")
+	pctx.SourcePathVariable("GenKotlinBuildFileCmd", "build/soong/scripts/gen-kotlin-build-file.sh")
+
 	pctx.SourcePathVariable("JarArgsCmd", "build/soong/scripts/jar-args.sh")
+	pctx.HostBinToolVariable("ExtractJarPackagesCmd", "extract_jar_packages")
 	pctx.HostBinToolVariable("SoongZipCmd", "soong_zip")
 	pctx.HostBinToolVariable("MergeZipsCmd", "merge_zips")
 	pctx.HostBinToolVariable("Zip2ZipCmd", "zip2zip")
-	pctx.VariableFunc("DxCmd", func(config android.Config) (string, error) {
+	pctx.HostBinToolVariable("ZipSyncCmd", "zipsync")
+	pctx.HostBinToolVariable("ApiCheckCmd", "apicheck")
+	pctx.VariableFunc("DxCmd", func(ctx android.PackageVarContext) string {
+		config := ctx.Config()
 		if config.IsEnvFalse("USE_D8") {
 			if config.UnbundledBuild() || config.IsPdkBuild() {
-				return "prebuilts/build-tools/common/bin/dx", nil
+				return "prebuilts/build-tools/common/bin/dx"
 			} else {
-				path, err := pctx.HostBinToolPath(config, "dx")
-				if err != nil {
-					return "", err
-				}
-				return path.String(), nil
+				return pctx.HostBinToolPath(ctx, "dx").String()
 			}
 		} else {
-			path, err := pctx.HostBinToolPath(config, "d8-compat-dx")
-			if err != nil {
-				return "", err
-			}
-			return path.String(), nil
+			return pctx.HostBinToolPath(ctx, "d8-compat-dx").String()
 		}
 	})
-	pctx.VariableFunc("D8Cmd", func(config android.Config) (string, error) {
-		path, err := pctx.HostBinToolPath(config, "d8")
-		if err != nil {
-			return "", err
-		}
-		return path.String(), nil
-	})
-	pctx.VariableFunc("TurbineJar", func(config android.Config) (string, error) {
+	pctx.HostBinToolVariable("D8Cmd", "d8")
+	pctx.HostBinToolVariable("R8Cmd", "r8-compat-proguard")
+
+	pctx.VariableFunc("TurbineJar", func(ctx android.PackageVarContext) string {
 		turbine := "turbine.jar"
-		if config.UnbundledBuild() {
-			return "prebuilts/build-tools/common/framework/" + turbine, nil
+		if ctx.Config().UnbundledBuild() {
+			return "prebuilts/build-tools/common/framework/" + turbine
 		} else {
-			path, err := pctx.HostJavaToolPath(config, turbine)
-			if err != nil {
-				return "", err
-			}
-			return path.String(), nil
+			return pctx.HostJavaToolPath(ctx, turbine).String()
 		}
 	})
 
 	pctx.HostJavaToolVariable("JarjarCmd", "jarjar.jar")
 	pctx.HostJavaToolVariable("DesugarJar", "desugar.jar")
+	pctx.HostJavaToolVariable("JsilverJar", "jsilver.jar")
+	pctx.HostJavaToolVariable("DoclavaJar", "doclava.jar")
 
 	pctx.HostBinToolVariable("SoongJavacWrapper", "soong_javac_wrapper")
 
-	pctx.VariableFunc("JavacWrapper", func(config android.Config) (string, error) {
-		if override := config.Getenv("JAVAC_WRAPPER"); override != "" {
-			return override + " ", nil
+	pctx.VariableFunc("JavacWrapper", func(ctx android.PackageVarContext) string {
+		if override := ctx.Config().Getenv("JAVAC_WRAPPER"); override != "" {
+			return override + " "
 		}
-		return "", nil
+		return ""
 	})
 
 	pctx.HostJavaToolVariable("JacocoCLIJar", "jacoco-cli.jar")
 
 	hostBinToolVariableWithPrebuilt := func(name, prebuiltDir, tool string) {
-		pctx.VariableFunc(name, func(config android.Config) (string, error) {
-			if config.UnbundledBuild() || config.IsPdkBuild() {
-				return filepath.Join(prebuiltDir, runtime.GOOS, "bin", tool), nil
+		pctx.VariableFunc(name, func(ctx android.PackageVarContext) string {
+			if ctx.Config().UnbundledBuild() || ctx.Config().IsPdkBuild() {
+				return filepath.Join(prebuiltDir, runtime.GOOS, "bin", tool)
 			} else {
-				if path, err := pctx.HostBinToolPath(config, tool); err != nil {
-					return "", err
-				} else {
-					return path.String(), nil
-				}
+				return pctx.HostBinToolPath(ctx, tool).String()
 			}
 		})
 	}

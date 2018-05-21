@@ -16,8 +16,10 @@ package java
 
 import (
 	"android/soong/android"
+	"fmt"
 	"reflect"
 	"sort"
+	"strings"
 	"testing"
 )
 
@@ -59,41 +61,44 @@ func testApp(t *testing.T, bp string) *android.TestContext {
 }
 
 func TestApp(t *testing.T) {
-	ctx := testApp(t, `
-		android_app {
-			name: "foo",
-			srcs: ["a.java"],
-		}
-	`)
+	for _, moduleType := range []string{"android_app", "android_library"} {
+		t.Run(moduleType, func(t *testing.T) {
+			ctx := testApp(t, moduleType+` {
+					name: "foo",
+					srcs: ["a.java"],
+				}
+			`)
 
-	foo := ctx.ModuleForTests("foo", "android_common")
+			foo := ctx.ModuleForTests("foo", "android_common")
 
-	expectedLinkImplicits := []string{"AndroidManifest.xml"}
+			expectedLinkImplicits := []string{"AndroidManifest.xml"}
 
-	frameworkRes := ctx.ModuleForTests("framework-res", "android_common")
-	expectedLinkImplicits = append(expectedLinkImplicits,
-		frameworkRes.Output("package-res.apk").Output.String())
+			frameworkRes := ctx.ModuleForTests("framework-res", "android_common")
+			expectedLinkImplicits = append(expectedLinkImplicits,
+				frameworkRes.Output("package-res.apk").Output.String())
 
-	// Test the mapping from input files to compiled output file names
-	compile := foo.Output(compiledResourceFiles[0])
-	if !reflect.DeepEqual(resourceFiles, compile.Inputs.Strings()) {
-		t.Errorf("expected aapt2 compile inputs expected:\n  %#v\n got:\n  %#v",
-			resourceFiles, compile.Inputs.Strings())
-	}
+			// Test the mapping from input files to compiled output file names
+			compile := foo.Output(compiledResourceFiles[0])
+			if !reflect.DeepEqual(resourceFiles, compile.Inputs.Strings()) {
+				t.Errorf("expected aapt2 compile inputs expected:\n  %#v\n got:\n  %#v",
+					resourceFiles, compile.Inputs.Strings())
+			}
 
-	compiledResourceOutputs := compile.Outputs.Strings()
-	sort.Strings(compiledResourceOutputs)
+			compiledResourceOutputs := compile.Outputs.Strings()
+			sort.Strings(compiledResourceOutputs)
 
-	expectedLinkImplicits = append(expectedLinkImplicits, compiledResourceOutputs...)
+			expectedLinkImplicits = append(expectedLinkImplicits, compiledResourceOutputs...)
 
-	list := foo.Output("aapt2/res.list")
-	expectedLinkImplicits = append(expectedLinkImplicits, list.Output.String())
+			list := foo.Output("aapt2/res.list")
+			expectedLinkImplicits = append(expectedLinkImplicits, list.Output.String())
 
-	// Check that the link rule uses
-	res := ctx.ModuleForTests("foo", "android_common").Output("package-res.apk")
-	if !reflect.DeepEqual(expectedLinkImplicits, res.Implicits.Strings()) {
-		t.Errorf("expected aapt2 link implicits expected:\n  %#v\n got:\n  %#v",
-			expectedLinkImplicits, res.Implicits.Strings())
+			// Check that the link rule uses
+			res := ctx.ModuleForTests("foo", "android_common").Output("package-res.apk")
+			if !reflect.DeepEqual(expectedLinkImplicits, res.Implicits.Strings()) {
+				t.Errorf("expected aapt2 link implicits expected:\n  %#v\n got:\n  %#v",
+					expectedLinkImplicits, res.Implicits.Strings())
+			}
+		})
 	}
 }
 
@@ -111,13 +116,13 @@ var testEnforceRROTests = []struct {
 		enforceRROTargets:          nil,
 		enforceRROExcludedOverlays: nil,
 		fooOverlayFiles: []string{
-			"device/vendor/blah/overlay/foo/res/values/strings.xml",
 			"device/vendor/blah/static_overlay/foo/res/values/strings.xml",
+			"device/vendor/blah/overlay/foo/res/values/strings.xml",
 		},
 		fooRRODirs: nil,
 		barOverlayFiles: []string{
-			"device/vendor/blah/overlay/bar/res/values/strings.xml",
 			"device/vendor/blah/static_overlay/bar/res/values/strings.xml",
+			"device/vendor/blah/overlay/bar/res/values/strings.xml",
 		},
 		barRRODirs: nil,
 	},
@@ -132,8 +137,8 @@ var testEnforceRROTests = []struct {
 			"device/vendor/blah/overlay/foo/res",
 		},
 		barOverlayFiles: []string{
-			"device/vendor/blah/overlay/bar/res/values/strings.xml",
 			"device/vendor/blah/static_overlay/bar/res/values/strings.xml",
+			"device/vendor/blah/overlay/bar/res/values/strings.xml",
 		},
 		barRRODirs: nil,
 	},
@@ -188,12 +193,12 @@ func TestEnforceRRO(t *testing.T) {
 	for _, testCase := range testEnforceRROTests {
 		t.Run(testCase.name, func(t *testing.T) {
 			config := testConfig(nil)
-			config.ProductVariables.ResourceOverlays = &resourceOverlays
+			config.TestProductVariables.ResourceOverlays = &resourceOverlays
 			if testCase.enforceRROTargets != nil {
-				config.ProductVariables.EnforceRROTargets = &testCase.enforceRROTargets
+				config.TestProductVariables.EnforceRROTargets = &testCase.enforceRROTargets
 			}
 			if testCase.enforceRROExcludedOverlays != nil {
-				config.ProductVariables.EnforceRROExcludedOverlays = &testCase.enforceRROExcludedOverlays
+				config.TestProductVariables.EnforceRROExcludedOverlays = &testCase.enforceRROExcludedOverlays
 			}
 
 			ctx := testAppContext(config, bp, fs)
@@ -235,5 +240,98 @@ func TestEnforceRRO(t *testing.T) {
 			}
 
 		})
+	}
+}
+
+func TestAppSdkVersion(t *testing.T) {
+	testCases := []struct {
+		name                  string
+		sdkVersion            string
+		platformSdkInt        int
+		platformSdkCodename   string
+		platformSdkFinal      bool
+		expectedMinSdkVersion string
+	}{
+		{
+			name:                  "current final SDK",
+			sdkVersion:            "current",
+			platformSdkInt:        27,
+			platformSdkCodename:   "REL",
+			platformSdkFinal:      true,
+			expectedMinSdkVersion: "27",
+		},
+		{
+			name:                  "current non-final SDK",
+			sdkVersion:            "current",
+			platformSdkInt:        27,
+			platformSdkCodename:   "OMR1",
+			platformSdkFinal:      false,
+			expectedMinSdkVersion: "OMR1",
+		},
+		{
+			name:                  "default final SDK",
+			sdkVersion:            "",
+			platformSdkInt:        27,
+			platformSdkCodename:   "REL",
+			platformSdkFinal:      true,
+			expectedMinSdkVersion: "27",
+		},
+		{
+			name:                  "default non-final SDK",
+			sdkVersion:            "",
+			platformSdkInt:        27,
+			platformSdkCodename:   "OMR1",
+			platformSdkFinal:      false,
+			expectedMinSdkVersion: "OMR1",
+		},
+		{
+			name:                  "14",
+			sdkVersion:            "14",
+			expectedMinSdkVersion: "14",
+		},
+	}
+
+	for _, moduleType := range []string{"android_app", "android_library"} {
+		for _, test := range testCases {
+			t.Run(moduleType+" "+test.name, func(t *testing.T) {
+				bp := fmt.Sprintf(`%s {
+					name: "foo",
+					srcs: ["a.java"],
+					sdk_version: "%s",
+				}`, moduleType, test.sdkVersion)
+
+				config := testConfig(nil)
+				config.TestProductVariables.Platform_sdk_version = &test.platformSdkInt
+				config.TestProductVariables.Platform_sdk_codename = &test.platformSdkCodename
+				config.TestProductVariables.Platform_sdk_final = &test.platformSdkFinal
+
+				ctx := testAppContext(config, bp, nil)
+
+				run(t, ctx, config)
+
+				foo := ctx.ModuleForTests("foo", "android_common")
+				link := foo.Output("package-res.apk")
+				linkFlags := strings.Split(link.Args["flags"], " ")
+				min := android.IndexList("--min-sdk-version", linkFlags)
+				target := android.IndexList("--target-sdk-version", linkFlags)
+
+				if min == -1 || target == -1 || min == len(linkFlags)-1 || target == len(linkFlags)-1 {
+					t.Fatalf("missing --min-sdk-version or --target-sdk-version in link flags: %q", linkFlags)
+				}
+
+				gotMinSdkVersion := linkFlags[min+1]
+				gotTargetSdkVersion := linkFlags[target+1]
+
+				if gotMinSdkVersion != test.expectedMinSdkVersion {
+					t.Errorf("incorrect --min-sdk-version, expected %q got %q",
+						test.expectedMinSdkVersion, gotMinSdkVersion)
+				}
+
+				if gotTargetSdkVersion != test.expectedMinSdkVersion {
+					t.Errorf("incorrect --target-sdk-version, expected %q got %q",
+						test.expectedMinSdkVersion, gotTargetSdkVersion)
+				}
+			})
+		}
 	}
 }

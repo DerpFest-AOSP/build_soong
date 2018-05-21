@@ -87,11 +87,19 @@ var (
 		"-Wl,--no-undefined-version",
 	}
 
+	deviceGlobalLldflags = append(ClangFilterUnknownLldflags(deviceGlobalLdflags),
+		[]string{
+			"-Wl,--pack-dyn-relocs=android",
+			"-fuse-ld=lld",
+		}...)
+
 	hostGlobalCflags = []string{}
 
 	hostGlobalCppflags = []string{}
 
 	hostGlobalLdflags = []string{}
+
+	hostGlobalLldflags = []string{"-fuse-ld=lld"}
 
 	commonGlobalCppflags = []string{
 		"-Wsign-promo",
@@ -112,32 +120,21 @@ var (
 	ExperimentalCStdVersion   = "gnu11"
 	ExperimentalCppStdVersion = "gnu++1z"
 
-	NdkMaxPrebuiltVersionInt = 24
+	NdkMaxPrebuiltVersionInt = 27
 
 	// prebuilts/clang default settings.
 	ClangDefaultBase         = "prebuilts/clang/host"
-	ClangDefaultVersion      = "clang-4393122"
-	ClangDefaultShortVersion = "5.0.1"
+	ClangDefaultVersion      = "clang-r328903"
+	ClangDefaultShortVersion = "7.0.2"
 
+	// Directories with warnings from Android.bp files.
 	WarningAllowedProjects = []string{
-		"external/libese/third_party/NXPNFC_P61_JCOP_Kit/",
-		"external/skia/",
 		"device/",
-		"frameworks/av/media/libeffects/factory/",
-		"frameworks/av/media/libstagefright/codecs/",
-		"frameworks/native/libs/vr/libbufferhub/",
 		"vendor/",
 	}
 
-	// Some Android.mk files still have warnings.
-	WarningAllowedOldProjects = []string{
-		"frameworks/av/drm/mediacas/plugins/",
-		"frameworks/av/services/mediaextractor/",
-		"frameworks/webview/chromium/",
-		"hardware/libhardware/modules/",
-		"hardware/qcom/",
-		"tools/adt/idea/android/ultimate/get_modification_time/jni/",
-	}
+	// Directories with warnings from Android.mk files.
+	WarningAllowedOldProjects = []string{}
 )
 
 var pctx = android.NewPackageContext("android/soong/cc/config")
@@ -152,9 +149,11 @@ func init() {
 	pctx.StaticVariable("DeviceGlobalCflags", strings.Join(deviceGlobalCflags, " "))
 	pctx.StaticVariable("DeviceGlobalCppflags", strings.Join(deviceGlobalCppflags, " "))
 	pctx.StaticVariable("DeviceGlobalLdflags", strings.Join(deviceGlobalLdflags, " "))
+	pctx.StaticVariable("DeviceGlobalLldflags", strings.Join(deviceGlobalLldflags, " "))
 	pctx.StaticVariable("HostGlobalCflags", strings.Join(hostGlobalCflags, " "))
 	pctx.StaticVariable("HostGlobalCppflags", strings.Join(hostGlobalCppflags, " "))
 	pctx.StaticVariable("HostGlobalLdflags", strings.Join(hostGlobalLdflags, " "))
+	pctx.StaticVariable("HostGlobalLldflags", strings.Join(hostGlobalLldflags, " "))
 	pctx.StaticVariable("NoOverrideGlobalCflags", strings.Join(noOverrideGlobalCflags, " "))
 
 	pctx.StaticVariable("CommonGlobalCppflags", strings.Join(commonGlobalCppflags, " "))
@@ -191,28 +190,28 @@ func init() {
 		[]string{"libnativehelper/include_deprecated"})
 
 	pctx.SourcePathVariable("ClangDefaultBase", ClangDefaultBase)
-	pctx.VariableFunc("ClangBase", func(config android.Config) (string, error) {
-		if override := config.Getenv("LLVM_PREBUILTS_BASE"); override != "" {
-			return override, nil
+	pctx.VariableFunc("ClangBase", func(ctx android.PackageVarContext) string {
+		if override := ctx.Config().Getenv("LLVM_PREBUILTS_BASE"); override != "" {
+			return override
 		}
-		return "${ClangDefaultBase}", nil
+		return "${ClangDefaultBase}"
 	})
-	pctx.VariableFunc("ClangVersion", func(config android.Config) (string, error) {
-		if override := config.Getenv("LLVM_PREBUILTS_VERSION"); override != "" {
-			return override, nil
+	pctx.VariableFunc("ClangVersion", func(ctx android.PackageVarContext) string {
+		if override := ctx.Config().Getenv("LLVM_PREBUILTS_VERSION"); override != "" {
+			return override
 		}
-		return ClangDefaultVersion, nil
+		return ClangDefaultVersion
 	})
 	pctx.StaticVariable("ClangPath", "${ClangBase}/${HostPrebuiltTag}/${ClangVersion}")
 	pctx.StaticVariable("ClangBin", "${ClangPath}/bin")
 
-	pctx.VariableFunc("ClangShortVersion", func(config android.Config) (string, error) {
-		if override := config.Getenv("LLVM_RELEASE_VERSION"); override != "" {
-			return override, nil
+	pctx.VariableFunc("ClangShortVersion", func(ctx android.PackageVarContext) string {
+		if override := ctx.Config().Getenv("LLVM_RELEASE_VERSION"); override != "" {
+			return override
 		}
-		return ClangDefaultShortVersion, nil
+		return ClangDefaultShortVersion
 	})
-	pctx.StaticVariable("ClangAsanLibDir", "${ClangPath}/lib64/clang/${ClangShortVersion}/lib/linux")
+	pctx.StaticVariable("ClangAsanLibDir", "${ClangBase}/linux-x86/${ClangVersion}/lib64/clang/${ClangShortVersion}/lib/linux")
 	if runtime.GOOS == "darwin" {
 		pctx.StaticVariable("LLVMGoldPlugin", "${ClangPath}/lib64/LLVMgold.dylib")
 	} else {
@@ -233,11 +232,11 @@ func init() {
 			"frameworks/rs/script_api/include",
 		})
 
-	pctx.VariableFunc("CcWrapper", func(config android.Config) (string, error) {
-		if override := config.Getenv("CC_WRAPPER"); override != "" {
-			return override + " ", nil
+	pctx.VariableFunc("CcWrapper", func(ctx android.PackageVarContext) string {
+		if override := ctx.Config().Getenv("CC_WRAPPER"); override != "" {
+			return override + " "
 		}
-		return "", nil
+		return ""
 	})
 }
 
