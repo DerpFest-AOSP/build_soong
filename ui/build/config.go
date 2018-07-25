@@ -50,7 +50,10 @@ type configImpl struct {
 	targetDevice    string
 	targetDeviceDir string
 
+	pdkBuild       bool
 	brokenDupRules bool
+
+	pathReplaced bool
 }
 
 const srcDirFileCheck = "build/soong/root.bp"
@@ -115,6 +118,18 @@ func NewConfig(ctx Context, args ...string) Config {
 
 		// Set in envsetup.sh, reset in makefiles
 		"ANDROID_JAVA_TOOLCHAIN",
+
+		// Set by envsetup.sh, but shouldn't be used inside the build because envsetup.sh is optional
+		"ANDROID_BUILD_TOP",
+		"ANDROID_HOST_OUT",
+		"ANDROID_PRODUCT_OUT",
+		"ANDROID_HOST_OUT_TESTCASES",
+		"ANDROID_TARGET_OUT_TESTCASES",
+		"ANDROID_TOOLCHAIN",
+		"ANDROID_TOOLCHAIN_2ND_ARCH",
+		"ANDROID_DEV_SCRIPTS",
+		"ANDROID_EMULATOR_PREBUILTS",
+		"ANDROID_PRE_BUILD_PATHS",
 	)
 
 	// Tell python not to spam the source tree with .pyc files.
@@ -161,19 +176,7 @@ func NewConfig(ctx Context, args ...string) Config {
 		if override, ok := ret.environ.Get("OVERRIDE_ANDROID_JAVA_HOME"); ok {
 			return override
 		}
-		v, ok := ret.environ.Get("EXPERIMENTAL_USE_OPENJDK9")
-		if !ok {
-			v2, ok2 := ret.environ.Get("RUN_ERROR_PRONE")
-			if ok2 && (v2 == "true") {
-				v = "false"
-			} else {
-				v = "1.8"
-			}
-		}
-		if v != "false" {
-			return java9Home
-		}
-		return java8Home
+		return java9Home
 	}()
 	absJavaHome := absPath(ctx, javaHome)
 
@@ -576,4 +579,12 @@ func (c *configImpl) SetTargetDeviceDir(dir string) {
 
 func (c *configImpl) TargetDeviceDir() string {
 	return c.targetDeviceDir
+}
+
+func (c *configImpl) SetPdkBuild(pdk bool) {
+	c.pdkBuild = pdk
+}
+
+func (c *configImpl) IsPdkBuild() bool {
+	return c.pdkBuild
 }

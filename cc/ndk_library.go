@@ -156,7 +156,7 @@ func getFirstGeneratedVersion(firstSupportedVersion string, platformVersion int)
 	return strconv.Atoi(firstSupportedVersion)
 }
 
-func shouldUseVersionScript(stub *stubDecorator) (bool, error) {
+func shouldUseVersionScript(ctx android.BaseContext, stub *stubDecorator) (bool, error) {
 	// unversioned_until is normally empty, in which case we should use the version script.
 	if String(stub.properties.Unversioned_until) == "" {
 		return true, nil
@@ -174,12 +174,12 @@ func shouldUseVersionScript(stub *stubDecorator) (bool, error) {
 		return true, nil
 	}
 
-	unversionedUntil, err := strconv.Atoi(String(stub.properties.Unversioned_until))
+	unversionedUntil, err := android.ApiStrToNum(ctx, String(stub.properties.Unversioned_until))
 	if err != nil {
 		return true, err
 	}
 
-	version, err := strconv.Atoi(stub.properties.ApiLevel)
+	version, err := android.ApiStrToNum(ctx, stub.properties.ApiLevel)
 	if err != nil {
 		return true, err
 	}
@@ -318,7 +318,7 @@ func (stub *stubDecorator) linkerFlags(ctx ModuleContext, flags Flags) Flags {
 func (stub *stubDecorator) link(ctx ModuleContext, flags Flags, deps PathDeps,
 	objs Objects) android.Path {
 
-	useVersionScript, err := shouldUseVersionScript(stub)
+	useVersionScript, err := shouldUseVersionScript(ctx, stub)
 	if err != nil {
 		ctx.ModuleErrorf(err.Error())
 	}

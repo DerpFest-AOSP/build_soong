@@ -63,8 +63,7 @@ type BaseProperties struct {
 	// files of the current module.
 	// eg. Pkg_path = "a/b/c"; Other packages can reference this module by using
 	// (from a.b.c import ...) statement.
-	// if left unspecified, all the source/data files of current module are copied to
-	// "runfiles/" tree directory directly.
+	// if left unspecified, all the source/data files path is unchanged within zip file.
 	Pkg_path *string `android:"arch_variant"`
 
 	// true, if the Python module is used internally, eg, Python std libs.
@@ -206,7 +205,7 @@ type dependencyTag struct {
 var (
 	pythonLibTag       = dependencyTag{name: "pythonLib"}
 	launcherTag        = dependencyTag{name: "launcher"}
-	pyIdentifierRegexp = regexp.MustCompile(`^([a-z]|[A-Z]|_)([a-z]|[A-Z]|[0-9]|_)*$`)
+	pyIdentifierRegexp = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_-]*$`)
 	pyExt              = ".py"
 	protoExt           = ".proto"
 	pyVersion2         = "PY2"
@@ -215,7 +214,6 @@ var (
 	mainFileName       = "__main__.py"
 	entryPointFile     = "entry_point.txt"
 	parFileExt         = ".zip"
-	runFiles           = "runfiles"
 	internal           = "internal"
 )
 
@@ -308,7 +306,7 @@ func (p *Module) DepsMutator(ctx android.BottomUpMutatorContext) {
 		if p.bootstrapper != nil && p.isEmbeddedLauncherEnabled(pyVersion2) {
 			ctx.AddVariationDependencies(nil, pythonLibTag, "py2-stdlib")
 			ctx.AddFarVariationDependencies([]blueprint.Variation{
-				{"arch", ctx.Target().String()},
+				{Mutator: "arch", Variation: ctx.Target().String()},
 			}, launcherTag, "py2-launcher")
 		}
 
@@ -417,19 +415,11 @@ func (p *Module) GeneratePythonBuildActions(ctx android.ModuleContext) {
 			return
 		}
 		if p.properties.Is_internal != nil && *p.properties.Is_internal {
-			// pkg_path starts from "internal/" implicitly.
 			pkgPath = filepath.Join(internal, pkgPath)
-		} else {
-			// pkg_path starts from "runfiles/" implicitly.
-			pkgPath = filepath.Join(runFiles, pkgPath)
 		}
 	} else {
 		if p.properties.Is_internal != nil && *p.properties.Is_internal {
-			// pkg_path starts from "runfiles/" implicitly.
 			pkgPath = internal
-		} else {
-			// pkg_path starts from "runfiles/" implicitly.
-			pkgPath = runFiles
 		}
 	}
 
@@ -520,7 +510,9 @@ func (p *Module) createSrcsZip(ctx android.ModuleContext, pkgPath string) androi
 		sort.Strings(keys)
 
 		parArgs := []string{}
-		parArgs = append(parArgs, `-P `+pkgPath)
+		if pkgPath != "" {
+			parArgs = append(parArgs, `-P `+pkgPath)
+		}
 		implicits := android.Paths{}
 		for _, k := range keys {
 			parArgs = append(parArgs, `-C `+k)
@@ -582,39 +574,46 @@ func (p *Module) walkTransitiveDeps(ctx android.ModuleContext) {
 		destToPyData[path.dest] = path.src.String()
 	}
 
+	seen := make(map[android.Module]bool)
+
 	// visit all its dependencies in depth first.
-	ctx.VisitDepsDepthFirst(func(module android.Module) {
-		if ctx.OtherModuleDependencyTag(module) != pythonLibTag {
-			return
+	ctx.WalkDeps(func(child, parent android.Module) bool {
+		if ctx.OtherModuleDependencyTag(child) != pythonLibTag {
+			return false
 		}
+		if seen[child] {
+			return false
+		}
+		seen[child] = true
 		// Python modules only can depend on Python libraries.
-		if !isPythonLibModule(module) {
+		if !isPythonLibModule(child) {
 			panic(fmt.Errorf(
 				"the dependency %q of module %q is not Python library!",
-				ctx.ModuleName(), ctx.OtherModuleName(module)))
+				ctx.ModuleName(), ctx.OtherModuleName(child)))
 		}
-		if dep, ok := module.(PythonDependency); ok {
+		if dep, ok := child.(PythonDependency); ok {
 			srcs := dep.GetSrcsPathMappings()
 			for _, path := range srcs {
 				if !fillInMap(ctx, destToPySrcs,
-					path.dest, path.src.String(), ctx.ModuleName(), ctx.OtherModuleName(module)) {
+					path.dest, path.src.String(), ctx.ModuleName(), ctx.OtherModuleName(child)) {
 					continue
 				}
 			}
 			data := dep.GetDataPathMappings()
 			for _, path := range data {
 				fillInMap(ctx, destToPyData,
-					path.dest, path.src.String(), ctx.ModuleName(), ctx.OtherModuleName(module))
+					path.dest, path.src.String(), ctx.ModuleName(), ctx.OtherModuleName(child))
 			}
 			p.depsSrcsZips = append(p.depsSrcsZips, dep.GetSrcsZip())
 		}
+		return true
 	})
 }
 
 func fillInMap(ctx android.ModuleContext, m map[string]string,
 	key, value, curModule, otherModule string) bool {
 	if oldValue, found := m[key]; found {
-		ctx.ModuleErrorf("found two files to be placed at the same runfiles location %q."+
+		ctx.ModuleErrorf("found two files to be placed at the same location within zip %q."+
 			" First file: in module %s at path %q."+
 			" Second file: in module %s at path %q.",
 			key, curModule, oldValue, otherModule, value)

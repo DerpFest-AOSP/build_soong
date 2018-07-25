@@ -25,6 +25,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/google/blueprint/proptools"
 )
 
 var buildDir string
@@ -72,7 +74,7 @@ func testContext(config android.Config, bp string,
 	ctx.RegisterModuleType("android_app", android.ModuleFactoryAdaptor(AndroidAppFactory))
 	ctx.RegisterModuleType("android_library", android.ModuleFactoryAdaptor(AndroidLibraryFactory))
 	ctx.RegisterModuleType("java_binary_host", android.ModuleFactoryAdaptor(BinaryHostFactory))
-	ctx.RegisterModuleType("java_library", android.ModuleFactoryAdaptor(LibraryFactory(true)))
+	ctx.RegisterModuleType("java_library", android.ModuleFactoryAdaptor(LibraryFactory))
 	ctx.RegisterModuleType("java_library_host", android.ModuleFactoryAdaptor(LibraryHostFactory))
 	ctx.RegisterModuleType("java_import", android.ModuleFactoryAdaptor(ImportFactory))
 	ctx.RegisterModuleType("java_defaults", android.ModuleFactoryAdaptor(defaultsFactory))
@@ -98,6 +100,7 @@ func testContext(config android.Config, bp string,
 	extraModules := []string{
 		"core-oj",
 		"core-libart",
+		"core-lambda-stubs",
 		"framework",
 		"ext",
 		"okhttp",
@@ -166,6 +169,7 @@ func testContext(config android.Config, bp string,
 		"prebuilts/sdk/14/public/android.jar":         nil,
 		"prebuilts/sdk/14/public/framework.aidl":      nil,
 		"prebuilts/sdk/14/system/android.jar":         nil,
+		"prebuilts/sdk/current/core/android.jar":      nil,
 		"prebuilts/sdk/current/public/android.jar":    nil,
 		"prebuilts/sdk/current/public/framework.aidl": nil,
 		"prebuilts/sdk/current/public/core.jar":       nil,
@@ -183,7 +187,8 @@ func testContext(config android.Config, bp string,
 		"prebuilts/sdk/28/public/api/bar-removed.txt": nil,
 		"prebuilts/sdk/28/system/api/bar-removed.txt": nil,
 		"prebuilts/sdk/28/test/api/bar-removed.txt":   nil,
-		"prebuilts/sdk/Android.bp":                    []byte(`prebuilt_apis { name: "prebuilt_apis",}`),
+		"prebuilts/sdk/tools/core-lambda-stubs.jar":   nil,
+		"prebuilts/sdk/Android.bp":                    []byte(`prebuilt_apis { name: "sdk", api_dirs: ["14", "28", "current"],}`),
 
 		// For framework-res, which is an implicit dependency for framework
 		"AndroidManifest.xml":                   nil,
@@ -200,6 +205,7 @@ func testContext(config android.Config, bp string,
 
 		"bar-doc/a.java":                 nil,
 		"bar-doc/b.java":                 nil,
+		"bar-doc/IFoo.aidl":              nil,
 		"bar-doc/known_oj_tags.txt":      nil,
 		"external/doclava/templates-sdk": nil,
 
@@ -337,6 +343,7 @@ func TestBinary(t *testing.T) {
 
 var classpathTestcases = []struct {
 	name          string
+	unbundled     bool
 	moduleType    string
 	host          android.OsClass
 	properties    string
@@ -363,20 +370,20 @@ var classpathTestcases = []struct {
 		properties:    `sdk_version: "14",`,
 		bootclasspath: []string{`""`},
 		system:        "bootclasspath", // special value to tell 1.9 test to expect bootclasspath
-		classpath:     []string{"prebuilts/sdk/14/public/android.jar"},
+		classpath:     []string{"prebuilts/sdk/14/public/android.jar", "prebuilts/sdk/tools/core-lambda-stubs.jar"},
 	},
 	{
 
 		name:          "current",
 		properties:    `sdk_version: "current",`,
-		bootclasspath: []string{"android_stubs_current"},
+		bootclasspath: []string{"android_stubs_current", "core-lambda-stubs"},
 		system:        "bootclasspath", // special value to tell 1.9 test to expect bootclasspath
 	},
 	{
 
 		name:          "system_current",
 		properties:    `sdk_version: "system_current",`,
-		bootclasspath: []string{"android_system_stubs_current"},
+		bootclasspath: []string{"android_system_stubs_current", "core-lambda-stubs"},
 		system:        "bootclasspath", // special value to tell 1.9 test to expect bootclasspath
 	},
 	{
@@ -385,20 +392,20 @@ var classpathTestcases = []struct {
 		properties:    `sdk_version: "system_14",`,
 		bootclasspath: []string{`""`},
 		system:        "bootclasspath", // special value to tell 1.9 test to expect bootclasspath
-		classpath:     []string{"prebuilts/sdk/14/system/android.jar"},
+		classpath:     []string{"prebuilts/sdk/14/system/android.jar", "prebuilts/sdk/tools/core-lambda-stubs.jar"},
 	},
 	{
 
 		name:          "test_current",
 		properties:    `sdk_version: "test_current",`,
-		bootclasspath: []string{"android_test_stubs_current"},
+		bootclasspath: []string{"android_test_stubs_current", "core-lambda-stubs"},
 		system:        "bootclasspath", // special value to tell 1.9 test to expect bootclasspath
 	},
 	{
 
 		name:          "core_current",
 		properties:    `sdk_version: "core_current",`,
-		bootclasspath: []string{"core.current.stubs"},
+		bootclasspath: []string{"core.current.stubs", "core-lambda-stubs"},
 		system:        "bootclasspath", // special value to tell 1.9 test to expect bootclasspath
 	},
 	{
@@ -446,6 +453,24 @@ var classpathTestcases = []struct {
 		host:       android.Host,
 		properties: `host_supported: true, no_standard_libs: true, system_modules: "none"`,
 		classpath:  []string{},
+	},
+	{
+
+		name:          "unbundled sdk v14",
+		unbundled:     true,
+		properties:    `sdk_version: "14",`,
+		bootclasspath: []string{`""`},
+		system:        "bootclasspath", // special value to tell 1.9 test to expect bootclasspath
+		classpath:     []string{"prebuilts/sdk/14/public/android.jar", "prebuilts/sdk/tools/core-lambda-stubs.jar"},
+	},
+	{
+
+		name:          "unbundled current",
+		unbundled:     true,
+		properties:    `sdk_version: "current",`,
+		bootclasspath: []string{`""`},
+		system:        "bootclasspath", // special value to tell 1.9 test to expect bootclasspath
+		classpath:     []string{"prebuilts/sdk/current/public/android.jar", "prebuilts/sdk/tools/core-lambda-stubs.jar"},
 	},
 }
 
@@ -497,7 +522,12 @@ func TestClasspath(t *testing.T) {
 
 			t.Run("1.8", func(t *testing.T) {
 				// Test default javac 1.8
-				ctx := testJava(t, bp)
+				config := testConfig(nil)
+				if testcase.unbundled {
+					config.TestProductVariables.Unbundled_build = proptools.BoolPtr(true)
+				}
+				ctx := testContext(config, bp, nil)
+				run(t, ctx, config)
 
 				javac := ctx.ModuleForTests("foo", variant).Rule("javac")
 
@@ -525,6 +555,9 @@ func TestClasspath(t *testing.T) {
 			// Test again with javac 1.9
 			t.Run("1.9", func(t *testing.T) {
 				config := testConfig(map[string]string{"EXPERIMENTAL_USE_OPENJDK9": "true"})
+				if testcase.unbundled {
+					config.TestProductVariables.Unbundled_build = proptools.BoolPtr(true)
+				}
 				ctx := testContext(config, bp, nil)
 				run(t, ctx, config)
 
@@ -565,14 +598,15 @@ func TestPrebuilts(t *testing.T) {
 
 	javac := ctx.ModuleForTests("foo", "android_common").Rule("javac")
 	combineJar := ctx.ModuleForTests("foo", "android_common").Description("for javac")
+	barJar := ctx.ModuleForTests("bar", "android_common").Rule("combineJar").Output
+	bazJar := ctx.ModuleForTests("baz", "android_common").Rule("combineJar").Output
 
-	bar := "a.jar"
-	if !strings.Contains(javac.Args["classpath"], bar) {
-		t.Errorf("foo classpath %v does not contain %q", javac.Args["classpath"], bar)
+	if !strings.Contains(javac.Args["classpath"], barJar.String()) {
+		t.Errorf("foo classpath %v does not contain %q", javac.Args["classpath"], barJar.String())
 	}
 
-	if len(combineJar.Inputs) != 2 || combineJar.Inputs[1].String() != "b.jar" {
-		t.Errorf("foo combineJar inputs %v does not contain %q", combineJar.Inputs, "b.jar")
+	if len(combineJar.Inputs) != 2 || combineJar.Inputs[1].String() != bazJar.String() {
+		t.Errorf("foo combineJar inputs %v does not contain %q", combineJar.Inputs, bazJar.String())
 	}
 }
 
@@ -921,6 +955,7 @@ func TestDroiddoc(t *testing.T) {
 		    name: "bar-doc",
 		    srcs: [
 		        "bar-doc/*.java",
+		        "bar-doc/IFoo.aidl",
 		    ],
 		    exclude_srcs: [
 		        "bar-doc/b.java"
@@ -942,6 +977,14 @@ func TestDroiddoc(t *testing.T) {
 	barDoc := ctx.ModuleForTests("bar-doc", "android_common").Output("bar-doc-stubs.srcjar")
 	if stubsJar != barDoc.Output.String() {
 		t.Errorf("expected stubs Jar [%q], got %q", stubsJar, barDoc.Output.String())
+	}
+	inputs := ctx.ModuleForTests("bar-doc", "android_common").Rule("javadoc").Inputs
+	var javaSrcs []string
+	for _, i := range inputs {
+		javaSrcs = append(javaSrcs, i.Base())
+	}
+	if len(javaSrcs) != 2 || javaSrcs[0] != "a.java" || javaSrcs[1] != "IFoo.java" {
+		t.Errorf("inputs of bar-doc must be []string{\"a.java\", \"IFoo.java\", but was %#v.", javaSrcs)
 	}
 }
 
@@ -1053,6 +1096,12 @@ func TestJavaSdkLibrary(t *testing.T) {
 			libs: ["foo", "bar"],
 			sdk_version: "system_current",
 		}
+		java_library {
+		    name: "qux",
+		    srcs: ["c.java"],
+		    libs: ["baz"],
+		    sdk_version: "system_current",
+		}
 		`)
 
 	// check the existence of the internal modules
@@ -1084,5 +1133,14 @@ func TestJavaSdkLibrary(t *testing.T) {
 	if strings.Contains(bazJavac.Args["classpath"], "foo.stubs.jar") {
 		t.Errorf("baz javac classpath %v should not contain %q", bazJavac.Args["classpath"],
 			"foo.stubs.jar")
+	}
+
+	// test if baz has exported SDK lib names foo and bar to qux
+	qux := ctx.ModuleForTests("qux", "android_common")
+	if quxLib, ok := qux.Module().(*Library); ok {
+		sdkLibs := quxLib.ExportedSdkLibs()
+		if len(sdkLibs) != 2 || !android.InList("foo", sdkLibs) || !android.InList("bar", sdkLibs) {
+			t.Errorf("qux should export \"foo\" and \"bar\" but exports %v", sdkLibs)
+		}
 	}
 }

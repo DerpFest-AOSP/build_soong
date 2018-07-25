@@ -73,7 +73,7 @@ type BaseCompilerProperties struct {
 
 	// list of directories relative to the Blueprints file that will
 	// be added to the include path using -I
-	Local_include_dirs []string `android:"arch_variant,variant_prepend",`
+	Local_include_dirs []string `android:"arch_variant,variant_prepend"`
 
 	// list of generated sources to compile. These are the names of gensrcs or
 	// genrule modules.
@@ -258,6 +258,8 @@ func (compiler *baseCompiler) compilerFlags(ctx ModuleContext, flags Flags, deps
 	CheckBadCompilerFlags(ctx, "cppflags", compiler.Properties.Cppflags)
 	CheckBadCompilerFlags(ctx, "conlyflags", compiler.Properties.Conlyflags)
 	CheckBadCompilerFlags(ctx, "asflags", compiler.Properties.Asflags)
+	CheckBadCompilerFlags(ctx, "vendor.cflags", compiler.Properties.Target.Vendor.Cflags)
+	CheckBadCompilerFlags(ctx, "recovery.cflags", compiler.Properties.Target.Recovery.Cflags)
 
 	esc := proptools.NinjaAndShellEscape
 
@@ -330,6 +332,10 @@ func (compiler *baseCompiler) compilerFlags(ctx ModuleContext, flags Flags, deps
 			"-D__ANDROID_API__="+version, "-D__ANDROID_VNDK__")
 	}
 
+	if ctx.inRecovery() {
+		flags.GlobalFlags = append(flags.GlobalFlags, "-D__ANDROID_RECOVERY__")
+	}
+
 	instructionSet := String(compiler.Properties.Instruction_set)
 	if flags.RequiredInstructionSet != "" {
 		instructionSet = flags.RequiredInstructionSet
@@ -388,6 +394,12 @@ func (compiler *baseCompiler) compilerFlags(ctx ModuleContext, flags Flags, deps
 			tc.Cflags(),
 			"${config.CommonGlobalCflags}",
 			fmt.Sprintf("${config.%sGlobalCflags}", hod))
+	}
+
+	if flags.Clang {
+		if strings.HasPrefix(android.PathForModuleSrc(ctx).String(), "external/") {
+			flags.GlobalFlags = append([]string{"${config.ClangExternalCflags}"}, flags.GlobalFlags...)
+		}
 	}
 
 	if ctx.Device() {
@@ -452,6 +464,10 @@ func (compiler *baseCompiler) compilerFlags(ctx ModuleContext, flags Flags, deps
 
 	if ctx.useVndk() {
 		flags.CFlags = append(flags.CFlags, esc(compiler.Properties.Target.Vendor.Cflags)...)
+	}
+
+	if ctx.inRecovery() {
+		flags.CFlags = append(flags.CFlags, esc(compiler.Properties.Target.Recovery.Cflags)...)
 	}
 
 	// We can enforce some rules more strictly in the code we own. strict

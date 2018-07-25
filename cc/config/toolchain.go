@@ -36,7 +36,6 @@ func FindToolchain(os android.OsType, arch android.Arch) Toolchain {
 	factory := toolchainFactories[os][arch.ArchType]
 	if factory == nil {
 		panic(fmt.Errorf("Toolchain not found for %s arch %q", os.String(), arch.String()))
-		return nil
 	}
 	return factory(arch)
 }
@@ -241,6 +240,10 @@ func ThreadSanitizerRuntimeLibrary(t Toolchain) string {
 
 func ProfileRuntimeLibrary(t Toolchain) string {
 	return SanitizerRuntimeLibrary(t, "profile")
+}
+
+func ScudoRuntimeLibrary(t Toolchain) string {
+	return SanitizerRuntimeLibrary(t, "scudo")
 }
 
 func ToolPath(t Toolchain) string {

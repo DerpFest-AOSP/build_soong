@@ -46,6 +46,7 @@ var (
 	publicApiStubsTag = dependencyTag{name: "public"}
 	systemApiStubsTag = dependencyTag{name: "system"}
 	testApiStubsTag   = dependencyTag{name: "test"}
+	implLibTag        = dependencyTag{name: "platform"}
 )
 
 type apiScope int
@@ -67,9 +68,8 @@ var (
 // classpath at runtime if requested via <uses-library>.
 //
 // TODO: these are big features that are currently missing
-// 1) ensuring that apps have appropriate <uses-library> tag
-// 2) disallowing linking to the runtime shared lib
-// 3) HTML generation
+// 1) disallowing linking to the runtime shared lib
+// 2) HTML generation
 
 func init() {
 	android.RegisterModuleType("java_sdk_library", sdkLibraryFactory)
@@ -100,11 +100,19 @@ type sdkLibraryProperties struct {
 	// These libraries are not compiled into the stubs jar.
 	Static_libs []string `android:"arch_variant"`
 
+	// List of Java libraries that will be in the classpath when building stubs
+	Stub_only_libs []string `android:"arch_variant"`
+
 	// list of package names that will be documented and publicized as API
 	Api_packages []string
 
 	// list of package names that must be hidden from the API
 	Hidden_api_packages []string
+
+	Errorprone struct {
+		// List of javac flags that should only be used when running errorprone.
+		Javacflags []string
+	}
 
 	// TODO: determines whether to create HTML doc or not
 	//Html_doc *bool
@@ -120,6 +128,12 @@ type sdkLibrary struct {
 	publicApiStubsPath android.Paths
 	systemApiStubsPath android.Paths
 	testApiStubsPath   android.Paths
+	implLibPath        android.Paths
+
+	publicApiStubsImplPath android.Paths
+	systemApiStubsImplPath android.Paths
+	testApiStubsImplPath   android.Paths
+	implLibImplPath        android.Paths
 }
 
 func (module *sdkLibrary) DepsMutator(ctx android.BottomUpMutatorContext) {
@@ -127,24 +141,31 @@ func (module *sdkLibrary) DepsMutator(ctx android.BottomUpMutatorContext) {
 	ctx.AddDependency(ctx.Module(), publicApiStubsTag, module.stubsName(apiScopePublic))
 	ctx.AddDependency(ctx.Module(), systemApiStubsTag, module.stubsName(apiScopeSystem))
 	ctx.AddDependency(ctx.Module(), testApiStubsTag, module.stubsName(apiScopeTest))
+	ctx.AddDependency(ctx.Module(), implLibTag, module.implName())
 }
 
 func (module *sdkLibrary) GenerateAndroidBuildActions(ctx android.ModuleContext) {
-	// Record the paths to the header jars of the stubs library.
+	// Record the paths to the header jars of the library (stubs and impl).
 	// When this java_sdk_library is dependened from others via "libs" property,
 	// the recorded paths will be returned depending on the link type of the caller.
 	ctx.VisitDirectDeps(func(to android.Module) {
 		otherName := ctx.OtherModuleName(to)
 		tag := ctx.OtherModuleDependencyTag(to)
 
-		if stubs, ok := to.(Dependency); ok {
+		if lib, ok := to.(Dependency); ok {
 			switch tag {
 			case publicApiStubsTag:
-				module.publicApiStubsPath = stubs.HeaderJars()
+				module.publicApiStubsPath = lib.HeaderJars()
+				module.publicApiStubsImplPath = lib.ImplementationJars()
 			case systemApiStubsTag:
-				module.systemApiStubsPath = stubs.HeaderJars()
+				module.systemApiStubsPath = lib.HeaderJars()
+				module.systemApiStubsImplPath = lib.ImplementationJars()
 			case testApiStubsTag:
-				module.testApiStubsPath = stubs.HeaderJars()
+				module.testApiStubsPath = lib.HeaderJars()
+				module.testApiStubsImplPath = lib.ImplementationJars()
+			case implLibTag:
+				module.implLibPath = lib.HeaderJars()
+				module.implLibImplPath = lib.ImplementationJars()
 			default:
 				ctx.ModuleErrorf("depends on module %q of unknown tag %q", otherName, tag)
 			}
@@ -293,6 +314,7 @@ func (module *sdkLibrary) createStubsLibrary(mctx android.TopDownMutatorContext,
 		Name              *string
 		Srcs              []string
 		Sdk_version       *string
+		Libs              []string
 		Soc_specific      *bool
 		Device_specific   *bool
 		Product_specific  *bool
@@ -310,6 +332,7 @@ func (module *sdkLibrary) createStubsLibrary(mctx android.TopDownMutatorContext,
 	// sources are generated from the droiddoc
 	props.Srcs = []string{":" + module.docsName(apiScope)}
 	props.Sdk_version = proptools.StringPtr(module.sdkVersion(apiScope))
+	props.Libs = module.properties.Stub_only_libs
 	// Unbundled apps will use the prebult one from /prebuilts/sdk
 	props.Product_variables.Unbundled_build.Enabled = proptools.BoolPtr(false)
 	props.Product_variables.Pdk.Enabled = proptools.BoolPtr(false)
@@ -322,7 +345,7 @@ func (module *sdkLibrary) createStubsLibrary(mctx android.TopDownMutatorContext,
 		props.Product_specific = proptools.BoolPtr(true)
 	}
 
-	mctx.CreateModule(android.ModuleFactoryAdaptor(LibraryFactory(false)), &props)
+	mctx.CreateModule(android.ModuleFactoryAdaptor(LibraryFactory), &props)
 }
 
 // Creates a droiddoc module that creates stubs source files from the given full source
@@ -345,6 +368,10 @@ func (module *sdkLibrary) createDocs(mctx android.TopDownMutatorContext, apiScop
 			Current       ApiToCheck
 			Last_released ApiToCheck
 		}
+		Aidl struct {
+			Include_dirs       []string
+			Local_include_dirs []string
+		}
 	}{}
 
 	props.Name = proptools.StringPtr(module.docsName(apiScope))
@@ -352,7 +379,12 @@ func (module *sdkLibrary) createDocs(mctx android.TopDownMutatorContext, apiScop
 	props.Srcs = append(props.Srcs, module.properties.Api_srcs...)
 	props.Custom_template = proptools.StringPtr("droiddoc-templates-sdk")
 	props.Installable = proptools.BoolPtr(false)
+	// A droiddoc module has only one Libs property and doesn't distinguish between
+	// shared libs and static libs. So we need to add both of these libs to Libs property.
 	props.Libs = module.properties.Libs
+	props.Libs = append(props.Libs, module.properties.Static_libs...)
+	props.Aidl.Include_dirs = module.deviceProperties.Aidl.Include_dirs
+	props.Aidl.Local_include_dirs = module.deviceProperties.Aidl.Local_include_dirs
 
 	droiddocArgs := " -hide 110 -hide 111 -hide 113 -hide 121 -hide 125 -hide 126 -hide 127 -hide 128" +
 		" -stubpackages " + strings.Join(module.properties.Api_packages, ":") +
@@ -435,15 +467,21 @@ func (module *sdkLibrary) createImplLibrary(mctx android.TopDownMutatorContext) 
 		Soc_specific     *bool
 		Device_specific  *bool
 		Product_specific *bool
+		Installable      *bool
 		Required         []string
+		Errorprone       struct {
+			Javacflags []string
+		}
 	}{}
 
 	props.Name = proptools.StringPtr(module.implName())
 	props.Srcs = module.properties.Srcs
 	props.Libs = module.properties.Libs
 	props.Static_libs = module.properties.Static_libs
+	props.Installable = proptools.BoolPtr(true)
 	// XML file is installed along with the impl lib
 	props.Required = []string{module.xmlFileName()}
+	props.Errorprone.Javacflags = module.properties.Errorprone.Javacflags
 
 	if module.SocSpecific() {
 		props.Soc_specific = proptools.BoolPtr(true)
@@ -453,7 +491,7 @@ func (module *sdkLibrary) createImplLibrary(mctx android.TopDownMutatorContext) 
 		props.Product_specific = proptools.BoolPtr(true)
 	}
 
-	mctx.CreateModule(android.ModuleFactoryAdaptor(LibraryFactory(true)), &props, &module.deviceProperties)
+	mctx.CreateModule(android.ModuleFactoryAdaptor(LibraryFactory), &props, &module.deviceProperties)
 }
 
 // Creates the xml file that publicizes the runtime library
@@ -519,10 +557,24 @@ func (module *sdkLibrary) createXmlFile(mctx android.TopDownMutatorContext) {
 // to satisfy SdkLibraryDependency interface
 func (module *sdkLibrary) HeaderJars(linkType linkType) android.Paths {
 	// This module is just a wrapper for the stubs.
-	if linkType == javaSystem || linkType == javaPlatform {
+	if linkType == javaSystem {
 		return module.systemApiStubsPath
+	} else if linkType == javaPlatform {
+		return module.implLibPath
 	} else {
 		return module.publicApiStubsPath
+	}
+}
+
+// to satisfy SdkLibraryDependency interface
+func (module *sdkLibrary) ImplementationJars(linkType linkType) android.Paths {
+	// This module is just a wrapper for the stubs.
+	if linkType == javaSystem {
+		return module.systemApiStubsImplPath
+	} else if linkType == javaPlatform {
+		return module.implLibImplPath
+	} else {
+		return module.publicApiStubsImplPath
 	}
 }
 

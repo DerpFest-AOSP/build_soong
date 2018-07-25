@@ -378,6 +378,33 @@ cc_test {
 }
 `,
 	},
+	{
+		desc: "Convert LOCAL_MODULE_TAGS tests to java_test",
+		in: `
+include $(CLEAR_VARS)
+LOCAL_MODULE_TAGS := tests
+include $(BUILD_JAVA_LIBRARY)
+
+include $(CLEAR_VARS)
+LOCAL_MODULE_TAGS := tests
+include $(BUILD_PACKAGE)
+
+include $(CLEAR_VARS)
+LOCAL_MODULE_TAGS := tests
+include $(BUILD_HOST_JAVA_LIBRARY)
+`,
+
+		expected: `
+java_test {
+}
+
+android_test {
+}
+
+java_test_host {
+}
+`,
+	},
 
 	{
 		desc: "Input containing escaped quotes",
@@ -485,7 +512,7 @@ include $(call all-makefiles-under,$(LOCAL_PATH))
 			LOCAL_PROGUARD_ENABLED := obfuscation optimization
 			# Custom
 			LOCAL_PROGUARD_ENABLED := custom
-			include $(BUILD_JAVA_LIBRARY)
+			include $(BUILD_STATIC_JAVA_LIBRARY)
 		`,
 		expected: `
 			java_library {
@@ -508,11 +535,53 @@ include $(call all-makefiles-under,$(LOCAL_PATH))
 		`,
 	},
 	{
+		desc: "java library",
+		in: `
+			include $(CLEAR_VARS)
+			LOCAL_SRC_FILES := a.java
+			include $(BUILD_STATIC_JAVA_LIBRARY)
+
+			include $(CLEAR_VARS)
+			LOCAL_SRC_FILES := b.java
+			include $(BUILD_JAVA_LIBRARY)
+
+			include $(CLEAR_VARS)
+			LOCAL_SRC_FILES := c.java
+			LOCAL_UNINSTALLABLE_MODULE := true
+			include $(BUILD_JAVA_LIBRARY)
+
+			include $(CLEAR_VARS)
+			LOCAL_SRC_FILES := d.java
+			LOCAL_UNINSTALLABLE_MODULE := false
+			include $(BUILD_JAVA_LIBRARY)
+		`,
+		expected: `
+			java_library {
+				srcs: ["a.java"],
+			}
+
+			java_library {
+				installable: true,
+				srcs: ["b.java"],
+			}
+
+			java_library {
+				installable: false,
+				srcs: ["c.java"],
+			}
+
+			java_library {
+				installable: true,
+				srcs: ["d.java"],
+			}
+		`,
+	},
+	{
 		desc: "errorprone options for java library",
 		in: `
 			include $(CLEAR_VARS)
 			LOCAL_ERROR_PRONE_FLAGS := -Xep:AsyncCallableReturnsNull:ERROR -Xep:AsyncFunctionReturnsNull:ERROR
-			include $(BUILD_JAVA_LIBRARY)
+			include $(BUILD_STATIC_JAVA_LIBRARY)
 		`,
 		expected: `
 			java_library {
@@ -604,7 +673,7 @@ include $(call all-makefiles-under,$(LOCAL_PATH))
 				],
 			}
 
-			java_library_static {
+			java_library {
 				srcs: ["test.java"],
 				static_libs: [],
 			}

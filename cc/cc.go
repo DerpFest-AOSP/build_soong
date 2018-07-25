@@ -52,7 +52,7 @@ func init() {
 		ctx.TopDown("tsan_deps", sanitizerDepsMutator(tsan))
 		ctx.BottomUp("tsan", sanitizerMutator(tsan)).Parallel()
 
-		ctx.TopDown("sanitize_runtime_deps", sanitizerRuntimeDepsMutator())
+		ctx.TopDown("sanitize_runtime_deps", sanitizerRuntimeDepsMutator)
 
 		ctx.BottomUp("coverage", coverageLinkingMutator).Parallel()
 		ctx.TopDown("vndk_deps", sabiDepsMutator)
@@ -159,8 +159,11 @@ type ObjectLinkerProperties struct {
 
 // Properties used to compile all C or C++ modules
 type BaseProperties struct {
-	// compile module with clang instead of gcc
+	// Deprecated. true is the default, false is invalid.
 	Clang *bool `android:"arch_variant"`
+
+	// Some internals still need GCC (toolchain_library)
+	Gcc bool `blueprint:"mutated"`
 
 	// Minimum sdk version supported when compiling against the ndk
 	Sdk_version *string
@@ -223,7 +226,7 @@ type ModuleContextIntf interface {
 	isVndkSp() bool
 	isVndkExt() bool
 	inRecovery() bool
-	createVndkSourceAbiDump() bool
+	shouldCreateVndkSourceAbiDump() bool
 	selectedStl() string
 	baseModuleName() string
 	getVndkExtendsModuleName() string
@@ -562,16 +565,29 @@ func (ctx *moduleContextImpl) inRecovery() bool {
 	return ctx.mod.inRecovery()
 }
 
-// Create source abi dumps if the module belongs to the list of VndkLibraries.
-func (ctx *moduleContextImpl) createVndkSourceAbiDump() bool {
-	skipAbiChecks := ctx.ctx.Config().IsEnvTrue("SKIP_ABI_CHECKS")
-	isVariantOnProductionDevice := true
-	sanitize := ctx.mod.sanitize
-	if sanitize != nil {
-		isVariantOnProductionDevice = sanitize.isVariantOnProductionDevice()
+// Check whether ABI dumps should be created for this module.
+func (ctx *moduleContextImpl) shouldCreateVndkSourceAbiDump() bool {
+	if ctx.ctx.Config().IsEnvTrue("SKIP_ABI_CHECKS") {
+		return false
 	}
-	vendorAvailable := Bool(ctx.mod.VendorProperties.Vendor_available)
-	return !skipAbiChecks && isVariantOnProductionDevice && ctx.ctx.Device() && ((ctx.useVndk() && ctx.isVndk() && vendorAvailable) || inList(ctx.baseModuleName(), llndkLibraries))
+	if sanitize := ctx.mod.sanitize; sanitize != nil {
+		if !sanitize.isVariantOnProductionDevice() {
+			return false
+		}
+	}
+	if !ctx.ctx.Device() {
+		// Host modules do not need ABI dumps.
+		return false
+	}
+	if inList(ctx.baseModuleName(), llndkLibraries) {
+		return true
+	}
+	if ctx.useVndk() && ctx.isVndk() {
+		// Return true if this is VNDK-core, VNDK-SP, or VNDK-Ext and this is not
+		// VNDK-private.
+		return Bool(ctx.mod.VendorProperties.Vendor_available) || ctx.isVndkExt()
+	}
+	return false
 }
 
 func (ctx *moduleContextImpl) selectedStl() string {
@@ -978,33 +994,41 @@ func (c *Module) DepsMutator(actx android.BottomUpMutatorContext) {
 		actx.AddVariationDependencies(nil, depTag, lib)
 	}
 
-	actx.AddVariationDependencies([]blueprint.Variation{{"link", "static"}}, wholeStaticDepTag,
-		deps.WholeStaticLibs...)
+	actx.AddVariationDependencies([]blueprint.Variation{
+		{Mutator: "link", Variation: "static"},
+	}, wholeStaticDepTag, deps.WholeStaticLibs...)
 
 	for _, lib := range deps.StaticLibs {
 		depTag := staticDepTag
 		if inList(lib, deps.ReexportStaticLibHeaders) {
 			depTag = staticExportDepTag
 		}
-		actx.AddVariationDependencies([]blueprint.Variation{{"link", "static"}}, depTag, lib)
+		actx.AddVariationDependencies([]blueprint.Variation{
+			{Mutator: "link", Variation: "static"},
+		}, depTag, lib)
 	}
 
-	actx.AddVariationDependencies([]blueprint.Variation{{"link", "static"}}, lateStaticDepTag,
-		deps.LateStaticLibs...)
+	actx.AddVariationDependencies([]blueprint.Variation{
+		{Mutator: "link", Variation: "static"},
+	}, lateStaticDepTag, deps.LateStaticLibs...)
 
 	for _, lib := range deps.SharedLibs {
 		depTag := sharedDepTag
 		if inList(lib, deps.ReexportSharedLibHeaders) {
 			depTag = sharedExportDepTag
 		}
-		actx.AddVariationDependencies([]blueprint.Variation{{"link", "shared"}}, depTag, lib)
+		actx.AddVariationDependencies([]blueprint.Variation{
+			{Mutator: "link", Variation: "shared"},
+		}, depTag, lib)
 	}
 
-	actx.AddVariationDependencies([]blueprint.Variation{{"link", "shared"}}, lateSharedDepTag,
-		deps.LateSharedLibs...)
+	actx.AddVariationDependencies([]blueprint.Variation{
+		{Mutator: "link", Variation: "shared"},
+	}, lateSharedDepTag, deps.LateSharedLibs...)
 
-	actx.AddVariationDependencies([]blueprint.Variation{{"link", "shared"}}, runtimeDepTag,
-		deps.RuntimeLibs...)
+	actx.AddVariationDependencies([]blueprint.Variation{
+		{Mutator: "link", Variation: "shared"},
+	}, runtimeDepTag, deps.RuntimeLibs...)
 
 	actx.AddDependency(c, genSourceDepTag, deps.GeneratedSources...)
 
@@ -1030,9 +1054,13 @@ func (c *Module) DepsMutator(actx android.BottomUpMutatorContext) {
 
 	version := ctx.sdkVersion()
 	actx.AddVariationDependencies([]blueprint.Variation{
-		{"ndk_api", version}, {"link", "shared"}}, ndkStubDepTag, variantNdkLibs...)
+		{Mutator: "ndk_api", Variation: version},
+		{Mutator: "link", Variation: "shared"},
+	}, ndkStubDepTag, variantNdkLibs...)
 	actx.AddVariationDependencies([]blueprint.Variation{
-		{"ndk_api", version}, {"link", "shared"}}, ndkLateStubDepTag, variantLateNdkLibs...)
+		{Mutator: "ndk_api", Variation: version},
+		{Mutator: "link", Variation: "shared"},
+	}, ndkLateStubDepTag, variantLateNdkLibs...)
 
 	if vndkdep := c.vndkdep; vndkdep != nil {
 		if vndkdep.isVndkExt() {
@@ -1041,8 +1069,9 @@ func (c *Module) DepsMutator(actx android.BottomUpMutatorContext) {
 				baseModuleMode = coreMode
 			}
 			actx.AddVariationDependencies([]blueprint.Variation{
-				{"image", baseModuleMode}, {"link", "shared"}}, vndkExtDepTag,
-				vndkdep.getVndkExtendsModuleName())
+				{Mutator: "image", Variation: baseModuleMode},
+				{Mutator: "link", Variation: "shared"},
+			}, vndkExtDepTag, vndkdep.getVndkExtendsModuleName())
 		}
 	}
 }
@@ -1054,17 +1083,15 @@ func beginMutator(ctx android.BottomUpMutatorContext) {
 }
 
 func (c *Module) clang(ctx BaseModuleContext) bool {
-	clang := Bool(c.Properties.Clang)
-
-	if c.Properties.Clang == nil {
-		clang = true
+	if c.Properties.Clang != nil && *c.Properties.Clang == false {
+		ctx.PropertyErrorf("clang", "false (GCC) is no longer supported")
 	}
 
 	if !c.toolchain(ctx).ClangSupported() {
-		clang = false
+		panic("GCC is no longer supported")
 	}
 
-	return clang
+	return !c.Properties.Gcc
 }
 
 // Whether a module can link to another module, taking into
@@ -1202,8 +1229,6 @@ func (c *Module) depsToPaths(ctx android.ModuleContext) PathDeps {
 		if ccDep == nil {
 			// handling for a few module types that aren't cc Module but that are also supported
 			switch depTag {
-			case android.DefaultsDepTag, android.SourceDepTag:
-				// Nothing to do
 			case genSourceDepTag:
 				if genRule, ok := dep.(genrule.SourceFileGenerator); ok {
 					depPaths.GeneratedSources = append(depPaths.GeneratedSources,
@@ -1241,8 +1266,6 @@ func (c *Module) depsToPaths(ctx android.ModuleContext) PathDeps {
 				} else {
 					ctx.ModuleErrorf("module %q is not a genrule", depName)
 				}
-			default:
-				ctx.ModuleErrorf("depends on non-cc module %q", depName)
 			}
 			return
 		}
@@ -1493,6 +1516,7 @@ func DefaultsFactory(props ...interface{}) android.Module {
 		&VendorProperties{},
 		&BaseCompilerProperties{},
 		&BaseLinkerProperties{},
+		&MoreBaseLinkerProperties{},
 		&LibraryProperties{},
 		&FlagExporterProperties{},
 		&BinaryLinkerProperties{},
@@ -1554,16 +1578,43 @@ func imageMutator(mctx android.BottomUpMutatorContext) {
 	}
 
 	if genrule, ok := mctx.Module().(*genrule.Module); ok {
-		if props, ok := genrule.Extra.(*VendorProperties); ok {
+		if props, ok := genrule.Extra.(*GenruleExtraProperties); ok {
+			var coreVariantNeeded bool = false
+			var vendorVariantNeeded bool = false
+			var recoveryVariantNeeded bool = false
 			if mctx.DeviceConfig().VndkVersion() == "" {
-				mctx.CreateVariations(coreMode)
+				coreVariantNeeded = true
 			} else if Bool(props.Vendor_available) {
-				mctx.CreateVariations(coreMode, vendorMode)
+				coreVariantNeeded = true
+				vendorVariantNeeded = true
 			} else if mctx.SocSpecific() || mctx.DeviceSpecific() {
-				mctx.CreateVariations(vendorMode)
+				vendorVariantNeeded = true
 			} else {
-				mctx.CreateVariations(coreMode)
+				coreVariantNeeded = true
 			}
+			if Bool(props.Recovery_available) {
+				recoveryVariantNeeded = true
+			}
+
+			if recoveryVariantNeeded {
+				primaryArch := mctx.Config().DevicePrimaryArchType()
+				moduleArch := genrule.Target().Arch.ArchType
+				if moduleArch != primaryArch {
+					recoveryVariantNeeded = false
+				}
+			}
+
+			var variants []string
+			if coreVariantNeeded {
+				variants = append(variants, coreMode)
+			}
+			if vendorVariantNeeded {
+				variants = append(variants, vendorMode)
+			}
+			if recoveryVariantNeeded {
+				variants = append(variants, recoveryMode)
+			}
+			mctx.CreateVariations(variants...)
 		}
 	}
 
@@ -1658,6 +1709,14 @@ func imageMutator(mctx android.BottomUpMutatorContext) {
 	if m.ModuleBase.InstallInRecovery() {
 		recoveryVariantNeeded = true
 		coreVariantNeeded = false
+	}
+
+	if recoveryVariantNeeded {
+		primaryArch := mctx.Config().DevicePrimaryArchType()
+		moduleArch := m.Target().Arch.ArchType
+		if moduleArch != primaryArch {
+			recoveryVariantNeeded = false
+		}
 	}
 
 	var variants []string

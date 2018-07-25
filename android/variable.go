@@ -62,6 +62,11 @@ type variableProperties struct {
 			Cflags []string
 		}
 
+		// Product_is_iot is true for Android Things devices.
+		Product_is_iot struct {
+			Cflags []string
+		}
+
 		// treble_linker_namespaces is true when the system/vendor linker namespace separation is
 		// enabled.
 		Treble_linker_namespaces struct {
@@ -87,6 +92,9 @@ type variableProperties struct {
 		Eng struct {
 			Cflags   []string
 			Cppflags []string
+			Lto      struct {
+				Never *bool
+			}
 		}
 
 		Pdk struct {
@@ -174,9 +182,10 @@ type productVariables struct {
 	CFIExcludePaths *[]string `json:",omitempty"`
 	CFIIncludePaths *[]string `json:",omitempty"`
 
-	VendorPath  *string `json:",omitempty"`
-	OdmPath     *string `json:",omitempty"`
-	ProductPath *string `json:",omitempty"`
+	VendorPath          *string `json:",omitempty"`
+	OdmPath             *string `json:",omitempty"`
+	ProductPath         *string `json:",omitempty"`
+	ProductServicesPath *string `json:",omitempty"`
 
 	UseClangLld *bool `json:",omitempty"`
 
@@ -201,6 +210,8 @@ type productVariables struct {
 
 	Override_rs_driver *string `json:",omitempty"`
 
+	Product_is_iot *bool `json:",omitempty"`
+
 	DeviceKernelHeaders []string `json:",omitempty"`
 	DistDir             *string  `json:",omitempty"`
 
@@ -210,10 +221,10 @@ type productVariables struct {
 
 	PgoAdditionalProfileDirs []string `json:",omitempty"`
 
-	BoardVendorSepolicyDirs     []string `json:",omitempty"`
-	BoardOdmSepolicyDirs        []string `json:",omitempty"`
-	BoardPlatPublicSepolicyDir  string   `json:",omitempty"`
-	BoardPlatPrivateSepolicyDir string   `json:",omitempty"`
+	BoardVendorSepolicyDirs      []string `json:",omitempty"`
+	BoardOdmSepolicyDirs         []string `json:",omitempty"`
+	BoardPlatPublicSepolicyDirs  []string `json:",omitempty"`
+	BoardPlatPrivateSepolicyDirs []string `json:",omitempty"`
 
 	VendorVars map[string]map[string]string `json:",omitempty"`
 }

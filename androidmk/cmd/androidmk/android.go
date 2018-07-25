@@ -85,6 +85,7 @@ func init() {
 			"LOCAL_MULTILIB":                "compile_multilib",
 			"LOCAL_ARM_MODE_HACK":           "instruction_set",
 			"LOCAL_SDK_VERSION":             "sdk_version",
+			"LOCAL_MIN_SDK_VERSION":         "min_sdk_version",
 			"LOCAL_NDK_STL_VARIANT":         "stl",
 			"LOCAL_JAR_MANIFEST":            "manifest",
 			"LOCAL_JARJAR_RULES":            "jarjar_rules",
@@ -147,7 +148,7 @@ func init() {
 			"LOCAL_ANNOTATION_PROCESSOR_CLASSES": "annotation_processor_classes",
 
 			"LOCAL_PROGUARD_FLAGS":      "optimize.proguard_flags",
-			"LOCAL_PROGUARD_FLAG_FILES": "optimize.proguard_flag_files",
+			"LOCAL_PROGUARD_FLAG_FILES": "optimize.proguard_flags_files",
 
 			// These will be rewritten to libs/static_libs by bpfix, after their presence is used to convert
 			// java_library_static to android_library.
@@ -173,12 +174,15 @@ func init() {
 			"LOCAL_VENDOR_MODULE":            "vendor",
 			"LOCAL_ODM_MODULE":               "device_specific",
 			"LOCAL_PRODUCT_MODULE":           "product_specific",
+			"LOCAL_PRODUCT_SERVICES_MODULE":  "product_services_specific",
 			"LOCAL_EXPORT_PACKAGE_RESOURCES": "export_package_resources",
 			"LOCAL_PRIVILEGED_MODULE":        "privileged",
 
 			"LOCAL_DEX_PREOPT":                  "dex_preopt.enabled",
 			"LOCAL_DEX_PREOPT_APP_IMAGE":        "dex_preopt.app_image",
 			"LOCAL_DEX_PREOPT_GENERATE_PROFILE": "dex_preopt.profile_guided",
+
+			"LOCAL_PRIVATE_PLATFORM_APIS": "platform_apis",
 		})
 }
 
@@ -744,8 +748,8 @@ var moduleTypes = map[string]string{
 	"BUILD_NATIVE_BENCHMARK":      "cc_benchmark",
 	"BUILD_HOST_NATIVE_BENCHMARK": "cc_benchmark_host",
 
-	"BUILD_JAVA_LIBRARY":             "java_library",
-	"BUILD_STATIC_JAVA_LIBRARY":      "java_library_static",
+	"BUILD_JAVA_LIBRARY":             "java_library_installable", // will be rewritten to java_library by bpfix
+	"BUILD_STATIC_JAVA_LIBRARY":      "java_library",
 	"BUILD_HOST_JAVA_LIBRARY":        "java_library_host",
 	"BUILD_HOST_DALVIK_JAVA_LIBRARY": "java_library_host_dalvik",
 	"BUILD_PACKAGE":                  "android_app",

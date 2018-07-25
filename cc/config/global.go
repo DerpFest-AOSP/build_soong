@@ -89,6 +89,9 @@ var (
 
 	deviceGlobalLldflags = append(ClangFilterUnknownLldflags(deviceGlobalLdflags),
 		[]string{
+			// TODO(b/109657296): needs --no-rosegment until Android
+			// stack unwinder can handle the read-only segment.
+			"-Wl,--no-rosegment",
 			"-Wl,--pack-dyn-relocs=android",
 			"-fuse-ld=lld",
 		}...)
@@ -169,6 +172,8 @@ func init() {
 
 	pctx.StaticVariable("CommonClangGlobalCppflags",
 		strings.Join(append(ClangFilterUnknownCflags(commonGlobalCppflags), "${ClangExtraCppflags}"), " "))
+
+	pctx.StaticVariable("ClangExternalCflags", "${ClangExtraExternalCflags}")
 
 	// Everything in these lists is a crime against abstraction and dependency tracking.
 	// Do not add anything to this list.

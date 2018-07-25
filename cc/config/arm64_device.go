@@ -39,7 +39,6 @@ var (
 	arm64Ldflags = []string{
 		"-Wl,-m,aarch64_elf64_le_vec",
 		"-Wl,--hash-style=gnu",
-		"-Wl,--fix-cortex-a53-843419",
 		"-fuse-ld=gold",
 		"-Wl,--icf=safe",
 	}
@@ -54,15 +53,12 @@ var (
 			"-mcpu=cortex-a53",
 		},
 		"cortex-a55": []string{
-			// The cortex-a55 target is not yet supported,
-			// so use cortex-a53.
-			"-mcpu=cortex-a53",
+			"-mcpu=cortex-a55",
 		},
 		"cortex-a75": []string{
-			// Use the cortex-a53 since it is similar to the little
+			// Use the cortex-a55 since it is similar to the little
 			// core (cortex-a55) and is sensitive to ordering.
-			// The cortex-a55 target is not yet supported.
-			"-mcpu=cortex-a53",
+			"-mcpu=cortex-a55",
 		},
 		"kryo": []string{
 			// Use the cortex-a57 cpu since some compilers
@@ -177,6 +173,8 @@ var (
 type toolchainArm64 struct {
 	toolchain64Bit
 
+	ldflags              string
+	lldflags             string
 	toolchainCflags      string
 	toolchainClangCflags string
 }
@@ -210,7 +208,7 @@ func (t *toolchainArm64) Cppflags() string {
 }
 
 func (t *toolchainArm64) Ldflags() string {
-	return "${config.Arm64Ldflags}"
+	return t.ldflags
 }
 
 func (t *toolchainArm64) IncludeFlags() string {
@@ -230,11 +228,11 @@ func (t *toolchainArm64) ClangCppflags() string {
 }
 
 func (t *toolchainArm64) ClangLdflags() string {
-	return "${config.Arm64Ldflags}"
+	return t.ldflags
 }
 
 func (t *toolchainArm64) ClangLldflags() string {
-	return "${config.Arm64Lldflags}"
+	return t.lldflags
 }
 
 func (t *toolchainArm64) ToolchainClangCflags() string {
@@ -258,7 +256,24 @@ func arm64ToolchainFactory(arch android.Arch) Toolchain {
 	toolchainClangCflags = append(toolchainClangCflags,
 		variantOrDefault(arm64ClangCpuVariantCflagsVar, arch.CpuVariant))
 
+	var extraLdflags string
+	switch arch.CpuVariant {
+	case "cortex-a53", "cortex-a73", "kryo", "exynos-m1", "exynos-m2",
+		// This variant might not need the workaround but leave it
+		// in the list since it has had the workaround on before.
+		"denver64":
+		extraLdflags = "-Wl,--fix-cortex-a53-843419"
+	}
+
 	return &toolchainArm64{
+		ldflags: strings.Join([]string{
+			"${config.Arm64Ldflags}",
+			extraLdflags,
+		}, " "),
+		lldflags: strings.Join([]string{
+			"${config.Arm64Lldflags}",
+			extraLdflags,
+		}, " "),
 		toolchainCflags:      variantOrDefault(arm64CpuVariantCflagsVar, arch.CpuVariant),
 		toolchainClangCflags: strings.Join(toolchainClangCflags, " "),
 	}
