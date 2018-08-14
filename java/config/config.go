@@ -41,6 +41,8 @@ var (
 		"services",
 		"android.car",
 		"android.car7",
+		"core-oj",
+		"core-libart",
 	}
 
 	ManifestMergerClasspath = []string{
@@ -119,6 +121,7 @@ func init() {
 	pctx.HostJavaToolVariable("JsilverJar", "jsilver.jar")
 	pctx.HostJavaToolVariable("DoclavaJar", "doclava.jar")
 	pctx.HostJavaToolVariable("MetalavaJar", "metalava.jar")
+	pctx.HostJavaToolVariable("DokkaJar", "dokka.jar")
 
 	pctx.HostBinToolVariable("SoongJavacWrapper", "soong_javac_wrapper")
 
