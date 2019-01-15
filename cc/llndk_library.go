@@ -144,17 +144,17 @@ func (stub *llndkStubDecorator) link(ctx ModuleContext, flags Flags, deps PathDe
 			timestampFiles = append(timestampFiles, stub.processHeaders(ctx, dir, genHeaderOutDir))
 		}
 
-		includePrefix := "-I "
+		includePrefix := "-I"
 		if Bool(stub.Properties.Export_headers_as_system) {
 			includePrefix = "-isystem "
 		}
 
-		stub.reexportFlags([]string{includePrefix + " " + genHeaderOutDir.String()})
+		stub.reexportFlags([]string{includePrefix + genHeaderOutDir.String()})
 		stub.reexportDeps(timestampFiles)
 	}
 
 	if Bool(stub.Properties.Export_headers_as_system) {
-		stub.exportIncludes(ctx, "-isystem")
+		stub.exportIncludes(ctx, "-isystem ")
 		stub.libraryDecorator.flagExporter.Properties.Export_include_dirs = []string{}
 	}
 
@@ -172,6 +172,7 @@ func NewLLndkStubLibrary() *Module {
 		libraryDecorator: library,
 	}
 	stub.Properties.Vendor_available = BoolPtr(true)
+	module.Properties.UseVndk = true
 	module.compiler = stub
 	module.linker = stub
 	module.installer = nil
@@ -184,7 +185,7 @@ func NewLLndkStubLibrary() *Module {
 	return module
 }
 
-func llndkLibraryFactory() android.Module {
+func LlndkLibraryFactory() android.Module {
 	module := NewLLndkStubLibrary()
 	android.InitAndroidArchModule(module, android.DeviceSupported, android.MultilibBoth)
 	return module
@@ -218,6 +219,6 @@ func llndkHeadersFactory() android.Module {
 }
 
 func init() {
-	android.RegisterModuleType("llndk_library", llndkLibraryFactory)
+	android.RegisterModuleType("llndk_library", LlndkLibraryFactory)
 	android.RegisterModuleType("llndk_headers", llndkHeadersFactory)
 }

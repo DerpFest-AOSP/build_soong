@@ -49,15 +49,8 @@ type Toolchain interface {
 	GccVersion() string
 	ToolPath() string
 
-	ToolchainCflags() string
-	ToolchainLdflags() string
-	Cflags() string
-	Cppflags() string
-	Ldflags() string
 	IncludeFlags() string
-	InstructionSetFlags(string) (string, error)
 
-	ClangSupported() bool
 	ClangTriple() string
 	ToolchainClangCflags() string
 	ToolchainClangLdflags() string
@@ -79,7 +72,7 @@ type Toolchain interface {
 	ShlibSuffix() string
 	ExecutableSuffix() string
 
-	SanitizerRuntimeLibraryArch() string
+	LibclangRuntimeLibraryArch() string
 
 	AvailableLibraries() []string
 
@@ -102,26 +95,11 @@ func NDKTriple(toolchain Toolchain) string {
 	return triple
 }
 
-func (toolchainBase) InstructionSetFlags(s string) (string, error) {
-	if s != "" {
-		return "", fmt.Errorf("instruction_set: %s is not a supported instruction set", s)
-	}
-	return "", nil
-}
-
 func (toolchainBase) ClangInstructionSetFlags(s string) (string, error) {
 	if s != "" {
 		return "", fmt.Errorf("instruction_set: %s is not a supported instruction set", s)
 	}
 	return "", nil
-}
-
-func (toolchainBase) ToolchainCflags() string {
-	return ""
-}
-
-func (toolchainBase) ToolchainLdflags() string {
-	return ""
 }
 
 func (toolchainBase) ToolchainClangCflags() string {
@@ -130,10 +108,6 @@ func (toolchainBase) ToolchainClangCflags() string {
 
 func (toolchainBase) ToolchainClangLdflags() string {
 	return ""
-}
-
-func (toolchainBase) ClangSupported() bool {
-	return true
 }
 
 func (toolchainBase) ShlibSuffix() string {
@@ -156,7 +130,7 @@ func (toolchainBase) WindresFlags() string {
 	return ""
 }
 
-func (toolchainBase) SanitizerRuntimeLibraryArch() string {
+func (toolchainBase) LibclangRuntimeLibraryArch() string {
 	return ""
 }
 
@@ -188,18 +162,6 @@ func (toolchain32Bit) Is64Bit() bool {
 	return false
 }
 
-func copyVariantFlags(m map[string][]string) map[string][]string {
-	ret := make(map[string][]string, len(m))
-	for k, v := range m {
-		l := make([]string, len(m[k]))
-		for i := range m[k] {
-			l[i] = v[i]
-		}
-		ret[k] = l
-	}
-	return ret
-}
-
 func variantOrDefault(variants map[string]string, choice string) string {
 	if ret, ok := variants[choice]; ok {
 		return ret
@@ -214,44 +176,52 @@ func addPrefix(list []string, prefix string) []string {
 	return list
 }
 
-func SanitizerRuntimeLibrary(t Toolchain, sanitizer string) string {
-	arch := t.SanitizerRuntimeLibraryArch()
+func LibclangRuntimeLibrary(t Toolchain, library string) string {
+	arch := t.LibclangRuntimeLibraryArch()
 	if arch == "" {
 		return ""
 	}
-	return "libclang_rt." + sanitizer + "-" + arch + "-android"
+	return "libclang_rt." + library + "-" + arch + "-android"
+}
+
+func BuiltinsRuntimeLibrary(t Toolchain) string {
+	return LibclangRuntimeLibrary(t, "builtins")
 }
 
 func AddressSanitizerRuntimeLibrary(t Toolchain) string {
-	return SanitizerRuntimeLibrary(t, "asan")
+	return LibclangRuntimeLibrary(t, "asan")
 }
 
 func HWAddressSanitizerRuntimeLibrary(t Toolchain) string {
-	return SanitizerRuntimeLibrary(t, "hwasan")
+	return LibclangRuntimeLibrary(t, "hwasan")
 }
 
 func HWAddressSanitizerStaticLibrary(t Toolchain) string {
-	return SanitizerRuntimeLibrary(t, "hwasan_static")
+	return LibclangRuntimeLibrary(t, "hwasan_static")
 }
 
 func UndefinedBehaviorSanitizerRuntimeLibrary(t Toolchain) string {
-	return SanitizerRuntimeLibrary(t, "ubsan_standalone")
+	return LibclangRuntimeLibrary(t, "ubsan_standalone")
 }
 
 func UndefinedBehaviorSanitizerMinimalRuntimeLibrary(t Toolchain) string {
-	return SanitizerRuntimeLibrary(t, "ubsan_minimal")
+	return LibclangRuntimeLibrary(t, "ubsan_minimal")
 }
 
 func ThreadSanitizerRuntimeLibrary(t Toolchain) string {
-	return SanitizerRuntimeLibrary(t, "tsan")
+	return LibclangRuntimeLibrary(t, "tsan")
 }
 
 func ProfileRuntimeLibrary(t Toolchain) string {
-	return SanitizerRuntimeLibrary(t, "profile")
+	return LibclangRuntimeLibrary(t, "profile")
 }
 
 func ScudoRuntimeLibrary(t Toolchain) string {
-	return SanitizerRuntimeLibrary(t, "scudo")
+	return LibclangRuntimeLibrary(t, "scudo")
+}
+
+func ScudoMinimalRuntimeLibrary(t Toolchain) string {
+	return LibclangRuntimeLibrary(t, "scudo_minimal")
 }
 
 func ToolPath(t Toolchain) string {

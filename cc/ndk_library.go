@@ -31,14 +31,15 @@ var (
 	genStubSrc = pctx.AndroidStaticRule("genStubSrc",
 		blueprint.RuleParams{
 			Command: "$toolPath --arch $arch --api $apiLevel --api-map " +
-				"$apiMap $vndk $in $out",
+				"$apiMap $flags $in $out",
 			CommandDeps: []string{"$toolPath"},
-		}, "arch", "apiLevel", "apiMap", "vndk")
+		}, "arch", "apiLevel", "apiMap", "flags")
 
 	ndkLibrarySuffix = ".ndk"
 
 	ndkPrebuiltSharedLibs = []string{
 		"android",
+		"binder_ndk",
 		"c",
 		"dl",
 		"EGL",
@@ -60,7 +61,7 @@ var (
 	// These libraries have migrated over to the new ndk_library, which is added
 	// as a variation dependency via depsMutator.
 	ndkMigratedLibs     = []string{}
-	ndkMigratedLibsLock sync.Mutex // protects ndkMigratedLibs writes during parallel beginMutator
+	ndkMigratedLibsLock sync.Mutex // protects ndkMigratedLibs writes during parallel BeginMutator
 )
 
 // Creates a stub shared library based on the provided version file.
@@ -90,6 +91,11 @@ type libraryProperties struct {
 
 	// Private property for use by the mutator that splits per-API level.
 	ApiLevel string `blueprint:"mutated"`
+
+	// True if this API is not yet ready to be shipped in the NDK. It will be
+	// available in the platform for testing, but will be excluded from the
+	// sysroot provided to the NDK proper.
+	Draft bool
 }
 
 type stubDecorator struct {
@@ -265,7 +271,7 @@ func (stub *stubDecorator) compilerFlags(ctx ModuleContext, flags Flags, deps Pa
 	return addStubLibraryCompilerFlags(flags)
 }
 
-func compileStubLibrary(ctx ModuleContext, flags Flags, symbolFile, apiLevel, vndk string) (Objects, android.ModuleGenPath) {
+func compileStubLibrary(ctx ModuleContext, flags Flags, symbolFile, apiLevel, genstubFlags string) (Objects, android.ModuleGenPath) {
 	arch := ctx.Arch().ArchType.String()
 
 	stubSrcPath := android.PathForModuleGen(ctx, "stub.c")
@@ -282,7 +288,7 @@ func compileStubLibrary(ctx ModuleContext, flags Flags, symbolFile, apiLevel, vn
 			"arch":     arch,
 			"apiLevel": apiLevel,
 			"apiMap":   apiLevelsJson.String(),
-			"vndk":     vndk,
+			"flags":    genstubFlags,
 		},
 	})
 

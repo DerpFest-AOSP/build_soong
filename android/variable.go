@@ -43,8 +43,8 @@ type variableProperties struct {
 		} `android:"arch_variant"`
 
 		Malloc_not_svelte struct {
-			Cflags []string
-		}
+			Cflags []string `android:"arch_variant"`
+		} `android:"arch_variant"`
 
 		Safestack struct {
 			Cflags []string `android:"arch_variant"`
@@ -54,17 +54,19 @@ type variableProperties struct {
 			Cflags []string
 		}
 
-		Device_uses_hwc2 struct {
-			Cflags []string
-		}
-
 		Override_rs_driver struct {
 			Cflags []string
 		}
 
 		// Product_is_iot is true for Android Things devices.
 		Product_is_iot struct {
-			Cflags []string
+			Cflags       []string
+			Enabled      bool
+			Exclude_srcs []string
+			Init_rc      []string
+			Shared_libs  []string
+			Srcs         []string
+			Static_libs  []string
 		}
 
 		// treble_linker_namespaces is true when the system/vendor linker namespace separation is
@@ -94,6 +96,9 @@ type variableProperties struct {
 			Cppflags []string
 			Lto      struct {
 				Never *bool
+			}
+			Sanitize struct {
+				Address *bool
 			}
 		}
 
@@ -172,24 +177,33 @@ type productVariables struct {
 
 	AppsDefaultVersionName *string `json:",omitempty"`
 
-	Allow_missing_dependencies *bool `json:",omitempty"`
-	Unbundled_build            *bool `json:",omitempty"`
-	Malloc_not_svelte          *bool `json:",omitempty"`
-	Safestack                  *bool `json:",omitempty"`
-	HostStaticBinaries         *bool `json:",omitempty"`
-	Binder32bit                *bool `json:",omitempty"`
-	UseGoma                    *bool `json:",omitempty"`
-	Debuggable                 *bool `json:",omitempty"`
-	Eng                        *bool `json:",omitempty"`
-	Device_uses_hwc2           *bool `json:",omitempty"`
-	Treble_linker_namespaces   *bool `json:",omitempty"`
-	Sepolicy_split             *bool `json:",omitempty"`
-	Enforce_vintf_manifest     *bool `json:",omitempty"`
-	Pdk                        *bool `json:",omitempty"`
-	Uml                        *bool `json:",omitempty"`
-	Use_lmkd_stats_log         *bool `json:",omitempty"`
-	Arc                        *bool `json:",omitempty"`
-	MinimizeJavaDebugInfo      *bool `json:",omitempty"`
+	Allow_missing_dependencies       *bool `json:",omitempty"`
+	Unbundled_build                  *bool `json:",omitempty"`
+	Unbundled_build_sdks_from_source *bool `json:",omitempty"`
+	Malloc_not_svelte                *bool `json:",omitempty"`
+	Safestack                        *bool `json:",omitempty"`
+	HostStaticBinaries               *bool `json:",omitempty"`
+	Binder32bit                      *bool `json:",omitempty"`
+	UseGoma                          *bool `json:",omitempty"`
+	Debuggable                       *bool `json:",omitempty"`
+	Eng                              *bool `json:",omitempty"`
+	Treble_linker_namespaces         *bool `json:",omitempty"`
+	Enforce_vintf_manifest           *bool `json:",omitempty"`
+	Pdk                              *bool `json:",omitempty"`
+	Uml                              *bool `json:",omitempty"`
+	Use_lmkd_stats_log               *bool `json:",omitempty"`
+	Arc                              *bool `json:",omitempty"`
+	MinimizeJavaDebugInfo            *bool `json:",omitempty"`
+
+	UncompressPrivAppDex             *bool    `json:",omitempty"`
+	ModulesLoadedByPrivilegedModules []string `json:",omitempty"`
+
+	BootJars       []string `json:",omitempty"`
+	PreoptBootJars []string `json:",omitempty"`
+
+	DisableDexPreopt        *bool    `json:",omitempty"`
+	DisableDexPreoptModules []string `json:",omitempty"`
+	DexPreoptProfileDir     *string  `json:",omitempty"`
 
 	IntegerOverflowExcludePaths *[]string `json:",omitempty"`
 
@@ -197,12 +211,13 @@ type productVariables struct {
 	CFIExcludePaths *[]string `json:",omitempty"`
 	CFIIncludePaths *[]string `json:",omitempty"`
 
+	EnableXOM       *bool     `json:",omitempty"`
+	XOMExcludePaths *[]string `json:",omitempty"`
+
 	VendorPath          *string `json:",omitempty"`
 	OdmPath             *string `json:",omitempty"`
 	ProductPath         *string `json:",omitempty"`
 	ProductServicesPath *string `json:",omitempty"`
-
-	UseClangLld *bool `json:",omitempty"`
 
 	ClangTidy  *bool   `json:",omitempty"`
 	TidyChecks *string `json:",omitempty"`
@@ -211,6 +226,7 @@ type productVariables struct {
 	CoveragePaths        *[]string `json:",omitempty"`
 	CoverageExcludePaths *[]string `json:",omitempty"`
 
+	DevicePrefer32BitApps        *bool `json:",omitempty"`
 	DevicePrefer32BitExecutables *bool `json:",omitempty"`
 	HostPrefer32BitExecutables   *bool `json:",omitempty"`
 
@@ -228,7 +244,6 @@ type productVariables struct {
 	Product_is_iot *bool `json:",omitempty"`
 
 	DeviceKernelHeaders []string `json:",omitempty"`
-	DistDir             *string  `json:",omitempty"`
 
 	ExtraVndkVersions []string `json:",omitempty"`
 
@@ -242,6 +257,18 @@ type productVariables struct {
 	BoardPlatPrivateSepolicyDirs []string `json:",omitempty"`
 
 	VendorVars map[string]map[string]string `json:",omitempty"`
+
+	Ndk_abis               *bool `json:",omitempty"`
+	Exclude_draft_ndk_apis *bool `json:",omitempty"`
+
+	FlattenApex *bool `json:",omitempty"`
+
+	DexpreoptGlobalConfig *string `json:",omitempty"`
+
+	ManifestPackageNameOverrides []string `json:",omitempty"`
+
+	EnforceSystemCertificate          *bool    `json:",omitempty"`
+	EnforceSystemCertificateWhitelist []string `json:",omitempty"`
 }
 
 func boolPtr(v bool) *bool {

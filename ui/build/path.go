@@ -19,11 +19,13 @@ import (
 	"io/ioutil"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/google/blueprint/microfactory"
 
 	"android/soong/ui/build/paths"
+	"android/soong/ui/metrics"
 )
 
 func parsePathDir(dir string) []string {
@@ -56,7 +58,7 @@ func SetupPath(ctx Context, config Config) {
 		return
 	}
 
-	ctx.BeginTrace("path")
+	ctx.BeginTrace(metrics.RunSetupTool, "path")
 	defer ctx.EndTrace()
 
 	origPath, _ := config.Environment().Get("PATH")
@@ -144,6 +146,13 @@ func SetupPath(ctx Context, config Config) {
 	}
 
 	myPath, _ = filepath.Abs(myPath)
+
+	// Use the toybox prebuilts on linux
+	if runtime.GOOS == "linux" {
+		toyboxPath, _ := filepath.Abs("prebuilts/build-tools/toybox/linux-x86")
+		myPath = toyboxPath + string(os.PathListSeparator) + myPath
+	}
+
 	config.Environment().Set("PATH", myPath)
 	config.pathReplaced = true
 }

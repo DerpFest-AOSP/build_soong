@@ -41,7 +41,6 @@ const productVariablesFileName = "soong.variables"
 // config file. These will be included in the config struct.
 type FileConfigurableOptions struct {
 	Mega_device *bool `json:",omitempty"`
-	Ndk_abis    *bool `json:",omitempty"`
 	Host_bionic *bool `json:",omitempty"`
 }
 
@@ -90,7 +89,7 @@ type config struct {
 	ConfigFileName           string
 	ProductVariablesFileName string
 
-	Targets              map[OsClass][]Target
+	Targets              map[OsType][]Target
 	BuildOsVariant       string
 	BuildOsCommonVariant string
 
@@ -230,16 +229,18 @@ func TestArchConfig(buildDir string, env map[string]string) Config {
 	testConfig := TestConfig(buildDir, env)
 	config := testConfig.config
 
-	config.Targets = map[OsClass][]Target{
-		Device: []Target{
-			{Android, Arch{ArchType: Arm64, ArchVariant: "armv8-a", Native: true}},
-			{Android, Arch{ArchType: Arm, ArchVariant: "armv7-a-neon", Native: true}},
+	config.Targets = map[OsType][]Target{
+		Android: []Target{
+			{Android, Arch{ArchType: Arm64, ArchVariant: "armv8-a", Native: true, Abi: []string{"arm64-v8a"}}},
+			{Android, Arch{ArchType: Arm, ArchVariant: "armv7-a-neon", Native: true, Abi: []string{"armeabi-v7a"}}},
 		},
-		Host: []Target{
+		BuildOs: []Target{
 			{BuildOs, Arch{ArchType: X86_64}},
 			{BuildOs, Arch{ArchType: X86}},
 		},
 	}
+
+	config.BuildOsVariant = config.Targets[BuildOs][0].String()
 
 	return testConfig
 }
@@ -297,21 +298,21 @@ func NewConfig(srcDir, buildDir string) (Config, error) {
 	var archConfig []archConfig
 	if Bool(config.Mega_device) {
 		archConfig = getMegaDeviceConfig()
-	} else if Bool(config.Ndk_abis) {
+	} else if config.NdkAbis() {
 		archConfig = getNdkAbisConfig()
 	}
 
 	if archConfig != nil {
-		deviceTargets, err := decodeArchSettings(archConfig)
+		androidTargets, err := decodeArchSettings(Android, archConfig)
 		if err != nil {
 			return Config{}, err
 		}
-		targets[Device] = deviceTargets
+		targets[Android] = androidTargets
 	}
 
 	config.Targets = targets
-	config.BuildOsVariant = targets[Host][0].String()
-	config.BuildOsCommonVariant = getCommonTargets(targets[Host])[0].String()
+	config.BuildOsVariant = targets[BuildOs][0].String()
+	config.BuildOsCommonVariant = getCommonTargets(targets[BuildOs])[0].String()
 
 	if err := config.fromEnv(); err != nil {
 		return Config{}, err
@@ -349,6 +350,10 @@ func (c *config) BlueprintToolLocation() string {
 }
 
 var _ bootstrap.ConfigBlueprintToolLocation = (*config)(nil)
+
+func (c *config) HostToolPath(ctx PathContext, tool string) Path {
+	return PathForOutput(ctx, "host", c.PrebuiltOS(), "bin", tool)
+}
 
 // HostSystemTool looks for non-hermetic tools from the system we're running on.
 // Generally shouldn't be used, but useful to find the XCode SDK, etc.
@@ -477,7 +482,7 @@ func (c *config) PlatformSdkCodename() string {
 }
 
 func (c *config) MinSupportedSdkVersion() int {
-	return 14
+	return 16
 }
 
 func (c *config) DefaultAppTargetSdkInt() int {
@@ -556,12 +561,29 @@ func (c *config) DefaultAppCertificate(ctx PathContext) (pem, key SourcePath) {
 	}
 }
 
+func (c *config) ApexKeyDir(ctx ModuleContext) SourcePath {
+	// TODO(b/121224311): define another variable such as TARGET_APEX_KEY_OVERRIDE
+	defaultCert := String(c.productVariables.DefaultAppCertificate)
+	if defaultCert == "" || filepath.Dir(defaultCert) == "build/target/product/security" {
+		// When defaultCert is unset or is set to the testkeys path, use the APEX keys
+		// that is under the module dir
+		return PathForModuleSrc(ctx).SourcePath
+	} else {
+		// If not, APEX keys are under the specified directory
+		return PathForSource(ctx, filepath.Dir(defaultCert))
+	}
+}
+
 func (c *config) AllowMissingDependencies() bool {
 	return Bool(c.productVariables.Allow_missing_dependencies)
 }
 
 func (c *config) UnbundledBuild() bool {
 	return Bool(c.productVariables.Unbundled_build)
+}
+
+func (c *config) UnbundledBuildPrebuiltSdks() bool {
+	return Bool(c.productVariables.Unbundled_build) && !Bool(c.productVariables.Unbundled_build_sdks_from_source)
 }
 
 func (c *config) IsPdkBuild() bool {
@@ -572,12 +594,24 @@ func (c *config) MinimizeJavaDebugInfo() bool {
 	return Bool(c.productVariables.MinimizeJavaDebugInfo) && !Bool(c.productVariables.Eng)
 }
 
+func (c *config) Debuggable() bool {
+	return Bool(c.productVariables.Debuggable)
+}
+
+func (c *config) Eng() bool {
+	return Bool(c.productVariables.Eng)
+}
+
+func (c *config) DevicePrefer32BitApps() bool {
+	return Bool(c.productVariables.DevicePrefer32BitApps)
+}
+
 func (c *config) DevicePrefer32BitExecutables() bool {
 	return Bool(c.productVariables.DevicePrefer32BitExecutables)
 }
 
 func (c *config) DevicePrimaryArchType() ArchType {
-	return c.Targets[Device][0].Arch.ArchType
+	return c.Targets[Android][0].Arch.ArchType
 }
 
 func (c *config) SkipDeviceInstall() bool {
@@ -613,8 +647,16 @@ func (c *config) EnableCFI() bool {
 	}
 }
 
+func (c *config) EnableXOM() bool {
+	if c.productVariables.EnableXOM == nil {
+		return false
+	} else {
+		return Bool(c.productVariables.EnableXOM)
+	}
+}
+
 func (c *config) Android64() bool {
-	for _, t := range c.Targets[Device] {
+	for _, t := range c.Targets[Android] {
 		if t.Arch.ArchType.Multilib == "lib64" {
 			return true
 		}
@@ -636,10 +678,6 @@ func (c *config) TargetOpenJDK9() bool {
 	return c.targetOpenJDK9
 }
 
-func (c *config) UseClangLld() bool {
-	return Bool(c.productVariables.UseClangLld)
-}
-
 func (c *config) ClangTidy() bool {
 	return Bool(c.productVariables.ClangTidy)
 }
@@ -657,8 +695,8 @@ func (c *config) LibartImgHostBaseAddress() string {
 
 func (c *config) LibartImgDeviceBaseAddress() string {
 	archType := Common
-	if len(c.Targets[Device]) > 0 {
-		archType = c.Targets[Device][0].Arch.ArchType
+	if len(c.Targets[Android]) > 0 {
+		archType = c.Targets[Android][0].Arch.ArchType
 	}
 	switch archType {
 	default:
@@ -703,9 +741,37 @@ func (c *config) HostStaticBinaries() bool {
 	return Bool(c.productVariables.HostStaticBinaries)
 }
 
+func (c *config) UncompressPrivAppDex() bool {
+	return Bool(c.productVariables.UncompressPrivAppDex)
+}
+
+func (c *config) ModulesLoadedByPrivilegedModules() []string {
+	return c.productVariables.ModulesLoadedByPrivilegedModules
+}
+
+func (c *config) BootJars() []string {
+	return c.productVariables.BootJars
+}
+
+func (c *config) PreoptBootJars() []string {
+	return c.productVariables.PreoptBootJars
+}
+
+func (c *config) DisableDexPreopt(name string) bool {
+	return Bool(c.productVariables.DisableDexPreopt) || InList(name, c.productVariables.DisableDexPreoptModules)
+}
+
+func (c *config) DexpreoptGlobalConfig() string {
+	return String(c.productVariables.DexpreoptGlobalConfig)
+}
+
+func (c *config) DexPreoptProfileDir() string {
+	return String(c.productVariables.DexPreoptProfileDir)
+}
+
 func (c *deviceConfig) Arches() []Arch {
 	var arches []Arch
-	for _, target := range c.config.Targets[Device] {
+	for _, target := range c.config.Targets[Android] {
 		arches = append(arches, target.Arch)
 	}
 	return arches
@@ -767,7 +833,7 @@ func (c *deviceConfig) ProductServicesPath() string {
 	if c.config.productVariables.ProductServicesPath != nil {
 		return *c.config.productVariables.ProductServicesPath
 	}
-	return "product-services"
+	return "product_services"
 }
 
 func (c *deviceConfig) BtConfigIncludeDir() string {
@@ -817,6 +883,36 @@ func (c *deviceConfig) PlatPrivateSepolicyDirs() []string {
 	return c.config.productVariables.BoardPlatPrivateSepolicyDirs
 }
 
+func (c *deviceConfig) OverrideManifestPackageNameFor(name string) (manifestName string, overridden bool) {
+	overrides := c.config.productVariables.ManifestPackageNameOverrides
+	if overrides == nil || len(overrides) == 0 {
+		return "", false
+	}
+	for _, o := range overrides {
+		split := strings.Split(o, ":")
+		if len(split) != 2 {
+			// This shouldn't happen as this is first checked in make, but just in case.
+			panic(fmt.Errorf("invalid override rule %q in PRODUCT_MANIFEST_PACKAGE_NAME_OVERRIDES should be <module_name>:<manifest_name>", o))
+		}
+		if matchPattern(split[0], name) {
+			return substPattern(split[0], split[1], name), true
+		}
+	}
+	return "", false
+}
+
+func (c *config) SecondArchIsTranslated() bool {
+	deviceTargets := c.Targets[Android]
+	if len(deviceTargets) < 2 {
+		return false
+	}
+
+	arch := deviceTargets[0].Arch
+
+	return (arch.ArchType == X86 || arch.ArchType == X86_64) &&
+		(hasArmAbi(arch) || hasArmAndroidArch(deviceTargets))
+}
+
 func (c *config) IntegerOverflowDisabledForPath(path string) bool {
 	if c.productVariables.IntegerOverflowExcludePaths == nil {
 		return false
@@ -838,6 +934,13 @@ func (c *config) CFIEnabledForPath(path string) bool {
 	return PrefixInList(path, *c.productVariables.CFIIncludePaths)
 }
 
+func (c *config) XOMDisabledForPath(path string) bool {
+	if c.productVariables.XOMExcludePaths == nil {
+		return false
+	}
+	return PrefixInList(path, *c.productVariables.XOMExcludePaths)
+}
+
 func (c *config) VendorConfig(name string) VendorConfig {
 	return vendorConfig(c.productVariables.VendorVars[name])
 }
@@ -854,6 +957,26 @@ func (c vendorConfig) String(name string) string {
 func (c vendorConfig) IsSet(name string) bool {
 	_, ok := c[name]
 	return ok
+}
+
+func (c *config) NdkAbis() bool {
+	return Bool(c.productVariables.Ndk_abis)
+}
+
+func (c *config) ExcludeDraftNdkApis() bool {
+	return Bool(c.productVariables.Exclude_draft_ndk_apis)
+}
+
+func (c *config) FlattenApex() bool {
+	return Bool(c.productVariables.FlattenApex)
+}
+
+func (c *config) EnforceSystemCertificate() bool {
+	return Bool(c.productVariables.EnforceSystemCertificate)
+}
+
+func (c *config) EnforceSystemCertificateWhitelist() []string {
+	return c.productVariables.EnforceSystemCertificateWhitelist
 }
 
 func stringSlice(s *[]string) []string {

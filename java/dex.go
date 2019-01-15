@@ -25,8 +25,8 @@ import (
 var d8 = pctx.AndroidStaticRule("d8",
 	blueprint.RuleParams{
 		Command: `rm -rf "$outDir" && mkdir -p "$outDir" && ` +
-			`${config.D8Cmd} --output $outDir $dxFlags $in && ` +
-			`${config.SoongZipCmd} -o $outDir/classes.dex.jar -C $outDir -D $outDir && ` +
+			`${config.D8Cmd} --output $outDir $d8Flags $in && ` +
+			`${config.SoongZipCmd} $zipFlags -o $outDir/classes.dex.jar -C $outDir -f "$outDir/classes*.dex" && ` +
 			`${config.MergeZipsCmd} -D -stripFile "**/*.class" $out $outDir/classes.dex.jar $in`,
 		CommandDeps: []string{
 			"${config.D8Cmd}",
@@ -34,16 +34,19 @@ var d8 = pctx.AndroidStaticRule("d8",
 			"${config.MergeZipsCmd}",
 		},
 	},
-	"outDir", "dxFlags")
+	"outDir", "d8Flags", "zipFlags")
 
 var r8 = pctx.AndroidStaticRule("r8",
 	blueprint.RuleParams{
 		Command: `rm -rf "$outDir" && mkdir -p "$outDir" && ` +
+			`rm -f "$outDict" && ` +
 			`${config.R8Cmd} -injars $in --output $outDir ` +
 			`--force-proguard-compatibility ` +
+			`--no-data-resources ` +
 			`-printmapping $outDict ` +
-			`$dxFlags $r8Flags && ` +
-			`${config.SoongZipCmd} -o $outDir/classes.dex.jar -C $outDir -D $outDir && ` +
+			`$r8Flags && ` +
+			`touch "$outDict" && ` +
+			`${config.SoongZipCmd} $zipFlags -o $outDir/classes.dex.jar -C $outDir -f "$outDir/classes*.dex" && ` +
 			`${config.MergeZipsCmd} -D -stripFile "**/*.class" $out $outDir/classes.dex.jar $in`,
 		CommandDeps: []string{
 			"${config.R8Cmd}",
@@ -51,9 +54,9 @@ var r8 = pctx.AndroidStaticRule("r8",
 			"${config.MergeZipsCmd}",
 		},
 	},
-	"outDir", "outDict", "dxFlags", "r8Flags")
+	"outDir", "outDict", "r8Flags", "zipFlags")
 
-func (j *Module) dxFlags(ctx android.ModuleContext) []string {
+func (j *Module) dexCommonFlags(ctx android.ModuleContext) []string {
 	flags := j.deviceProperties.Dxflags
 	// Translate all the DX flags to D8 ones until all the build files have been migrated
 	// to D8 flags. See: b/69377755
@@ -79,6 +82,19 @@ func (j *Module) dxFlags(ctx android.ModuleContext) []string {
 	return flags
 }
 
+func (j *Module) d8Flags(ctx android.ModuleContext, flags javaBuilderFlags) ([]string, android.Paths) {
+	d8Flags := j.dexCommonFlags(ctx)
+
+	d8Flags = append(d8Flags, flags.bootClasspath.FormTurbineClasspath("--lib")...)
+	d8Flags = append(d8Flags, flags.classpath.FormTurbineClasspath("--lib")...)
+
+	var d8Deps android.Paths
+	d8Deps = append(d8Deps, flags.bootClasspath...)
+	d8Deps = append(d8Deps, flags.classpath...)
+
+	return d8Flags, d8Deps
+}
+
 func (j *Module) r8Flags(ctx android.ModuleContext, flags javaBuilderFlags) (r8Flags []string, r8Deps android.Paths) {
 	opt := j.deviceProperties.Optimize
 
@@ -94,10 +110,16 @@ func (j *Module) r8Flags(ctx android.ModuleContext, flags javaBuilderFlags) (r8F
 		proguardRaiseDeps = append(proguardRaiseDeps, dep.(Dependency).HeaderJars()...)
 	})
 
+	r8Flags = append(r8Flags, j.dexCommonFlags(ctx)...)
+
 	r8Flags = append(r8Flags, proguardRaiseDeps.FormJavaClassPath("-libraryjars"))
 	r8Flags = append(r8Flags, flags.bootClasspath.FormJavaClassPath("-libraryjars"))
 	r8Flags = append(r8Flags, flags.classpath.FormJavaClassPath("-libraryjars"))
 	r8Flags = append(r8Flags, "-forceprocessing")
+
+	r8Deps = append(r8Deps, proguardRaiseDeps...)
+	r8Deps = append(r8Deps, flags.bootClasspath...)
+	r8Deps = append(r8Deps, flags.classpath...)
 
 	flagFiles := android.Paths{
 		android.PathForSource(ctx, "build/make/core/proguard.flags"),
@@ -135,6 +157,13 @@ func (j *Module) r8Flags(ctx android.ModuleContext, flags javaBuilderFlags) (r8F
 	if !Bool(opt.Obfuscate) {
 		r8Flags = append(r8Flags, "-dontobfuscate")
 	}
+	// TODO(ccross): if this is an instrumentation test of an obfuscated app, use the
+	// dictionary of the app and move the app from libraryjars to injars.
+
+	// Don't strip out debug information for eng builds.
+	if ctx.Config().Eng() {
+		r8Flags = append(r8Flags, "--debug")
+	}
 
 	return r8Flags, r8Deps
 }
@@ -144,15 +173,16 @@ func (j *Module) compileDex(ctx android.ModuleContext, flags javaBuilderFlags,
 
 	useR8 := Bool(j.deviceProperties.Optimize.Enabled)
 
-	dxFlags := j.dxFlags(ctx)
-
 	// Compile classes.jar into classes.dex and then javalib.jar
 	javalibJar := android.PathForModuleOut(ctx, "dex", jarName)
 	outDir := android.PathForModuleOut(ctx, "dex")
 
+	zipFlags := ""
+	if j.deviceProperties.UncompressDex {
+		zipFlags = "-L 0"
+	}
+
 	if useR8 {
-		// TODO(ccross): if this is an instrumentation test of an obfuscated app, use the
-		// dictionary of the app and move the app from libraryjars to injars.
 		proguardDictionary := android.PathForModuleOut(ctx, "proguard_dictionary")
 		j.proguardDictionary = proguardDictionary
 		r8Flags, r8Deps := j.r8Flags(ctx, flags)
@@ -164,21 +194,24 @@ func (j *Module) compileDex(ctx android.ModuleContext, flags javaBuilderFlags,
 			Input:          classesJar,
 			Implicits:      r8Deps,
 			Args: map[string]string{
-				"dxFlags": strings.Join(dxFlags, " "),
-				"r8Flags": strings.Join(r8Flags, " "),
-				"outDict": j.proguardDictionary.String(),
-				"outDir":  outDir.String(),
+				"r8Flags":  strings.Join(r8Flags, " "),
+				"zipFlags": zipFlags,
+				"outDict":  j.proguardDictionary.String(),
+				"outDir":   outDir.String(),
 			},
 		})
 	} else {
+		d8Flags, d8Deps := j.d8Flags(ctx, flags)
 		ctx.Build(pctx, android.BuildParams{
 			Rule:        d8,
 			Description: "d8",
 			Output:      javalibJar,
 			Input:       classesJar,
+			Implicits:   d8Deps,
 			Args: map[string]string{
-				"dxFlags": strings.Join(dxFlags, " "),
-				"outDir":  outDir.String(),
+				"d8Flags":  strings.Join(d8Flags, " "),
+				"zipFlags": zipFlags,
+				"outDir":   outDir.String(),
 			},
 		})
 	}

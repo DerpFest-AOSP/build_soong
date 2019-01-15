@@ -75,6 +75,10 @@ type BaseCompilerProperties struct {
 	// be added to the include path using -I
 	Local_include_dirs []string `android:"arch_variant,variant_prepend"`
 
+	// Add the directory containing the Android.bp file to the list of include
+	// directories. Defaults to true.
+	Include_build_directory *bool
+
 	// list of generated sources to compile. These are the names of gensrcs or
 	// genrule modules.
 	Generated_sources []string `android:"arch_variant"`
@@ -224,6 +228,10 @@ func (compiler *baseCompiler) compilerDeps(ctx DepsContext, deps Deps) Deps {
 		deps = protoDeps(ctx, deps, &compiler.Proto, Bool(compiler.Properties.Proto.Static))
 	}
 
+	if compiler.hasSrcExt(".sysprop") {
+		deps.SharedLibs = append(deps.SharedLibs, "libbase")
+	}
+
 	if Bool(compiler.Properties.Openmp) {
 		deps.StaticLibs = append(deps.StaticLibs, "libomp")
 	}
@@ -284,8 +292,11 @@ func (compiler *baseCompiler) compilerFlags(ctx ModuleContext, flags Flags, deps
 		flags.YasmFlags = append(flags.YasmFlags, f)
 	}
 
-	flags.GlobalFlags = append(flags.GlobalFlags, "-I"+android.PathForModuleSrc(ctx).String())
-	flags.YasmFlags = append(flags.YasmFlags, "-I"+android.PathForModuleSrc(ctx).String())
+	if compiler.Properties.Include_build_directory == nil ||
+		*compiler.Properties.Include_build_directory {
+		flags.GlobalFlags = append(flags.GlobalFlags, "-I"+android.PathForModuleSrc(ctx).String())
+		flags.YasmFlags = append(flags.YasmFlags, "-I"+android.PathForModuleSrc(ctx).String())
+	}
 
 	if !(ctx.useSdk() || ctx.useVndk()) || ctx.Host() {
 		flags.SystemIncludeFlags = append(flags.SystemIncludeFlags,
@@ -295,6 +306,7 @@ func (compiler *baseCompiler) compilerFlags(ctx ModuleContext, flags Flags, deps
 	}
 
 	if ctx.useSdk() {
+		// TODO: Switch to --sysroot.
 		// The NDK headers are installed to a common sysroot. While a more
 		// typical Soong approach would be to only make the headers for the
 		// library you're using available, we're trying to emulate the NDK
@@ -303,6 +315,7 @@ func (compiler *baseCompiler) compilerFlags(ctx ModuleContext, flags Flags, deps
 			"-isystem "+getCurrentIncludePath(ctx).String(),
 			"-isystem "+getCurrentIncludePath(ctx).Join(ctx, config.NDKTriple(tc)).String())
 
+		// TODO: Migrate to API suffixed triple?
 		// Traditionally this has come from android/api-level.h, but with the
 		// libc headers unified it must be set by the build system since we
 		// don't have per-API level copies of that header now.
@@ -312,14 +325,6 @@ func (compiler *baseCompiler) compilerFlags(ctx ModuleContext, flags Flags, deps
 		}
 		flags.GlobalFlags = append(flags.GlobalFlags,
 			"-D__ANDROID_API__="+version)
-
-		// Until the full NDK has been migrated to using ndk_headers, we still
-		// need to add the legacy sysroot includes to get the full set of
-		// headers.
-		legacyIncludes := fmt.Sprintf(
-			"prebuilts/ndk/current/platforms/android-%s/arch-%s/usr/include",
-			ctx.sdkVersion(), ctx.Arch().ArchType.String())
-		flags.SystemIncludeFlags = append(flags.SystemIncludeFlags, "-isystem "+legacyIncludes)
 	}
 
 	if ctx.useVndk() {
@@ -340,10 +345,7 @@ func (compiler *baseCompiler) compilerFlags(ctx ModuleContext, flags Flags, deps
 	if flags.RequiredInstructionSet != "" {
 		instructionSet = flags.RequiredInstructionSet
 	}
-	instructionSetFlags, err := tc.InstructionSetFlags(instructionSet)
-	if flags.Clang {
-		instructionSetFlags, err = tc.ClangInstructionSetFlags(instructionSet)
-	}
+	instructionSetFlags, err := tc.ClangInstructionSetFlags(instructionSet)
 	if err != nil {
 		ctx.ModuleErrorf("%s", err)
 	}
@@ -353,24 +355,22 @@ func (compiler *baseCompiler) compilerFlags(ctx ModuleContext, flags Flags, deps
 	// TODO: debug
 	flags.CFlags = append(flags.CFlags, esc(compiler.Properties.Release.Cflags)...)
 
-	if flags.Clang {
-		CheckBadCompilerFlags(ctx, "clang_cflags", compiler.Properties.Clang_cflags)
-		CheckBadCompilerFlags(ctx, "clang_asflags", compiler.Properties.Clang_asflags)
+	CheckBadCompilerFlags(ctx, "clang_cflags", compiler.Properties.Clang_cflags)
+	CheckBadCompilerFlags(ctx, "clang_asflags", compiler.Properties.Clang_asflags)
 
-		flags.CFlags = config.ClangFilterUnknownCflags(flags.CFlags)
-		flags.CFlags = append(flags.CFlags, esc(compiler.Properties.Clang_cflags)...)
-		flags.AsFlags = append(flags.AsFlags, esc(compiler.Properties.Clang_asflags)...)
-		flags.CppFlags = config.ClangFilterUnknownCflags(flags.CppFlags)
-		flags.ConlyFlags = config.ClangFilterUnknownCflags(flags.ConlyFlags)
-		flags.LdFlags = config.ClangFilterUnknownCflags(flags.LdFlags)
+	flags.CFlags = config.ClangFilterUnknownCflags(flags.CFlags)
+	flags.CFlags = append(flags.CFlags, esc(compiler.Properties.Clang_cflags)...)
+	flags.AsFlags = append(flags.AsFlags, esc(compiler.Properties.Clang_asflags)...)
+	flags.CppFlags = config.ClangFilterUnknownCflags(flags.CppFlags)
+	flags.ConlyFlags = config.ClangFilterUnknownCflags(flags.ConlyFlags)
+	flags.LdFlags = config.ClangFilterUnknownCflags(flags.LdFlags)
 
-		target := "-target " + tc.ClangTriple()
-		gccPrefix := "-B" + config.ToolPath(tc)
+	target := "-target " + tc.ClangTriple()
+	gccPrefix := "-B" + config.ToolPath(tc)
 
-		flags.CFlags = append(flags.CFlags, target, gccPrefix)
-		flags.AsFlags = append(flags.AsFlags, target, gccPrefix)
-		flags.LdFlags = append(flags.LdFlags, target, gccPrefix)
-	}
+	flags.CFlags = append(flags.CFlags, target, gccPrefix)
+	flags.AsFlags = append(flags.AsFlags, target, gccPrefix)
+	flags.LdFlags = append(flags.LdFlags, target, gccPrefix)
 
 	hod := "Host"
 	if ctx.Os().Class == android.Device {
@@ -381,28 +381,18 @@ func (compiler *baseCompiler) compilerFlags(ctx ModuleContext, flags Flags, deps
 	flags.ConlyFlags = append([]string{"${config.CommonGlobalConlyflags}"}, flags.ConlyFlags...)
 	flags.CppFlags = append([]string{fmt.Sprintf("${config.%sGlobalCppflags}", hod)}, flags.CppFlags...)
 
-	if flags.Clang {
-		flags.AsFlags = append(flags.AsFlags, tc.ClangAsflags())
-		flags.CppFlags = append([]string{"${config.CommonClangGlobalCppflags}"}, flags.CppFlags...)
-		flags.GlobalFlags = append(flags.GlobalFlags,
-			tc.ClangCflags(),
-			"${config.CommonClangGlobalCflags}",
-			fmt.Sprintf("${config.%sClangGlobalCflags}", hod))
-	} else {
-		flags.CppFlags = append([]string{"${config.CommonGlobalCppflags}"}, flags.CppFlags...)
-		flags.GlobalFlags = append(flags.GlobalFlags,
-			tc.Cflags(),
-			"${config.CommonGlobalCflags}",
-			fmt.Sprintf("${config.%sGlobalCflags}", hod))
+	flags.AsFlags = append(flags.AsFlags, tc.ClangAsflags())
+	flags.CppFlags = append([]string{"${config.CommonClangGlobalCppflags}"}, flags.CppFlags...)
+	flags.GlobalFlags = append(flags.GlobalFlags,
+		tc.ClangCflags(),
+		"${config.CommonClangGlobalCflags}",
+		fmt.Sprintf("${config.%sClangGlobalCflags}", hod))
+
+	if strings.HasPrefix(android.PathForModuleSrc(ctx).String(), "external/") {
+		flags.GlobalFlags = append([]string{"${config.ClangExternalCflags}"}, flags.GlobalFlags...)
 	}
 
-	if flags.Clang {
-		if strings.HasPrefix(android.PathForModuleSrc(ctx).String(), "external/") {
-			flags.GlobalFlags = append([]string{"${config.ClangExternalCflags}"}, flags.GlobalFlags...)
-		}
-	}
-
-	if ctx.Device() {
+	if tc.Bionic() {
 		if Bool(compiler.Properties.Rtti) {
 			flags.CppFlags = append(flags.CppFlags, "-frtti")
 		} else {
@@ -412,19 +402,11 @@ func (compiler *baseCompiler) compilerFlags(ctx ModuleContext, flags Flags, deps
 
 	flags.AsFlags = append(flags.AsFlags, "-D__ASSEMBLY__")
 
-	if flags.Clang {
-		flags.CppFlags = append(flags.CppFlags, tc.ClangCppflags())
-	} else {
-		flags.CppFlags = append(flags.CppFlags, tc.Cppflags())
-	}
+	flags.CppFlags = append(flags.CppFlags, tc.ClangCppflags())
 
 	flags.YasmFlags = append(flags.YasmFlags, tc.YasmFlags())
 
-	if flags.Clang {
-		flags.GlobalFlags = append(flags.GlobalFlags, tc.ToolchainClangCflags())
-	} else {
-		flags.GlobalFlags = append(flags.GlobalFlags, tc.ToolchainCflags())
-	}
+	flags.GlobalFlags = append(flags.GlobalFlags, tc.ToolchainClangCflags())
 
 	cStd := config.CStdVersion
 	if String(compiler.Properties.C_std) == "experimental" {
@@ -439,19 +421,6 @@ func (compiler *baseCompiler) compilerFlags(ctx ModuleContext, flags Flags, deps
 		cppStd = config.CppStdVersion
 	case "experimental":
 		cppStd = config.ExperimentalCppStdVersion
-	case "c++17", "gnu++17":
-		// Map c++17 and gnu++17 to their 1z equivalents, until 17 is finalized.
-		cppStd = strings.Replace(String(compiler.Properties.Cpp_std), "17", "1z", 1)
-	}
-
-	if !flags.Clang {
-		// GCC uses an invalid C++14 ABI (emits calls to
-		// __cxa_throw_bad_array_length, which is not a valid C++ RT ABI).
-		// http://b/25022512
-		// The host GCC doesn't support C++14 (and is deprecated, so likely
-		// never will).
-		// Build these modules with C++11.
-		cppStd = config.GccCppStdVersion
 	}
 
 	if compiler.Properties.Gnu_extensions != nil && *compiler.Properties.Gnu_extensions == false {
@@ -520,6 +489,11 @@ func (compiler *baseCompiler) compilerFlags(ctx ModuleContext, flags Flags, deps
 
 	if compiler.hasSrcExt(".rs") || compiler.hasSrcExt(".fs") {
 		flags = rsFlags(ctx, flags, &compiler.Properties)
+	}
+
+	if compiler.hasSrcExt(".sysprop") {
+		flags.GlobalFlags = append(flags.GlobalFlags,
+			"-I"+android.PathForModuleGen(ctx, "sysprop", "include").String())
 	}
 
 	if len(compiler.Properties.Srcs) > 0 {

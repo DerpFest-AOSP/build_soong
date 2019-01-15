@@ -230,6 +230,8 @@ func PathsForModuleSrc(ctx ModuleContext, paths []string) Paths {
 // pathsForModuleSrcFromFullPath returns Paths rooted from the module's local
 // source directory, but strip the local source directory from the beginning of
 // each string. If incDirs is false, strip paths with a trailing '/' from the list.
+// It intended for use in globs that only list files that exist, so it allows '$' in
+// filenames.
 func pathsForModuleSrcFromFullPath(ctx ModuleContext, paths []string, incDirs bool) Paths {
 	prefix := filepath.Join(ctx.Config().srcDir, ctx.ModuleDir()) + "/"
 	if prefix == "./" {
@@ -246,7 +248,7 @@ func pathsForModuleSrcFromFullPath(ctx ModuleContext, paths []string, incDirs bo
 			continue
 		}
 
-		srcPath, err := pathForSource(ctx, ctx.ModuleDir(), path[len(prefix):])
+		srcPath, err := safePathForSource(ctx, ctx.ModuleDir(), path[len(prefix):])
 		if err != nil {
 			reportPathError(ctx, err)
 			continue
@@ -494,29 +496,26 @@ func (p SourcePath) withRel(rel string) SourcePath {
 
 // safePathForSource is for paths that we expect are safe -- only for use by go
 // code that is embedding ninja variables in paths
-func safePathForSource(ctx PathContext, path string) SourcePath {
-	p, err := validateSafePath(path)
-	if err != nil {
-		reportPathError(ctx, err)
-	}
+func safePathForSource(ctx PathContext, pathComponents ...string) (SourcePath, error) {
+	p, err := validateSafePath(pathComponents...)
 	ret := SourcePath{basePath{p, ctx.Config(), ""}}
+	if err != nil {
+		return ret, err
+	}
 
 	abs, err := filepath.Abs(ret.String())
 	if err != nil {
-		reportPathError(ctx, err)
-		return ret
+		return ret, err
 	}
 	buildroot, err := filepath.Abs(ctx.Config().buildDir)
 	if err != nil {
-		reportPathError(ctx, err)
-		return ret
+		return ret, err
 	}
 	if strings.HasPrefix(abs, buildroot) {
-		reportPathErrorf(ctx, "source path %s is in output", abs)
-		return ret
+		return ret, fmt.Errorf("source path %s is in output", abs)
 	}
 
-	return ret
+	return ret, err
 }
 
 // pathForSource creates a SourcePath from pathComponents, but does not check that it exists.
@@ -555,7 +554,7 @@ func existsWithDependencies(ctx PathContext, path SourcePath) (exists bool, err 
 		var deps []string
 		// We cannot add build statements in this context, so we fall back to
 		// AddNinjaFileDeps
-		files, deps, err = pathtools.Glob(path.String(), nil)
+		files, deps, err = pathtools.Glob(path.String(), nil, pathtools.FollowSymlinks)
 		ctx.AddNinjaFileDeps(deps...)
 	}
 
@@ -660,11 +659,7 @@ func (p SourcePath) OverlayPath(ctx ModuleContext, path Path) OptionalPath {
 	if len(paths) == 0 {
 		return OptionalPath{}
 	}
-	relPath, err := filepath.Rel(p.config.srcDir, paths[0])
-	if err != nil {
-		reportPathError(ctx, err)
-		return OptionalPath{}
-	}
+	relPath := Rel(ctx, p.config.srcDir, paths[0])
 	return OptionalPathForPath(PathForSource(ctx, relPath))
 }
 
@@ -724,46 +719,6 @@ func PathForIntermediates(ctx PathContext, paths ...string) OutputPath {
 		reportPathError(ctx, err)
 	}
 	return PathForOutput(ctx, ".intermediates", path)
-}
-
-// DistPath is a Path representing a file path rooted from the dist directory
-type DistPath struct {
-	basePath
-}
-
-func (p DistPath) withRel(rel string) DistPath {
-	p.basePath = p.basePath.withRel(rel)
-	return p
-}
-
-var _ Path = DistPath{}
-
-// PathForDist joins the provided paths and returns a DistPath that is
-// validated to not escape the dist dir.
-// On error, it will return a usable, but invalid DistPath, and report a ModuleError.
-func PathForDist(ctx PathContext, pathComponents ...string) DistPath {
-	path, err := validatePath(pathComponents...)
-	if err != nil {
-		reportPathError(ctx, err)
-	}
-	return DistPath{basePath{path, ctx.Config(), ""}}
-}
-
-func (p DistPath) writablePath() {}
-
-func (p DistPath) Valid() bool {
-	return p.config.productVariables.DistDir != nil && *p.config.productVariables.DistDir != ""
-}
-
-func (p DistPath) String() string {
-	if !p.Valid() {
-		panic("Requesting an invalid path")
-	}
-	return filepath.Join(*p.config.productVariables.DistDir, p.path)
-}
-
-func (p DistPath) RelPathString() string {
-	return p.path
 }
 
 // ModuleSrcPath is a Path representing a file rooted from a module's local source dir
@@ -829,13 +784,7 @@ func (p ModuleSrcPath) resPathWithName(ctx ModuleContext, name string) ModuleRes
 
 func (p ModuleSrcPath) WithSubDir(ctx ModuleContext, subdir string) ModuleSrcPath {
 	subdir = PathForModuleSrc(ctx, subdir).String()
-	var err error
-	rel, err := filepath.Rel(subdir, p.path)
-	if err != nil {
-		ctx.ModuleErrorf("source file %q is not under path %q", p.path, subdir)
-		return p
-	}
-	p.rel = rel
+	p.rel = Rel(ctx, subdir, p.path)
 	return p
 }
 
@@ -973,27 +922,7 @@ func PathForModuleRes(ctx ModuleContext, pathComponents ...string) ModuleResPath
 func PathForModuleInstall(ctx ModuleInstallPathContext, pathComponents ...string) OutputPath {
 	var outPaths []string
 	if ctx.Device() {
-		var partition string
-		if ctx.InstallInData() {
-			partition = "data"
-		} else if ctx.InstallInRecovery() {
-			// the layout of recovery partion is the same as that of system partition
-			partition = "recovery/root/system"
-		} else if ctx.SocSpecific() {
-			partition = ctx.DeviceConfig().VendorPath()
-		} else if ctx.DeviceSpecific() {
-			partition = ctx.DeviceConfig().OdmPath()
-		} else if ctx.ProductSpecific() {
-			partition = ctx.DeviceConfig().ProductPath()
-		} else if ctx.ProductServicesSpecific() {
-			partition = ctx.DeviceConfig().ProductServicesPath()
-		} else {
-			partition = "system"
-		}
-
-		if ctx.InstallInSanitizerDir() {
-			partition = "data/asan/" + partition
-		}
+		partition := modulePartition(ctx)
 		outPaths = []string{"target", "product", ctx.Config().DeviceName(), partition}
 	} else {
 		switch ctx.Os() {
@@ -1011,6 +940,36 @@ func PathForModuleInstall(ctx ModuleInstallPathContext, pathComponents ...string
 	}
 	outPaths = append(outPaths, pathComponents...)
 	return PathForOutput(ctx, outPaths...)
+}
+
+func InstallPathToOnDevicePath(ctx PathContext, path OutputPath) string {
+	rel := Rel(ctx, PathForOutput(ctx, "target", "product", ctx.Config().DeviceName()).String(), path.String())
+
+	return "/" + rel
+}
+
+func modulePartition(ctx ModuleInstallPathContext) string {
+	var partition string
+	if ctx.InstallInData() {
+		partition = "data"
+	} else if ctx.InstallInRecovery() {
+		// the layout of recovery partion is the same as that of system partition
+		partition = "recovery/root/system"
+	} else if ctx.SocSpecific() {
+		partition = ctx.DeviceConfig().VendorPath()
+	} else if ctx.DeviceSpecific() {
+		partition = ctx.DeviceConfig().OdmPath()
+	} else if ctx.ProductSpecific() {
+		partition = ctx.DeviceConfig().ProductPath()
+	} else if ctx.ProductServicesSpecific() {
+		partition = ctx.DeviceConfig().ProductServicesPath()
+	} else {
+		partition = "system"
+	}
+	if ctx.InstallInSanitizerDir() {
+		partition = "data/asan/" + partition
+	}
+	return partition
 }
 
 // validateSafePath validates a path that we trust (may contain ninja variables).
@@ -1079,4 +1038,32 @@ func PathsForTesting(strs []string) Paths {
 	}
 
 	return p
+}
+
+// Rel performs the same function as filepath.Rel, but reports errors to a PathContext, and reports an error if
+// targetPath is not inside basePath.
+func Rel(ctx PathContext, basePath string, targetPath string) string {
+	rel, isRel := MaybeRel(ctx, basePath, targetPath)
+	if !isRel {
+		reportPathErrorf(ctx, "path %q is not under path %q", targetPath, basePath)
+		return ""
+	}
+	return rel
+}
+
+// MaybeRel performs the same function as filepath.Rel, but reports errors to a PathContext, and returns false if
+// targetPath is not inside basePath.
+func MaybeRel(ctx PathContext, basePath string, targetPath string) (string, bool) {
+	// filepath.Rel returns an error if one path is absolute and the other is not, handle that case first.
+	if filepath.IsAbs(basePath) != filepath.IsAbs(targetPath) {
+		return "", false
+	}
+	rel, err := filepath.Rel(basePath, targetPath)
+	if err != nil {
+		reportPathError(ctx, err)
+		return "", false
+	} else if rel == ".." || strings.HasPrefix(rel, "../") || strings.HasPrefix(rel, "/") {
+		return "", false
+	}
+	return rel, true
 }

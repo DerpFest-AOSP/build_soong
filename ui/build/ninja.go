@@ -22,11 +22,12 @@ import (
 	"strings"
 	"time"
 
+	"android/soong/ui/metrics"
 	"android/soong/ui/status"
 )
 
 func runNinja(ctx Context, config Config) {
-	ctx.BeginTrace("ninja")
+	ctx.BeginTrace(metrics.PrimaryNinja, "ninja")
 	defer ctx.EndTrace()
 
 	fifo := filepath.Join(config.OutDir(), ".ninja_fifo")
@@ -53,12 +54,16 @@ func runNinja(ctx Context, config Config) {
 
 	args = append(args, "-f", config.CombinedNinjaFile())
 
-	args = append(args, "-w", "dupbuild=err")
+	args = append(args,
+		"-w", "dupbuild=err",
+		"-w", "missingdepfile=err")
 
 	cmd := Command(ctx, config, "ninja", executable, args...)
 	if config.HasKatiSuffix() {
 		cmd.Environment.AppendFromKati(config.KatiEnvFile())
 	}
+
+	cmd.Environment.Set("DIST_DIR", config.DistDir())
 
 	// Allow both NINJA_ARGS and NINJA_EXTRA_ARGS, since both have been
 	// used in the past to specify extra ninja arguments.
@@ -95,6 +100,7 @@ func runNinja(ctx Context, config Config) {
 		}
 	}()
 
+	ctx.Status.Status("Starting ninja...")
 	cmd.RunAndPrintOrFatal()
 }
 

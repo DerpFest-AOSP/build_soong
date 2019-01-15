@@ -23,6 +23,7 @@ import (
 
 	"github.com/google/blueprint"
 	"github.com/google/blueprint/pathtools"
+	"github.com/google/blueprint/proptools"
 )
 
 var (
@@ -57,6 +58,7 @@ type ModuleBuildParams BuildParams
 type androidBaseContext interface {
 	Target() Target
 	TargetPrimary() bool
+	MultiTargets() []Target
 	Arch() Arch
 	Os() OsType
 	Host() bool
@@ -188,6 +190,7 @@ type Module interface {
 	GetProperties() []interface{}
 
 	BuildParamsForTests() []BuildParams
+	VariablesForTests() map[string]string
 }
 
 type nameProperties struct {
@@ -214,7 +217,8 @@ type commonProperties struct {
 		}
 	}
 
-	Default_multilib string `blueprint:"mutated"`
+	UseTargetVariants bool   `blueprint:"mutated"`
+	Default_multilib  string `blueprint:"mutated"`
 
 	// whether this is a proprietary vendor module, and should be installed into /vendor
 	Proprietary *bool
@@ -243,9 +247,9 @@ type commonProperties struct {
 	Product_specific *bool
 
 	// whether this module provides services owned by the OS provider to the core platform. When set
-	// to true, it is installed into  /product-services (or /system/product-services if
-	// product-services partition does not exist).
-	ProductServices_specific *bool
+	// to true, it is installed into  /product_services (or /system/product_services if
+	// product_services partition does not exist).
+	Product_services_specific *bool
 
 	// Whether this module is installed to recovery partition
 	Recovery *bool
@@ -262,9 +266,28 @@ type commonProperties struct {
 	// relative path to a file to include in the list of notices for the device
 	Notice *string
 
+	Dist struct {
+		// copy the output of this module to the $DIST_DIR when `dist` is specified on the
+		// command line and  any of these targets are also on the command line, or otherwise
+		// built
+		Targets []string `android:"arch_variant"`
+
+		// The name of the output artifact. This defaults to the basename of the output of
+		// the module.
+		Dest *string `android:"arch_variant"`
+
+		// The directory within the dist directory to store the artifact. Defaults to the
+		// top level directory ("").
+		Dir *string `android:"arch_variant"`
+
+		// A suffix to add to the artifact file name (before any extension).
+		Suffix *string `android:"arch_variant"`
+	} `android:"arch_variant"`
+
 	// Set by TargetMutator
-	CompileTarget  Target `blueprint:"mutated"`
-	CompilePrimary bool   `blueprint:"mutated"`
+	CompileTarget       Target   `blueprint:"mutated"`
+	CompileMultiTargets []Target `blueprint:"mutated"`
+	CompilePrimary      bool     `blueprint:"mutated"`
 
 	// Set by InitAndroidModule
 	HostOrDeviceSupported HostOrDeviceSupported `blueprint:"mutated"`
@@ -276,7 +299,10 @@ type commonProperties struct {
 }
 
 type hostAndDeviceProperties struct {
-	Host_supported   *bool
+	// If set to true, build a variant of the module for the host.  Defaults to false.
+	Host_supported *bool
+
+	// If set to true, build a variant of the module for the device.  Defaults to true.
 	Device_supported *bool
 }
 
@@ -361,6 +387,7 @@ func InitAndroidArchModule(m Module, hod HostOrDeviceSupported, defaultMultilib 
 	base.commonProperties.HostOrDeviceSupported = hod
 	base.commonProperties.Default_multilib = string(defaultMultilib)
 	base.commonProperties.ArchSpecific = true
+	base.commonProperties.UseTargetVariants = true
 
 	switch hod {
 	case HostAndDeviceSupported, HostAndDeviceDefault:
@@ -368,6 +395,11 @@ func InitAndroidArchModule(m Module, hod HostOrDeviceSupported, defaultMultilib 
 	}
 
 	InitArchModule(m)
+}
+
+func InitAndroidMultiTargetsArchModule(m Module, hod HostOrDeviceSupported, defaultMultilib Multilib) {
+	InitAndroidArchModule(m, hod, defaultMultilib)
+	m.base().commonProperties.UseTargetVariants = false
 }
 
 // A ModuleBase object contains the properties that are common to all Android
@@ -422,12 +454,13 @@ type ModuleBase struct {
 	variableProperties      variableProperties
 	hostAndDeviceProperties hostAndDeviceProperties
 	generalProperties       []interface{}
-	archProperties          []interface{}
+	archProperties          [][]interface{}
 	customizableProperties  []interface{}
 
 	noAddressSanitizer bool
 	installFiles       Paths
 	checkbuildFiles    Paths
+	noticeFile         Path
 
 	// Used by buildTargetSingleton to create checkbuild and per-directory build targets
 	// Only set on the final variant of each module
@@ -441,6 +474,9 @@ type ModuleBase struct {
 
 	// For tests
 	buildParams []BuildParams
+	variables   map[string]string
+
+	prefer32 func(ctx BaseModuleContext, base *ModuleBase, class OsClass) bool
 }
 
 func (a *ModuleBase) AddProperties(props ...interface{}) {
@@ -453,6 +489,14 @@ func (a *ModuleBase) GetProperties() []interface{} {
 
 func (a *ModuleBase) BuildParamsForTests() []BuildParams {
 	return a.buildParams
+}
+
+func (a *ModuleBase) VariablesForTests() map[string]string {
+	return a.variables
+}
+
+func (a *ModuleBase) Prefer32(prefer32 func(ctx BaseModuleContext, base *ModuleBase, class OsClass) bool) {
+	a.prefer32 = prefer32
 }
 
 // Name returns the name of the module.  It may be overridden by individual module types, for
@@ -470,8 +514,9 @@ func (a *ModuleBase) base() *ModuleBase {
 	return a
 }
 
-func (a *ModuleBase) SetTarget(target Target, primary bool) {
+func (a *ModuleBase) SetTarget(target Target, multiTargets []Target, primary bool) {
 	a.commonProperties.CompileTarget = target
+	a.commonProperties.CompileMultiTargets = multiTargets
 	a.commonProperties.CompilePrimary = primary
 }
 
@@ -481,6 +526,10 @@ func (a *ModuleBase) Target() Target {
 
 func (a *ModuleBase) TargetPrimary() bool {
 	return a.commonProperties.CompilePrimary
+}
+
+func (a *ModuleBase) MultiTargets() []Target {
+	return a.commonProperties.CompileMultiTargets
 }
 
 func (a *ModuleBase) Os() OsType {
@@ -548,7 +597,7 @@ func (a *ModuleBase) ProductSpecific() bool {
 }
 
 func (a *ModuleBase) ProductServicesSpecific() bool {
-	return Bool(a.commonProperties.ProductServices_specific)
+	return Bool(a.commonProperties.Product_services_specific)
 }
 
 func (a *ModuleBase) Enabled() bool {
@@ -599,6 +648,10 @@ func (p *ModuleBase) InstallInSanitizerDir() bool {
 
 func (p *ModuleBase) InstallInRecovery() bool {
 	return Bool(p.commonProperties.Recovery)
+}
+
+func (a *ModuleBase) Owner() string {
+	return String(a.commonProperties.Owner)
 }
 
 func (a *ModuleBase) generateModuleTarget(ctx ModuleContext) {
@@ -661,7 +714,7 @@ func determineModuleKind(a *ModuleBase, ctx blueprint.BaseModuleContext) moduleK
 	var socSpecific = Bool(a.commonProperties.Vendor) || Bool(a.commonProperties.Proprietary) || Bool(a.commonProperties.Soc_specific)
 	var deviceSpecific = Bool(a.commonProperties.Device_specific)
 	var productSpecific = Bool(a.commonProperties.Product_specific)
-	var productServicesSpecific = Bool(a.commonProperties.ProductServices_specific)
+	var productServicesSpecific = Bool(a.commonProperties.Product_services_specific)
 
 	msg := "conflicting value set here"
 	if socSpecific && deviceSpecific {
@@ -720,6 +773,7 @@ func (a *ModuleBase) androidBaseContextFactory(ctx blueprint.BaseModuleContext) 
 	return androidBaseContextImpl{
 		target:        a.commonProperties.CompileTarget,
 		targetPrimary: a.commonProperties.CompilePrimary,
+		multiTargets:  a.commonProperties.CompileMultiTargets,
 		kind:          determineModuleKind(a, ctx),
 		config:        ctx.Config().(Config),
 	}
@@ -733,6 +787,7 @@ func (a *ModuleBase) GenerateBuildActions(blueprintCtx blueprint.ModuleContext) 
 		installDeps:            a.computeInstallDeps(blueprintCtx),
 		installFiles:           a.installFiles,
 		missingDeps:            blueprintCtx.GetMissingDependencies(),
+		variables:              make(map[string]string),
 	}
 
 	desc := "//" + ctx.ModuleDir() + ":" + ctx.ModuleName() + " "
@@ -752,6 +807,25 @@ func (a *ModuleBase) GenerateBuildActions(blueprintCtx blueprint.ModuleContext) 
 	}
 	ctx.Variable(pctx, "moduleDescSuffix", s)
 
+	// Some common property checks for properties that will be used later in androidmk.go
+	if a.commonProperties.Dist.Dest != nil {
+		_, err := validateSafePath(*a.commonProperties.Dist.Dest)
+		if err != nil {
+			ctx.PropertyErrorf("dist.dest", "%s", err.Error())
+		}
+	}
+	if a.commonProperties.Dist.Dir != nil {
+		_, err := validateSafePath(*a.commonProperties.Dist.Dir)
+		if err != nil {
+			ctx.PropertyErrorf("dist.dir", "%s", err.Error())
+		}
+	}
+	if a.commonProperties.Dist.Suffix != nil {
+		if strings.Contains(*a.commonProperties.Dist.Suffix, "/") {
+			ctx.PropertyErrorf("dist.suffix", "Suffix may not contain a '/' character.")
+		}
+	}
+
 	if a.Enabled() {
 		a.module.GenerateAndroidBuildActions(ctx)
 		if ctx.Failed() {
@@ -760,6 +834,11 @@ func (a *ModuleBase) GenerateBuildActions(blueprintCtx blueprint.ModuleContext) 
 
 		a.installFiles = append(a.installFiles, ctx.installFiles...)
 		a.checkbuildFiles = append(a.checkbuildFiles, ctx.checkbuildFiles...)
+
+		if a.commonProperties.Notice != nil {
+			// For filegroup-based notice file references.
+			a.noticeFile = ctx.ExpandSource(*a.commonProperties.Notice, "notice")
+		}
 	}
 
 	if a == ctx.FinalModule().(Module).base() {
@@ -770,10 +849,12 @@ func (a *ModuleBase) GenerateBuildActions(blueprintCtx blueprint.ModuleContext) 
 	}
 
 	a.buildParams = ctx.buildParams
+	a.variables = ctx.variables
 }
 
 type androidBaseContextImpl struct {
 	target        Target
+	multiTargets  []Target
 	targetPrimary bool
 	debug         bool
 	kind          moduleKind
@@ -791,6 +872,7 @@ type androidModuleContext struct {
 
 	// For tests
 	buildParams []BuildParams
+	variables   map[string]string
 }
 
 func (a *androidModuleContext) ninjaError(desc string, outputs []string, err error) {
@@ -844,10 +926,21 @@ func convertBuildParams(params BuildParams) blueprint.BuildParams {
 		bparams.Implicits = append(bparams.Implicits, params.Implicit.String())
 	}
 
+	bparams.Outputs = proptools.NinjaEscape(bparams.Outputs)
+	bparams.ImplicitOutputs = proptools.NinjaEscape(bparams.ImplicitOutputs)
+	bparams.Inputs = proptools.NinjaEscape(bparams.Inputs)
+	bparams.Implicits = proptools.NinjaEscape(bparams.Implicits)
+	bparams.OrderOnly = proptools.NinjaEscape(bparams.OrderOnly)
+	bparams.Depfile = proptools.NinjaEscape([]string{bparams.Depfile})[0]
+
 	return bparams
 }
 
 func (a *androidModuleContext) Variable(pctx PackageContext, name, value string) {
+	if a.config.captureBuild {
+		a.variables[name] = value
+	}
+
 	a.ModuleContext.Variable(pctx.PackageContext, name, value)
 }
 
@@ -1004,6 +1097,10 @@ func (a *androidBaseContextImpl) TargetPrimary() bool {
 	return a.targetPrimary
 }
 
+func (a *androidBaseContextImpl) MultiTargets() []Target {
+	return a.multiTargets
+}
+
 func (a *androidBaseContextImpl) Arch() Arch {
 	return a.target.Arch
 }
@@ -1033,10 +1130,10 @@ func (a *androidBaseContextImpl) Debug() bool {
 }
 
 func (a *androidBaseContextImpl) PrimaryArch() bool {
-	if len(a.config.Targets[a.target.Os.Class]) <= 1 {
+	if len(a.config.Targets[a.target.Os]) <= 1 {
 		return true
 	}
-	return a.target.Arch.ArchType == a.config.Targets[a.target.Os.Class][0].Arch.ArchType
+	return a.target.Arch.ArchType == a.config.Targets[a.target.Os][0].Arch.ArchType
 }
 
 func (a *androidBaseContextImpl) AConfig() Config {
@@ -1065,6 +1162,16 @@ func (a *androidBaseContextImpl) ProductSpecific() bool {
 
 func (a *androidBaseContextImpl) ProductServicesSpecific() bool {
 	return a.kind == productServicesSpecificModule
+}
+
+// Makes this module a platform module, i.e. not specific to soc, device,
+// product, or product_services.
+func (a *ModuleBase) MakeAsPlatform() {
+	a.commonProperties.Vendor = boolPtr(false)
+	a.commonProperties.Proprietary = boolPtr(false)
+	a.commonProperties.Soc_specific = boolPtr(false)
+	a.commonProperties.Product_specific = boolPtr(false)
+	a.commonProperties.Product_services_specific = boolPtr(false)
 }
 
 func (a *androidModuleContext) InstallInData() bool {
@@ -1259,6 +1366,13 @@ func (ctx *androidModuleContext) ExpandSource(srcFile, prop string) Path {
 	srcFiles := ctx.ExpandSourcesSubDir([]string{srcFile}, nil, "")
 	if len(srcFiles) == 1 {
 		return srcFiles[0]
+	} else if len(srcFiles) == 0 {
+		if ctx.Config().AllowMissingDependencies() {
+			ctx.AddMissingDependencies([]string{srcFile})
+		} else {
+			ctx.PropertyErrorf(prop, "%s path %s does not exist", prop, srcFile)
+		}
+		return nil
 	} else {
 		ctx.PropertyErrorf(prop, "module providing %s must produce exactly one file", prop)
 		return nil
@@ -1505,23 +1619,26 @@ func (c *buildTargetSingleton) GenerateBuildActions(ctx SingletonContext) {
 	}
 }
 
-type AndroidModulesByName struct {
-	slice []Module
-	ctx   interface {
-		ModuleName(blueprint.Module) string
-		ModuleSubDir(blueprint.Module) string
-	}
+// Collect information for opening IDE project files in java/jdeps.go.
+type IDEInfo interface {
+	IDEInfo(ideInfo *IdeInfo)
+	BaseModuleName() string
 }
 
-func (s AndroidModulesByName) Len() int { return len(s.slice) }
-func (s AndroidModulesByName) Less(i, j int) bool {
-	mi, mj := s.slice[i], s.slice[j]
-	ni, nj := s.ctx.ModuleName(mi), s.ctx.ModuleName(mj)
-
-	if ni != nj {
-		return ni < nj
-	} else {
-		return s.ctx.ModuleSubDir(mi) < s.ctx.ModuleSubDir(mj)
-	}
+// Extract the base module name from the Import name.
+// Often the Import name has a prefix "prebuilt_".
+// Remove the prefix explicitly if needed
+// until we find a better solution to get the Import name.
+type IDECustomizedModuleName interface {
+	IDECustomizedModuleName() string
 }
-func (s AndroidModulesByName) Swap(i, j int) { s.slice[i], s.slice[j] = s.slice[j], s.slice[i] }
+
+type IdeInfo struct {
+	Deps              []string `json:"dependencies,omitempty"`
+	Srcs              []string `json:"srcs,omitempty"`
+	Aidl_include_dirs []string `json:"aidl_include_dirs,omitempty"`
+	Jarjar_rules      []string `json:"jarjar_rules,omitempty"`
+	Jars              []string `json:"jars,omitempty"`
+	Classes           []string `json:"class,omitempty"`
+	Installed_paths   []string `json:"installed,omitempty"`
+}

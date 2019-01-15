@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"strings"
 
+	"android/soong/ui/metrics"
 	"android/soong/ui/status"
 )
 
@@ -32,12 +33,44 @@ import (
 //
 // vars is the list of variables to read. The values will be put in the
 // returned map.
+//
+// variables controlled by soong_ui directly are now returned without needing
+// to call into make, to retain compatibility.
 func DumpMakeVars(ctx Context, config Config, goals, vars []string) (map[string]string, error) {
-	return dumpMakeVars(ctx, config, goals, vars, false)
+	soongUiVars := map[string]func() string{
+		"OUT_DIR":  func() string { return config.OutDir() },
+		"DIST_DIR": func() string { return config.DistDir() },
+	}
+
+	makeVars := make([]string, 0, len(vars))
+	for _, v := range vars {
+		if _, ok := soongUiVars[v]; !ok {
+			makeVars = append(makeVars, v)
+		}
+	}
+
+	var ret map[string]string
+	if len(makeVars) > 0 {
+		var err error
+		ret, err = dumpMakeVars(ctx, config, goals, makeVars, false)
+		if err != nil {
+			return ret, err
+		}
+	} else {
+		ret = make(map[string]string)
+	}
+
+	for _, v := range vars {
+		if f, ok := soongUiVars[v]; ok {
+			ret[v] = f()
+		}
+	}
+
+	return ret, nil
 }
 
 func dumpMakeVars(ctx Context, config Config, goals, vars []string, write_soong_vars bool) (map[string]string, error) {
-	ctx.BeginTrace("dumpvars")
+	ctx.BeginTrace(metrics.RunKati, "dumpvars")
 	defer ctx.EndTrace()
 
 	cmd := Command(ctx, config, "dumpvars",
@@ -48,7 +81,6 @@ func dumpMakeVars(ctx Context, config Config, goals, vars []string, write_soong_
 		"dump-many-vars",
 		"MAKECMDGOALS="+strings.Join(goals, " "))
 	cmd.Environment.Set("CALLED_FROM_SETUP", "true")
-	cmd.Environment.Set("BUILD_SYSTEM", "build/make/core")
 	if write_soong_vars {
 		cmd.Environment.Set("WRITE_SOONG_VARIABLES", "true")
 	}
@@ -81,6 +113,9 @@ func dumpMakeVars(ctx Context, config Config, goals, vars []string, write_soong_
 		} else {
 			return nil, fmt.Errorf("Failed to parse make line: %q", line)
 		}
+	}
+	if ctx.Metrics != nil {
+		ctx.Metrics.SetMetadataMetrics(ret)
 	}
 
 	return ret, nil
@@ -165,10 +200,12 @@ func runMakeProductConfig(ctx Context, config Config) {
 		// Whether --werror_overriding_commands will work
 		"BUILD_BROKEN_DUP_RULES",
 
+		// Used to turn on --werror_ options in Kati
+		"BUILD_BROKEN_PHONY_TARGETS",
+
 		// Not used, but useful to be in the soong.log
 		"BUILD_BROKEN_ANDROIDMK_EXPORTS",
 		"BUILD_BROKEN_DUP_COPY_HEADERS",
-		"BUILD_BROKEN_PHONY_TARGETS",
 	}, exportEnvVars...), BannerVars...)
 
 	make_vars, err := dumpMakeVars(ctx, config, config.Arguments(), allVars, true)
@@ -196,4 +233,5 @@ func runMakeProductConfig(ctx Context, config Config) {
 
 	config.SetPdkBuild(make_vars["TARGET_BUILD_PDK"] == "true")
 	config.SetBuildBrokenDupRules(make_vars["BUILD_BROKEN_DUP_RULES"] == "true")
+	config.SetBuildBrokenPhonyTargets(make_vars["BUILD_BROKEN_PHONY_TARGETS"] == "true")
 }

@@ -124,6 +124,12 @@ type sdkLibraryProperties struct {
 	// This applies to the stubs lib.
 	Compile_dex *bool
 
+	// the java library (in classpath) for documentation that provides java srcs and srcjars.
+	Srcs_lib *string
+
+	// the base dirs under srcs_lib will be scanned for java srcs.
+	Srcs_lib_whitelist_dirs []string
+
 	// the sub dirs under srcs_lib_whitelist_dirs will be scanned for java srcs.
 	// Defaults to "android.annotation".
 	Srcs_lib_whitelist_pkgs []string
@@ -136,8 +142,9 @@ type sdkLibrary struct {
 	android.ModuleBase
 	android.DefaultableModuleBase
 
-	properties       sdkLibraryProperties
-	deviceProperties CompilerDeviceProperties
+	properties          sdkLibraryProperties
+	deviceProperties    CompilerDeviceProperties
+	dexpreoptProperties DexpreoptProperties
 
 	publicApiStubsPath android.Paths
 	systemApiStubsPath android.Paths
@@ -156,14 +163,14 @@ type sdkLibrary struct {
 
 func (module *sdkLibrary) DepsMutator(ctx android.BottomUpMutatorContext) {
 	// Add dependencies to the stubs library
-	ctx.AddDependency(ctx.Module(), publicApiStubsTag, module.stubsName(apiScopePublic))
-	ctx.AddDependency(ctx.Module(), systemApiStubsTag, module.stubsName(apiScopeSystem))
-	ctx.AddDependency(ctx.Module(), testApiStubsTag, module.stubsName(apiScopeTest))
-	ctx.AddDependency(ctx.Module(), implLibTag, module.implName())
+	ctx.AddVariationDependencies(nil, publicApiStubsTag, module.stubsName(apiScopePublic))
+	ctx.AddVariationDependencies(nil, systemApiStubsTag, module.stubsName(apiScopeSystem))
+	ctx.AddVariationDependencies(nil, testApiStubsTag, module.stubsName(apiScopeTest))
+	ctx.AddVariationDependencies(nil, implLibTag, module.implName())
 
-	ctx.AddDependency(ctx.Module(), publicApiFileTag, module.docsName(apiScopePublic))
-	ctx.AddDependency(ctx.Module(), systemApiFileTag, module.docsName(apiScopeSystem))
-	ctx.AddDependency(ctx.Module(), testApiFileTag, module.docsName(apiScopeTest))
+	ctx.AddVariationDependencies(nil, publicApiFileTag, module.docsName(apiScopePublic))
+	ctx.AddVariationDependencies(nil, systemApiFileTag, module.docsName(apiScopeSystem))
+	ctx.AddVariationDependencies(nil, testApiFileTag, module.docsName(apiScopeTest))
 }
 
 func (module *sdkLibrary) GenerateAndroidBuildActions(ctx android.ModuleContext) {
@@ -217,38 +224,45 @@ func (module *sdkLibrary) AndroidMk() android.AndroidMkData {
 			fmt.Fprintln(w, "LOCAL_MODULE :=", name)
 			fmt.Fprintln(w, "LOCAL_REQUIRED_MODULES := "+module.implName())
 			fmt.Fprintln(w, "include $(BUILD_PHONY_PACKAGE)")
+			owner := module.ModuleBase.Owner()
+			if owner == "" {
+				owner = "android"
+			}
 			// Create dist rules to install the stubs libs to the dist dir
 			if len(module.publicApiStubsPath) == 1 {
 				fmt.Fprintln(w, "$(call dist-for-goals,sdk win_sdk,"+
-					module.publicApiStubsPath.Strings()[0]+
-					":"+path.Join("apistubs", "public", module.BaseModuleName()+".jar")+")")
+					module.publicApiStubsImplPath.Strings()[0]+
+					":"+path.Join("apistubs", owner, "public",
+					module.BaseModuleName()+".jar")+")")
 			}
 			if len(module.systemApiStubsPath) == 1 {
 				fmt.Fprintln(w, "$(call dist-for-goals,sdk win_sdk,"+
-					module.systemApiStubsPath.Strings()[0]+
-					":"+path.Join("apistubs", "system", module.BaseModuleName()+".jar")+")")
+					module.systemApiStubsImplPath.Strings()[0]+
+					":"+path.Join("apistubs", owner, "system",
+					module.BaseModuleName()+".jar")+")")
 			}
 			if len(module.testApiStubsPath) == 1 {
 				fmt.Fprintln(w, "$(call dist-for-goals,sdk win_sdk,"+
-					module.testApiStubsPath.Strings()[0]+
-					":"+path.Join("apistubs", "test", module.BaseModuleName()+".jar")+")")
+					module.testApiStubsImplPath.Strings()[0]+
+					":"+path.Join("apistubs", owner, "test",
+					module.BaseModuleName()+".jar")+")")
 			}
 			if module.publicApiFilePath != nil {
 				fmt.Fprintln(w, "$(call dist-for-goals,sdk win_sdk,"+
 					module.publicApiFilePath.String()+
-					":"+path.Join("apistubs", "public", "api",
+					":"+path.Join("apistubs", owner, "public", "api",
 					module.BaseModuleName()+".txt")+")")
 			}
 			if module.systemApiFilePath != nil {
 				fmt.Fprintln(w, "$(call dist-for-goals,sdk win_sdk,"+
 					module.systemApiFilePath.String()+
-					":"+path.Join("apistubs", "system", "api",
+					":"+path.Join("apistubs", owner, "system", "api",
 					module.BaseModuleName()+".txt")+")")
 			}
 			if module.testApiFilePath != nil {
 				fmt.Fprintln(w, "$(call dist-for-goals,sdk win_sdk,"+
 					module.testApiFilePath.String()+
-					":"+path.Join("apistubs", "test", "api",
+					":"+path.Join("apistubs", owner, "test", "api",
 					module.BaseModuleName()+".txt")+")")
 			}
 		},
@@ -410,7 +424,6 @@ func (module *sdkLibrary) createDocs(mctx android.TopDownMutatorContext, apiScop
 	props := struct {
 		Name                    *string
 		Srcs                    []string
-		Custom_template         *string
 		Installable             *bool
 		Srcs_lib                *string
 		Srcs_lib_whitelist_dirs []string
@@ -433,7 +446,6 @@ func (module *sdkLibrary) createDocs(mctx android.TopDownMutatorContext, apiScop
 	props.Name = proptools.StringPtr(module.docsName(apiScope))
 	props.Srcs = append(props.Srcs, module.properties.Srcs...)
 	props.Srcs = append(props.Srcs, module.properties.Api_srcs...)
-	props.Custom_template = proptools.StringPtr("droiddoc-templates-sdk")
 	props.Installable = proptools.BoolPtr(false)
 	// A droiddoc module has only one Libs property and doesn't distinguish between
 	// shared libs and static libs. So we need to add both of these libs to Libs property.
@@ -442,10 +454,13 @@ func (module *sdkLibrary) createDocs(mctx android.TopDownMutatorContext, apiScop
 	props.Aidl.Include_dirs = module.deviceProperties.Aidl.Include_dirs
 	props.Aidl.Local_include_dirs = module.deviceProperties.Aidl.Local_include_dirs
 
-	droiddocArgs := " -hide 110 -hide 111 -hide 113 -hide 121 -hide 125 -hide 126 -hide 127 -hide 128" +
-		" -stubpackages " + strings.Join(module.properties.Api_packages, ":") +
-		" " + android.JoinWithPrefix(module.properties.Hidden_api_packages, "-hidePackage ") +
-		" " + android.JoinWithPrefix(module.properties.Droiddoc_options, "-") + " -nodocs"
+	droiddocArgs := " --stub-packages " + strings.Join(module.properties.Api_packages, ":") +
+		" " + android.JoinWithPrefix(module.properties.Hidden_api_packages, " --hide-package ") +
+		" " + android.JoinWithPrefix(module.properties.Droiddoc_options, " ") +
+		" --hide MissingPermission --hide BroadcastBehavior " +
+		"--hide HiddenSuperclass --hide DeprecationMismatch --hide UnavailableSymbol " +
+		"--hide SdkConstant --hide HiddenTypeParameter --hide Todo --hide Typo"
+
 	switch apiScope {
 	case apiScopeSystem:
 		droiddocArgs = droiddocArgs + " -showAnnotation android.annotation.SystemApi"
@@ -477,44 +492,17 @@ func (module *sdkLibrary) createDocs(mctx android.TopDownMutatorContext, apiScop
 	// check against the not-yet-release API
 	props.Check_api.Current.Api_file = proptools.StringPtr(currentApiFileName)
 	props.Check_api.Current.Removed_api_file = proptools.StringPtr(removedApiFileName)
-	// any change is reported as error
-	props.Check_api.Current.Args = proptools.StringPtr("-error 2 -error 3 -error 4 -error 5 " +
-		"-error 6 -error 7 -error 8 -error 9 -error 10 -error 11 -error 12 -error 13 " +
-		"-error 14 -error 15 -error 16 -error 17 -error 18 -error 19 -error 20 " +
-		"-error 21 -error 23 -error 24 -error 25 -error 26 -error 27")
 
 	// check against the latest released API
 	props.Check_api.Last_released.Api_file = proptools.StringPtr(
 		module.latestApiFilegroupName(apiScope))
 	props.Check_api.Last_released.Removed_api_file = proptools.StringPtr(
 		module.latestRemovedApiFilegroupName(apiScope))
-	// backward incompatible changes are reported as error
-	props.Check_api.Last_released.Args = proptools.StringPtr("-hide 2 -hide 3 -hide 4 -hide 5 " +
-		"-hide 6 -hide 24 -hide 25 -hide 26 -hide 27 " +
-		"-error 7 -error 8 -error 9 -error 10 -error 11 -error 12 -error 13 -error 14 " +
-		"-error 15 -error 16 -error 17 -error 18")
+	props.Srcs_lib = module.properties.Srcs_lib
+	props.Srcs_lib_whitelist_dirs = module.properties.Srcs_lib_whitelist_dirs
+	props.Srcs_lib_whitelist_pkgs = module.properties.Srcs_lib_whitelist_pkgs
 
-	// Include the part of the framework source. This is required for the case when
-	// API class is extending from the framework class. In that case, doclava needs
-	// to know whether the base class is hidden or not. Since that information is
-	// encoded as @hide string in the comment, we need source files for the classes,
-	// not the compiled ones.
-	props.Srcs_lib = proptools.StringPtr("framework")
-	props.Srcs_lib_whitelist_dirs = []string{"core/java"}
-	// Add android.annotation package to give access to the framework-defined
-	// annotations such as SystemApi, NonNull, etc.
-	if module.properties.Srcs_lib_whitelist_pkgs != nil {
-		props.Srcs_lib_whitelist_pkgs = module.properties.Srcs_lib_whitelist_pkgs
-	} else {
-		props.Srcs_lib_whitelist_pkgs = []string{"android.annotation"}
-	}
-	// These libs are required by doclava to parse the framework sources add via
-	// Src_lib and Src_lib_whitelist_* properties just above.
-	// If we don't add them to the classpath, errors messages are generated by doclava,
-	// though they don't break the build.
-	props.Libs = append(props.Libs, "conscrypt", "bouncycastle", "okhttp", "framework")
-
-	mctx.CreateModule(android.ModuleFactoryAdaptor(DroiddocFactory), &props)
+	mctx.CreateModule(android.ModuleFactoryAdaptor(DroidstubsFactory), &props)
 }
 
 // Creates the runtime library. This is not directly linkable from other modules.
@@ -532,6 +520,7 @@ func (module *sdkLibrary) createImplLibrary(mctx android.TopDownMutatorContext) 
 		Errorprone       struct {
 			Javacflags []string
 		}
+		IsSDKLibrary bool
 	}{}
 
 	props.Name = proptools.StringPtr(module.implName())
@@ -542,6 +531,7 @@ func (module *sdkLibrary) createImplLibrary(mctx android.TopDownMutatorContext) 
 	// XML file is installed along with the impl lib
 	props.Required = []string{module.xmlFileName()}
 	props.Errorprone.Javacflags = module.properties.Errorprone.Javacflags
+	props.IsSDKLibrary = true
 
 	if module.SocSpecific() {
 		props.Soc_specific = proptools.BoolPtr(true)
@@ -551,7 +541,10 @@ func (module *sdkLibrary) createImplLibrary(mctx android.TopDownMutatorContext) 
 		props.Product_specific = proptools.BoolPtr(true)
 	}
 
-	mctx.CreateModule(android.ModuleFactoryAdaptor(LibraryFactory), &props, &module.deviceProperties)
+	mctx.CreateModule(android.ModuleFactoryAdaptor(LibraryFactory),
+		&props,
+		&module.deviceProperties,
+		&module.dexpreoptProperties)
 }
 
 // Creates the xml file that publicizes the runtime library
@@ -684,7 +677,7 @@ func sdkLibraryFactory() android.Module {
 	module := &sdkLibrary{}
 	module.AddProperties(&module.properties)
 	module.AddProperties(&module.deviceProperties)
-	android.InitAndroidArchModule(module, android.DeviceSupported, android.MultilibCommon)
-	android.InitDefaultableModule(module)
+	module.AddProperties(&module.dexpreoptProperties)
+	InitJavaModule(module, android.DeviceSupported)
 	return module
 }

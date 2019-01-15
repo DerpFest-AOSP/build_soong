@@ -30,6 +30,7 @@ bootstrap_go_package {
     deps: [
         "soong-ui-build-paths",
         "soong-ui-logger",
+        "soong-ui-metrics",
         "soong-ui-status",
         "soong-ui-terminal",
         "soong-ui-tracer",
@@ -46,6 +47,7 @@ bootstrap_go_package {
         "environment.go",
         "exec.go",
         "finder.go",
+        "goma.go",
         "kati.go",
         "ninja.go",
         "path.go",

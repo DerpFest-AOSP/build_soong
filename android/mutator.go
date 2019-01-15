@@ -205,8 +205,13 @@ func (mutator *mutator) Parallel() MutatorHandle {
 }
 
 func depsMutator(ctx BottomUpMutatorContext) {
-	if m, ok := ctx.Module().(Module); ok {
+	if m, ok := ctx.Module().(Module); ok && m.Enabled() {
 		m.DepsMutator(ctx)
+
+		// For filegroup-based notice file references.
+		if m.base().commonProperties.Notice != nil {
+			ExtractSourceDeps(ctx, m.base().commonProperties.Notice)
+		}
 	}
 }
 

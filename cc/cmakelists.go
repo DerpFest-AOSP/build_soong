@@ -18,7 +18,6 @@ import (
 	"fmt"
 
 	"android/soong/android"
-	"android/soong/cc/config"
 	"os"
 	"path"
 	"path/filepath"
@@ -150,18 +149,10 @@ func generateCLionProject(compiledModule CompiledInterface, ctx android.Singleto
 	f.WriteString(fmt.Sprintf("project(%s)\n", ccModule.ModuleBase.Name()))
 	f.WriteString(fmt.Sprintf("set(ANDROID_ROOT %s)\n\n", getAndroidSrcRootDirectory(ctx)))
 
-	if ccModule.flags.Clang {
-		pathToCC, _ := evalVariable(ctx, "${config.ClangBin}/")
-		f.WriteString(fmt.Sprintf("set(CMAKE_C_COMPILER \"%s%s\")\n", buildCMakePath(pathToCC), "clang"))
-		f.WriteString(fmt.Sprintf("set(CMAKE_CXX_COMPILER \"%s%s\")\n", buildCMakePath(pathToCC), "clang++"))
-	} else {
-		toolchain := config.FindToolchain(ccModule.Os(), ccModule.Arch())
-		root, _ := evalVariable(ctx, toolchain.GccRoot())
-		triple, _ := evalVariable(ctx, toolchain.GccTriple())
-		pathToCC := filepath.Join(root, "bin", triple+"-")
-		f.WriteString(fmt.Sprintf("set(CMAKE_C_COMPILER \"%s%s\")\n", buildCMakePath(pathToCC), "gcc"))
-		f.WriteString(fmt.Sprintf("set(CMAKE_CXX_COMPILER \"%s%s\")\n", buildCMakePath(pathToCC), "g++"))
-	}
+	pathToCC, _ := evalVariable(ctx, "${config.ClangBin}/")
+	f.WriteString(fmt.Sprintf("set(CMAKE_C_COMPILER \"%s%s\")\n", buildCMakePath(pathToCC), "clang"))
+	f.WriteString(fmt.Sprintf("set(CMAKE_CXX_COMPILER \"%s%s\")\n", buildCMakePath(pathToCC), "clang++"))
+
 	// Add all sources to the project.
 	f.WriteString("list(APPEND\n")
 	f.WriteString("     SOURCE_FILES\n")
@@ -204,10 +195,11 @@ func translateToCMake(c compilerParameters, f *os.File, cflags bool, cppflags bo
 	writeAllIncludeDirectories(c.systemHeaderSearchPath, f, true)
 	writeAllIncludeDirectories(c.headerSearchPath, f, false)
 	if cflags {
+		writeAllRelativeFilePathFlags(c.relativeFilePathFlags, f, "CMAKE_C_FLAGS")
 		writeAllFlags(c.flags, f, "CMAKE_C_FLAGS")
 	}
-
 	if cppflags {
+		writeAllRelativeFilePathFlags(c.relativeFilePathFlags, f, "CMAKE_CXX_FLAGS")
 		writeAllFlags(c.flags, f, "CMAKE_CXX_FLAGS")
 	}
 	if c.sysroot != "" {
@@ -249,6 +241,17 @@ func writeAllIncludeDirectories(includes []string, f *os.File, isSystem bool) {
 	f.WriteString("list (APPEND SOURCE_FILES ${TMP_HEADERS})\n\n")
 }
 
+type relativeFilePathFlagType struct {
+	flag             string
+	relativeFilePath string
+}
+
+func writeAllRelativeFilePathFlags(relativeFilePathFlags []relativeFilePathFlagType, f *os.File, tag string) {
+	for _, flag := range relativeFilePathFlags {
+		f.WriteString(fmt.Sprintf("set(%s \"${%s} %s=%s\")\n", tag, tag, flag.flag, buildCMakePath(flag.relativeFilePath)))
+	}
+}
+
 func writeAllFlags(flags []string, f *os.File, tag string) {
 	for _, flag := range flags {
 		f.WriteString(fmt.Sprintf("set(%s \"${%s} %s\")\n", tag, tag, flag))
@@ -263,6 +266,7 @@ const (
 	systemHeaderSearchPath
 	flag
 	systemRoot
+	relativeFilePathFlag
 )
 
 type compilerParameters struct {
@@ -270,6 +274,8 @@ type compilerParameters struct {
 	systemHeaderSearchPath []string
 	flags                  []string
 	sysroot                string
+	// Must be in a=b/c/d format and can be split into "a" and "b/c/d"
+	relativeFilePathFlags []relativeFilePathFlagType
 }
 
 func makeCompilerParameters() compilerParameters {
@@ -293,6 +299,9 @@ func categorizeParameter(parameter string) parameterType {
 	}
 	if strings.HasPrefix(parameter, "--sysroot") {
 		return systemRoot
+	}
+	if strings.HasPrefix(parameter, "-fsanitize-blacklist") {
+		return relativeFilePathFlag
 	}
 	return flag
 }
@@ -347,6 +356,16 @@ func parseCompilerParameters(params []string, ctx android.SingletonContext, f *o
 				f.WriteString("# Found a system root path marker with no path")
 			}
 			i = i + 1
+		case relativeFilePathFlag:
+			flagComponents := strings.Split(param, "=")
+			if len(flagComponents) == 2 {
+				flagStruct := relativeFilePathFlagType{flag: flagComponents[0], relativeFilePath: flagComponents[1]}
+				compilerParameters.relativeFilePathFlags = append(compilerParameters.relativeFilePathFlags, flagStruct)
+			} else {
+				if outputDebugInfo {
+					f.WriteString(fmt.Sprintf("# Relative File Path Flag [%s] is not formatted as a=b/c/d \n", param))
+				}
+			}
 		}
 	}
 	return compilerParameters

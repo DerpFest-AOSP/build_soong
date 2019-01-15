@@ -62,16 +62,16 @@ func (tidy *tidyFeature) flags(ctx ModuleContext, flags Flags) Flags {
 		return flags
 	}
 
-	// Clang-tidy requires clang
-	if !flags.Clang {
-		return flags
-	}
-
 	flags.Tidy = true
 
+	// Add global WITH_TIDY_FLAGS and local tidy_flags.
+	withTidyFlags := ctx.Config().Getenv("WITH_TIDY_FLAGS")
+	if len(withTidyFlags) > 0 {
+		flags.TidyFlags = append(flags.TidyFlags, withTidyFlags)
+	}
 	esc := proptools.NinjaAndShellEscape
-
 	flags.TidyFlags = append(flags.TidyFlags, esc(tidy.Properties.Tidy_flags)...)
+	// If TidyFlags is empty, add default header filter.
 	if len(flags.TidyFlags) == 0 {
 		headerFilter := "-header-filter=\"(" + ctx.ModuleDir() + "|${config.TidyDefaultHeaderDirs})\""
 		flags.TidyFlags = append(flags.TidyFlags, headerFilter)
@@ -107,6 +107,12 @@ func (tidy *tidyFeature) flags(ctx ModuleContext, flags Flags) Flags {
 	}
 	if len(tidy.Properties.Tidy_checks) > 0 {
 		tidyChecks = tidyChecks + "," + strings.Join(esc(tidy.Properties.Tidy_checks), ",")
+	}
+	if ctx.Windows() {
+		// https://b.corp.google.com/issues/120614316
+		// mingw32 has cert-dcl16-c warning in NO_ERROR,
+		// which is used in many Android files.
+		tidyChecks = tidyChecks + ",-cert-dcl16-c"
 	}
 	flags.TidyFlags = append(flags.TidyFlags, tidyChecks)
 

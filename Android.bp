@@ -40,6 +40,7 @@ bootstrap_go_package {
     ],
     srcs: [
         "android/androidmk.go",
+        "android/apex.go",
         "android/api_levels.go",
         "android/arch.go",
         "android/config.go",
@@ -76,6 +77,7 @@ bootstrap_go_package {
         "android/neverallow_test.go",
         "android/paths_test.go",
         "android/prebuilt_test.go",
+        "android/prebuilt_etc_test.go",
         "android/util_test.go",
         "android/variable_test.go",
     ],
@@ -134,7 +136,6 @@ bootstrap_go_package {
         "cc/pgo.go",
         "cc/prebuilt.go",
         "cc/proto.go",
-        "cc/relocation_packer.go",
         "cc/rs.go",
         "cc/sanitize.go",
         "cc/sabi.go",
@@ -144,6 +145,7 @@ bootstrap_go_package {
         "cc/util.go",
         "cc/vndk.go",
         "cc/vndk_prebuilt.go",
+        "cc/xom.go",
 
         "cc/cmakelists.go",
         "cc/compdb.go",
@@ -173,6 +175,7 @@ bootstrap_go_package {
     testSrcs: [
         "cc/cc_test.go",
         "cc/gen_test.go",
+        "cc/genrule_test.go",
         "cc/library_test.go",
         "cc/test_data_test.go",
         "cc/util_test.go",
@@ -192,6 +195,9 @@ bootstrap_go_package {
     ],
     srcs: [
         "genrule/genrule.go",
+    ],
+    testSrcs: [
+        "genrule/genrule_test.go",
     ],
     pluginFor: ["soong_build"],
 }
@@ -217,6 +223,8 @@ bootstrap_go_package {
         "blueprint-pathtools",
         "soong",
         "soong-android",
+        "soong-cc",
+        "soong-dexpreopt",
         "soong-genrule",
         "soong-java-config",
         "soong-tradefed",
@@ -231,21 +239,27 @@ bootstrap_go_package {
         "java/app.go",
         "java/builder.go",
         "java/dex.go",
+        "java/dexpreopt.go",
         "java/droiddoc.go",
         "java/gen.go",
         "java/genrule.go",
         "java/jacoco.go",
         "java/java.go",
+        "java/jdeps.go",
         "java/java_resources.go",
         "java/prebuilt_apis.go",
         "java/proto.go",
+        "java/sdk.go",
         "java/sdk_library.go",
         "java/support_libraries.go",
         "java/system_modules.go",
     ],
     testSrcs: [
         "java/app_test.go",
+        "java/dexpreopt_test.go",
         "java/java_test.go",
+        "java/jdeps_test.go",
+        "java/sdk_test.go",
     ],
     pluginFor: ["soong_build"],
 }
@@ -271,6 +285,7 @@ bootstrap_go_package {
     deps: [
         "blueprint",
         "soong-android",
+        "soong-tradefed",
     ],
     srcs: [
         "python/androidmk.go",
@@ -330,6 +345,26 @@ bootstrap_go_package {
     pluginFor: ["soong_build"],
 }
 
+bootstrap_go_package {
+    name: "soong-apex",
+    pkgPath: "android/soong/apex",
+    deps: [
+        "blueprint",
+        "soong",
+        "soong-android",
+        "soong-cc",
+        "soong-java",
+    ],
+    srcs: [
+        "apex/apex.go",
+        "apex/key.go",
+    ],
+    testSrcs: [
+        "apex/apex_test.go",
+    ],
+    pluginFor: ["soong_build"],
+}
+
 //
 // Defaults to enable various configurations of host bionic
 //
@@ -356,9 +391,19 @@ toolchain_library {
     defaults: ["linux_bionic_supported"],
     vendor_available: true,
     recovery_available: true,
+
     arch: {
         arm: {
-            instruction_set: "arm",
+            src: "prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9/arm-linux-androideabi/lib/libatomic.a",
+        },
+        arm64: {
+            src: "prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/aarch64-linux-android/lib64/libatomic.a",
+        },
+        x86: {
+            src: "prebuilts/gcc/linux-x86/x86/x86_64-linux-android-4.9/x86_64-linux-android/lib/libatomic.a",
+        },
+        x86_64: {
+            src: "prebuilts/gcc/linux-x86/x86/x86_64-linux-android-4.9/x86_64-linux-android/lib64/libatomic.a",
         },
     },
 }
@@ -368,9 +413,19 @@ toolchain_library {
     defaults: ["linux_bionic_supported"],
     vendor_available: true,
     recovery_available: true,
+
     arch: {
         arm: {
-            instruction_set: "arm",
+            src: "prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9/lib/gcc/arm-linux-androideabi/4.9.x/libgcc.a",
+        },
+        arm64: {
+            src: "prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/lib/gcc/aarch64-linux-android/4.9.x/libgcc.a",
+        },
+        x86: {
+            src: "prebuilts/gcc/linux-x86/x86/x86_64-linux-android-4.9/lib/gcc/x86_64-linux-android/4.9.x/32/libgcc.a",
+        },
+        x86_64: {
+            src: "prebuilts/gcc/linux-x86/x86/x86_64-linux-android-4.9/lib/gcc/x86_64-linux-android/4.9.x/libgcc.a",
         },
     },
 }
@@ -383,15 +438,32 @@ toolchain_library {
         windows: {
             enabled: true,
         },
+        windows_x86: {
+            src: "prebuilts/gcc/linux-x86/host/x86_64-w64-mingw32-4.8/x86_64-w64-mingw32/lib32/libwinpthread.a",
+        },
+        windows_x86_64: {
+            src: "prebuilts/gcc/linux-x86/host/x86_64-w64-mingw32-4.8/x86_64-w64-mingw32/lib/libwinpthread.a",
+        },
     },
+    notice: ":mingw-libwinpthread-notice",
 }
 
 toolchain_library {
     name: "libgcov",
     defaults: ["linux_bionic_supported"],
+
     arch: {
         arm: {
-            instruction_set: "arm",
+            src: "prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9/lib/gcc/arm-linux-androideabi/4.9.x/libgcov.a",
+        },
+        arm64: {
+            src: "prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/lib/gcc/aarch64-linux-android/4.9.x/libgcov.a",
+        },
+        x86: {
+            src: "prebuilts/gcc/linux-x86/x86/x86_64-linux-android-4.9/lib/gcc/x86_64-linux-android/4.9.x/32/libgcov.a",
+        },
+        x86_64: {
+            src: "prebuilts/gcc/linux-x86/x86/x86_64-linux-android-4.9/lib/gcc/x86_64-linux-android/4.9.x/libgcov.a",
         },
     },
 }
@@ -423,7 +495,7 @@ cc_genrule {
 }
 
 cc_genrule {
-    name: "host_bionic_linker_script",
+    name: "host_bionic_linker_flags",
     host_supported: true,
     device_supported: false,
     target: {
@@ -438,7 +510,7 @@ cc_genrule {
         },
     },
     tools: ["extract_linker"],
-    cmd: "$(location) -T $(out) $(in)",
+    cmd: "$(location) -f $(out) $(in)",
     srcs: [":linker"],
-    out: ["linker.script"],
+    out: ["linker.flags"],
 }

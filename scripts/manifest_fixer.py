@@ -49,10 +49,21 @@ def parse_args():
   parser = argparse.ArgumentParser()
   parser.add_argument('--minSdkVersion', default='', dest='min_sdk_version',
                       help='specify minSdkVersion used by the build system')
+  parser.add_argument('--targetSdkVersion', default='', dest='target_sdk_version',
+                      help='specify targetSdkVersion used by the build system')
+  parser.add_argument('--raise-min-sdk-version', dest='raise_min_sdk_version', action='store_true',
+                      help='raise the minimum sdk version in the manifest if necessary')
   parser.add_argument('--library', dest='library', action='store_true',
                       help='manifest is for a static library')
   parser.add_argument('--uses-library', dest='uses_libraries', action='append',
-                      help='specify additional <uses-library> tag to add')
+                      help='specify additional <uses-library> tag to add. android:requred is set to true')
+  parser.add_argument('--optional-uses-library', dest='optional_uses_libraries', action='append',
+                      help='specify additional <uses-library> tag to add. android:requred is set to false')
+  parser.add_argument('--uses-non-sdk-api', dest='uses_non_sdk_api', action='store_true',
+                      help='manifest is for a package built against the platform')
+  parser.add_argument('--prefer-code-integrity', dest='prefer_code_integrity', action='store_true',
+                      help=('specify if the app prefers strict code integrity. Should not be conflict '
+                            'if already declared in the manifest.'))
   parser.add_argument('input', help='input AndroidManifest.xml file')
   parser.add_argument('output', help='output AndroidManifest.xml file')
   return parser.parse_args()
@@ -128,12 +139,13 @@ def get_indent(element, default_level):
   return indent
 
 
-def raise_min_sdk_version(doc, requested, library):
+def raise_min_sdk_version(doc, min_sdk_version, target_sdk_version, library):
   """Ensure the manifest contains a <uses-sdk> tag with a minSdkVersion.
 
   Args:
     doc: The XML document.  May be modified by this function.
-    requested: The requested minSdkVersion attribute.
+    min_sdk_version: The requested minSdkVersion attribute.
+    target_sdk_version: The requested targetSdkVersion attribute.
   Raises:
     RuntimeError: invalid manifest
   """
@@ -160,11 +172,11 @@ def raise_min_sdk_version(doc, requested, library):
   min_attr = element.getAttributeNodeNS(android_ns, 'minSdkVersion')
   if min_attr is None:
     min_attr = doc.createAttributeNS(android_ns, 'android:minSdkVersion')
-    min_attr.value = requested
+    min_attr.value = min_sdk_version
     element.setAttributeNode(min_attr)
   else:
-    if compare_version_gt(requested, min_attr.value):
-      min_attr.value = requested
+    if compare_version_gt(min_sdk_version, min_attr.value):
+      min_attr.value = min_sdk_version
 
   # Insert the targetSdkVersion attribute if it is missing.  If it is already
   # present leave it as is.
@@ -172,18 +184,24 @@ def raise_min_sdk_version(doc, requested, library):
   if target_attr is None:
     target_attr = doc.createAttributeNS(android_ns, 'android:targetSdkVersion')
     if library:
-      target_attr.value = '1'
+      # TODO(b/117122200): libraries shouldn't set targetSdkVersion at all, but
+      # ManifestMerger treats minSdkVersion="Q" as targetSdkVersion="Q" if it
+      # is empty.  Set it to something low so that it will be overriden by the
+      # main manifest, but high enough that it doesn't cause implicit
+      # permissions grants.
+      target_attr.value = '15'
     else:
-      target_attr.value = requested
+      target_attr.value = target_sdk_version
     element.setAttributeNode(target_attr)
 
 
-def add_uses_libraries(doc, new_uses_libraries):
-  """Add additional <uses-library> tags with android:required=true.
+def add_uses_libraries(doc, new_uses_libraries, required):
+  """Add additional <uses-library> tags
 
   Args:
     doc: The XML document. May be modified by this function.
     new_uses_libraries: The names of libraries to be added by this function.
+    required: The value of android:required attribute. Can be true or false.
   Raises:
     RuntimeError: Invalid manifest
   """
@@ -215,7 +233,7 @@ def add_uses_libraries(doc, new_uses_libraries):
 
     ul = doc.createElement('uses-library')
     ul.setAttributeNS(android_ns, 'android:name', name)
-    ul.setAttributeNS(android_ns, 'android:required', 'true')
+    ul.setAttributeNS(android_ns, 'android:required', str(required).lower())
 
     application.insertBefore(doc.createTextNode(indent), last)
     application.insertBefore(ul, last)
@@ -225,6 +243,55 @@ def add_uses_libraries(doc, new_uses_libraries):
   if application.lastChild.nodeType != minidom.Node.TEXT_NODE:
     indent = get_indent(application.previousSibling, 1)
     application.appendChild(doc.createTextNode(indent))
+
+def add_uses_non_sdk_api(doc):
+  """Add android:usesNonSdkApi=true attribute to <application>.
+
+  Args:
+    doc: The XML document. May be modified by this function.
+  Raises:
+    RuntimeError: Invalid manifest
+  """
+
+  manifest = parse_manifest(doc)
+  elems = get_children_with_tag(manifest, 'application')
+  application = elems[0] if len(elems) == 1 else None
+  if len(elems) > 1:
+    raise RuntimeError('found multiple <application> tags')
+  elif not elems:
+    application = doc.createElement('application')
+    indent = get_indent(manifest.firstChild, 1)
+    first = manifest.firstChild
+    manifest.insertBefore(doc.createTextNode(indent), first)
+    manifest.insertBefore(application, first)
+
+  attr = application.getAttributeNodeNS(android_ns, 'usesNonSdkApi')
+  if attr is None:
+    attr = doc.createAttributeNS(android_ns, 'android:usesNonSdkApi')
+    attr.value = 'true'
+    application.setAttributeNode(attr)
+
+
+def add_prefer_code_integrity(doc):
+  manifest = parse_manifest(doc)
+  elems = get_children_with_tag(manifest, 'application')
+  application = elems[0] if len(elems) == 1 else None
+  if len(elems) > 1:
+    raise RuntimeError('found multiple <application> tags')
+  elif not elems:
+    application = doc.createElement('application')
+    indent = get_indent(manifest.firstChild, 1)
+    first = manifest.firstChild
+    manifest.insertBefore(doc.createTextNode(indent), first)
+    manifest.insertBefore(application, first)
+
+  attr = application.getAttributeNodeNS(android_ns, 'preferCodeIntegrity')
+  if attr is None:
+    attr = doc.createAttributeNS(android_ns, 'android:preferCodeIntegrity')
+    attr.value = 'true'
+    application.setAttributeNode(attr)
+  elif attr.value != 'true':
+    raise RuntimeError('existing attribute mismatches the option of --prefer-code-integrity')
 
 
 def write_xml(f, doc):
@@ -242,11 +309,20 @@ def main():
 
     ensure_manifest_android_ns(doc)
 
-    if args.min_sdk_version:
-      raise_min_sdk_version(doc, args.min_sdk_version, args.library)
+    if args.raise_min_sdk_version:
+      raise_min_sdk_version(doc, args.min_sdk_version, args.target_sdk_version, args.library)
 
     if args.uses_libraries:
-      add_uses_libraries(doc, args.uses_libraries)
+      add_uses_libraries(doc, args.uses_libraries, True)
+
+    if args.optional_uses_libraries:
+      add_uses_libraries(doc, args.optional_uses_libraries, False)
+
+    if args.uses_non_sdk_api:
+      add_uses_non_sdk_api(doc)
+
+    if args.prefer_code_integrity:
+      add_prefer_code_integrity(doc)
 
     with open(args.output, 'wb') as f:
       write_xml(f, doc)

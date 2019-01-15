@@ -554,6 +554,10 @@ include $(call all-makefiles-under,$(LOCAL_PATH))
 			LOCAL_SRC_FILES := d.java
 			LOCAL_UNINSTALLABLE_MODULE := false
 			include $(BUILD_JAVA_LIBRARY)
+
+			include $(CLEAR_VARS)
+			LOCAL_SRC_FILES := $(call all-java-files-under, src gen)
+			include $(BUILD_STATIC_JAVA_LIBRARY)
 		`,
 		expected: `
 			java_library {
@@ -573,6 +577,13 @@ include $(call all-makefiles-under,$(LOCAL_PATH))
 			java_library {
 				installable: true,
 				srcs: ["d.java"],
+			}
+
+			java_library {
+				srcs: [
+					"src/**/*.java",
+					"gen/**/*.java",
+				],
 			}
 		`,
 	},
@@ -632,12 +643,14 @@ include $(call all-makefiles-under,$(LOCAL_PATH))
 			include $(CLEAR_VARS)
 			LOCAL_SRC_FILES := test.java
 			LOCAL_RESOURCE_DIR := res
+			LOCAL_JACK_COVERAGE_INCLUDE_FILTER := foo.*
 			include $(BUILD_STATIC_JAVA_LIBRARY)
 
 			include $(CLEAR_VARS)
 			LOCAL_SRC_FILES := test.java
 			LOCAL_STATIC_LIBRARIES := foo
 			LOCAL_STATIC_ANDROID_LIBRARIES := bar
+			LOCAL_JACK_COVERAGE_EXCLUDE_FILTER := bar.*
 			include $(BUILD_STATIC_JAVA_LIBRARY)
 
 			include $(CLEAR_VARS)
@@ -655,6 +668,9 @@ include $(call all-makefiles-under,$(LOCAL_PATH))
 			android_library {
 				srcs: ["test.java"],
 				resource_dirs: ["res"],
+				jacoco: {
+					include_filter: ["foo.*"],
+				},
 			}
 
 			android_library {
@@ -663,6 +679,9 @@ include $(call all-makefiles-under,$(LOCAL_PATH))
 					"foo",
 					"bar",
 				],
+				jacoco: {
+					exclude_filter: ["bar.*"],
+				},
 			}
 
 			android_library {
@@ -691,6 +710,47 @@ include $(call all-makefiles-under,$(LOCAL_PATH))
 				shared_libs: ["libfoo"],
 			}
 		`,
+	},
+	{
+		desc: "LOCAL_STRIP_MODULE",
+		in: `
+include $(CLEAR_VARS)
+LOCAL_MODULE := libtest
+LOCAL_STRIP_MODULE := false
+include $(BUILD_SHARED_LIBRARY)
+
+include $(CLEAR_VARS)
+LOCAL_MODULE := libtest2
+LOCAL_STRIP_MODULE := true
+include $(BUILD_SHARED_LIBRARY)
+
+include $(CLEAR_VARS)
+LOCAL_MODULE := libtest3
+LOCAL_STRIP_MODULE := keep_symbols
+include $(BUILD_SHARED_LIBRARY)
+`,
+		expected: `
+cc_library_shared {
+    name: "libtest",
+    strip: {
+        none: true,
+    }
+}
+
+cc_library_shared {
+    name: "libtest2",
+    strip: {
+        all: true,
+    }
+}
+
+cc_library_shared {
+    name: "libtest3",
+    strip: {
+        keep_symbols: true,
+    }
+}
+`,
 	},
 }
 

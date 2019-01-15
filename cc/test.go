@@ -16,7 +16,6 @@ package cc
 
 import (
 	"path/filepath"
-	"runtime"
 	"strings"
 
 	"android/soong/android"
@@ -26,6 +25,9 @@ import (
 type TestProperties struct {
 	// if set, build against the gtest library. Defaults to true.
 	Gtest *bool
+
+	// if set, use the isolated gtest runner. Defaults to false.
+	Isolated *bool
 }
 
 type TestBinaryProperties struct {
@@ -49,6 +51,10 @@ type TestBinaryProperties struct {
 	// the name of the test configuration (for example "AndroidTest.xml") that should be
 	// installed with the module.
 	Test_config *string `android:"arch_variant"`
+
+	// the name of the test configuration template (for example "AndroidTestTemplate.xml") that
+	// should be installed with the module.
+	Test_config_template *string `android:"arch_variant"`
 }
 
 func init() {
@@ -164,6 +170,8 @@ func (test *testDecorator) linkerDeps(ctx BaseModuleContext, deps Deps) Deps {
 	if test.gtest() {
 		if ctx.useSdk() && ctx.Device() {
 			deps.StaticLibs = append(deps.StaticLibs, "libgtest_main_ndk_c++", "libgtest_ndk_c++")
+		} else if BoolDefault(test.Properties.Isolated, false) {
+			deps.StaticLibs = append(deps.StaticLibs, "libgtest_isolated_main")
 		} else {
 			deps.StaticLibs = append(deps.StaticLibs, "libgtest_main", "libgtest")
 		}
@@ -220,6 +228,7 @@ func (test *testBinary) linkerInit(ctx BaseModuleContext) {
 func (test *testBinary) linkerDeps(ctx DepsContext, deps Deps) Deps {
 	android.ExtractSourcesDeps(ctx, test.Properties.Data)
 	android.ExtractSourceDeps(ctx, test.Properties.Test_config)
+	android.ExtractSourceDeps(ctx, test.Properties.Test_config_template)
 
 	deps = test.testDecorator.linkerDeps(ctx, deps)
 	deps = test.binaryDecorator.linkerDeps(ctx, deps)
@@ -234,7 +243,8 @@ func (test *testBinary) linkerFlags(ctx ModuleContext, flags Flags) Flags {
 
 func (test *testBinary) install(ctx ModuleContext, file android.Path) {
 	test.data = ctx.ExpandSources(test.Properties.Data, nil)
-	test.testConfig = tradefed.AutoGenNativeTestConfig(ctx, test.Properties.Test_config)
+	test.testConfig = tradefed.AutoGenNativeTestConfig(ctx, test.Properties.Test_config,
+		test.Properties.Test_config_template)
 
 	test.binaryDecorator.baseInstaller.dir = "nativetest"
 	test.binaryDecorator.baseInstaller.dir64 = "nativetest64"
@@ -317,6 +327,10 @@ type BenchmarkProperties struct {
 	// the name of the test configuration (for example "AndroidTest.xml") that should be
 	// installed with the module.
 	Test_config *string `android:"arch_variant"`
+
+	// the name of the test configuration template (for example "AndroidTestTemplate.xml") that
+	// should be installed with the module.
+	Test_config_template *string `android:"arch_variant"`
 }
 
 type benchmarkDecorator struct {
@@ -344,6 +358,7 @@ func (benchmark *benchmarkDecorator) linkerProps() []interface{} {
 func (benchmark *benchmarkDecorator) linkerDeps(ctx DepsContext, deps Deps) Deps {
 	android.ExtractSourcesDeps(ctx, benchmark.Properties.Data)
 	android.ExtractSourceDeps(ctx, benchmark.Properties.Test_config)
+	android.ExtractSourceDeps(ctx, benchmark.Properties.Test_config_template)
 
 	deps = benchmark.binaryDecorator.linkerDeps(ctx, deps)
 	deps.StaticLibs = append(deps.StaticLibs, "libgoogle-benchmark")
@@ -352,7 +367,8 @@ func (benchmark *benchmarkDecorator) linkerDeps(ctx DepsContext, deps Deps) Deps
 
 func (benchmark *benchmarkDecorator) install(ctx ModuleContext, file android.Path) {
 	benchmark.data = ctx.ExpandSources(benchmark.Properties.Data, nil)
-	benchmark.testConfig = tradefed.AutoGenNativeBenchmarkTestConfig(ctx, benchmark.Properties.Test_config)
+	benchmark.testConfig = tradefed.AutoGenNativeBenchmarkTestConfig(ctx, benchmark.Properties.Test_config,
+		benchmark.Properties.Test_config_template)
 
 	benchmark.binaryDecorator.baseInstaller.dir = filepath.Join("benchmarktest", ctx.ModuleName())
 	benchmark.binaryDecorator.baseInstaller.dir64 = filepath.Join("benchmarktest64", ctx.ModuleName())
@@ -360,16 +376,6 @@ func (benchmark *benchmarkDecorator) install(ctx ModuleContext, file android.Pat
 }
 
 func NewBenchmark(hod android.HostOrDeviceSupported) *Module {
-	// Benchmarks aren't supported on Darwin
-	if runtime.GOOS == "darwin" {
-		switch hod {
-		case android.HostAndDeviceSupported:
-			hod = android.DeviceSupported
-		case android.HostSupported:
-			hod = android.NeitherHostNorDeviceSupported
-		}
-	}
-
 	module, binary := NewBinary(hod)
 	module.multilib = android.MultilibBoth
 	binary.baseInstaller = NewBaseInstaller("benchmarktest", "benchmarktest64", InstallInData)

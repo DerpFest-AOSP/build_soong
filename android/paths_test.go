@@ -293,7 +293,7 @@ func TestPathForModuleInstall(t *testing.T) {
 			out: "target/product/test_device/product/bin/my_test",
 		},
 		{
-			name: "product-services binary",
+			name: "product_services binary",
 			ctx: &moduleInstallPathContextImpl{
 				androidBaseContextImpl: androidBaseContextImpl{
 					target: deviceTarget,
@@ -301,7 +301,7 @@ func TestPathForModuleInstall(t *testing.T) {
 				},
 			},
 			in:  []string{"bin", "my_test"},
-			out: "target/product/test_device/product-services/bin/my_test",
+			out: "target/product/test_device/product_services/bin/my_test",
 		},
 
 		{
@@ -353,7 +353,7 @@ func TestPathForModuleInstall(t *testing.T) {
 		},
 
 		{
-			name: "product-services native test binary",
+			name: "product_services native test binary",
 			ctx: &moduleInstallPathContextImpl{
 				androidBaseContextImpl: androidBaseContextImpl{
 					target: deviceTarget,
@@ -414,7 +414,7 @@ func TestPathForModuleInstall(t *testing.T) {
 		},
 
 		{
-			name: "sanitized product-services binary",
+			name: "sanitized product_services binary",
 			ctx: &moduleInstallPathContextImpl{
 				androidBaseContextImpl: androidBaseContextImpl{
 					target: deviceTarget,
@@ -423,7 +423,7 @@ func TestPathForModuleInstall(t *testing.T) {
 				inSanitizerDir: true,
 			},
 			in:  []string{"bin", "my_test"},
-			out: "target/product/test_device/data/asan/product-services/bin/my_test",
+			out: "target/product/test_device/data/asan/product_services/bin/my_test",
 		},
 
 		{
@@ -478,7 +478,7 @@ func TestPathForModuleInstall(t *testing.T) {
 			out: "target/product/test_device/data/asan/data/nativetest/my_test",
 		},
 		{
-			name: "sanitized product-services native test binary",
+			name: "sanitized product_services native test binary",
 			ctx: &moduleInstallPathContextImpl{
 				androidBaseContextImpl: androidBaseContextImpl{
 					target: deviceTarget,
@@ -571,5 +571,62 @@ func TestDirectorySortedPaths(t *testing.T) {
 	inB := sortedPaths.PathsInDirectory("b")
 	if !reflect.DeepEqual(inB.Strings(), expectedB) {
 		t.Errorf("FilesInDirectory(b):\n %#v\n != \n %#v", inA.Strings(), expectedA)
+	}
+}
+
+func TestMaybeRel(t *testing.T) {
+	testCases := []struct {
+		name   string
+		base   string
+		target string
+		out    string
+		isRel  bool
+	}{
+		{
+			name:   "normal",
+			base:   "a/b/c",
+			target: "a/b/c/d",
+			out:    "d",
+			isRel:  true,
+		},
+		{
+			name:   "parent",
+			base:   "a/b/c/d",
+			target: "a/b/c",
+			isRel:  false,
+		},
+		{
+			name:   "not relative",
+			base:   "a/b",
+			target: "c/d",
+			isRel:  false,
+		},
+		{
+			name:   "abs1",
+			base:   "/a",
+			target: "a",
+			isRel:  false,
+		},
+		{
+			name:   "abs2",
+			base:   "a",
+			target: "/a",
+			isRel:  false,
+		},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			ctx := &configErrorWrapper{}
+			out, isRel := MaybeRel(ctx, testCase.base, testCase.target)
+			if len(ctx.errors) > 0 {
+				t.Errorf("MaybeRel(..., %s, %s) reported unexpected errors %v",
+					testCase.base, testCase.target, ctx.errors)
+			}
+			if isRel != testCase.isRel || out != testCase.out {
+				t.Errorf("MaybeRel(..., %s, %s) want %v, %v got %v, %v",
+					testCase.base, testCase.target, testCase.out, testCase.isRel, out, isRel)
+			}
+		})
 	}
 }

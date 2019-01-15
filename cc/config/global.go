@@ -15,8 +15,6 @@
 package config
 
 import (
-	"fmt"
-	"runtime"
 	"strings"
 
 	"android/soong/android"
@@ -89,10 +87,6 @@ var (
 
 	deviceGlobalLldflags = append(ClangFilterUnknownLldflags(deviceGlobalLdflags),
 		[]string{
-			// TODO(b/109657296): needs --no-rosegment until Android
-			// stack unwinder can handle the read-only segment.
-			"-Wl,--no-rosegment",
-			"-Wl,--pack-dyn-relocs=android",
 			"-fuse-ld=lld",
 		}...)
 
@@ -118,17 +112,16 @@ var (
 	}
 
 	CStdVersion               = "gnu99"
-	CppStdVersion             = "gnu++14"
-	GccCppStdVersion          = "gnu++11"
+	CppStdVersion             = "gnu++17"
 	ExperimentalCStdVersion   = "gnu11"
-	ExperimentalCppStdVersion = "gnu++1z"
+	ExperimentalCppStdVersion = "gnu++2a"
 
 	NdkMaxPrebuiltVersionInt = 27
 
 	// prebuilts/clang default settings.
 	ClangDefaultBase         = "prebuilts/clang/host"
-	ClangDefaultVersion      = "clang-r328903"
-	ClangDefaultShortVersion = "7.0.2"
+	ClangDefaultVersion      = "clang-r346389c"
+	ClangDefaultShortVersion = "8.0.7"
 
 	// Directories with warnings from Android.bp files.
 	WarningAllowedProjects = []string{
@@ -147,19 +140,13 @@ func init() {
 		commonGlobalCflags = append(commonGlobalCflags, "-fdebug-prefix-map=/proc/self/cwd=")
 	}
 
-	pctx.StaticVariable("CommonGlobalCflags", strings.Join(commonGlobalCflags, " "))
 	pctx.StaticVariable("CommonGlobalConlyflags", strings.Join(commonGlobalConlyflags, " "))
-	pctx.StaticVariable("DeviceGlobalCflags", strings.Join(deviceGlobalCflags, " "))
 	pctx.StaticVariable("DeviceGlobalCppflags", strings.Join(deviceGlobalCppflags, " "))
 	pctx.StaticVariable("DeviceGlobalLdflags", strings.Join(deviceGlobalLdflags, " "))
 	pctx.StaticVariable("DeviceGlobalLldflags", strings.Join(deviceGlobalLldflags, " "))
-	pctx.StaticVariable("HostGlobalCflags", strings.Join(hostGlobalCflags, " "))
 	pctx.StaticVariable("HostGlobalCppflags", strings.Join(hostGlobalCppflags, " "))
 	pctx.StaticVariable("HostGlobalLdflags", strings.Join(hostGlobalLdflags, " "))
 	pctx.StaticVariable("HostGlobalLldflags", strings.Join(hostGlobalLldflags, " "))
-	pctx.StaticVariable("NoOverrideGlobalCflags", strings.Join(noOverrideGlobalCflags, " "))
-
-	pctx.StaticVariable("CommonGlobalCppflags", strings.Join(commonGlobalCppflags, " "))
 
 	pctx.StaticVariable("CommonClangGlobalCflags",
 		strings.Join(append(ClangFilterUnknownCflags(commonGlobalCflags), "${ClangExtraCflags}"), " "))
@@ -209,6 +196,7 @@ func init() {
 	})
 	pctx.StaticVariable("ClangPath", "${ClangBase}/${HostPrebuiltTag}/${ClangVersion}")
 	pctx.StaticVariable("ClangBin", "${ClangPath}/bin")
+	pctx.StaticVariable("ClangTidyShellPath", "build/soong/scripts/clang-tidy.sh")
 
 	pctx.VariableFunc("ClangShortVersion", func(ctx android.PackageVarContext) string {
 		if override := ctx.Config().Getenv("LLVM_RELEASE_VERSION"); override != "" {
@@ -217,11 +205,6 @@ func init() {
 		return ClangDefaultShortVersion
 	})
 	pctx.StaticVariable("ClangAsanLibDir", "${ClangBase}/linux-x86/${ClangVersion}/lib64/clang/${ClangShortVersion}/lib/linux")
-	if runtime.GOOS == "darwin" {
-		pctx.StaticVariable("LLVMGoldPlugin", "${ClangPath}/lib64/LLVMgold.dylib")
-	} else {
-		pctx.StaticVariable("LLVMGoldPlugin", "${ClangPath}/lib64/LLVMgold.so")
-	}
 
 	// These are tied to the version of LLVM directly in external/llvm, so they might trail the host prebuilts
 	// being used for the rest of the build process.
@@ -255,11 +238,4 @@ func bionicHeaders(kernelArch string) string {
 		"-isystem bionic/libc/kernel/android/scsi",
 		"-isystem bionic/libc/kernel/android/uapi",
 	}, " ")
-}
-
-func replaceFirst(slice []string, from, to string) {
-	if slice[0] != from {
-		panic(fmt.Errorf("Expected %q, found %q", from, to))
-	}
-	slice[0] = to
 }

@@ -33,9 +33,9 @@ var (
 
 		// Use C99-compliant printf functions (%zd).
 		"-D__USE_MINGW_ANSI_STDIO=1",
-		// Admit to using >= Vista. Both are needed because of <_mingw.h>.
-		"-D_WIN32_WINNT=0x0600",
-		"-DWINVER=0x0600",
+		// Admit to using >= Windows 7. Both are needed because of <_mingw.h>.
+		"-D_WIN32_WINNT=0x0601",
+		"-DWINVER=0x0601",
 		// Get 64-bit off_t and related functions.
 		"-D_FILE_OFFSET_BITS=64",
 
@@ -47,21 +47,16 @@ var (
 		"-isystem ${WindowsGccRoot}/${WindowsGccTriple}/include",
 	}
 
-	windowsClangCppflags = []string{
-		"-isystem ${WindowsGccRoot}/${WindowsGccTriple}/include/c++/4.8.3",
-		"-isystem ${WindowsGccRoot}/${WindowsGccTriple}/include/c++/4.8.3/backward",
-	}
+	windowsClangCppflags = []string{}
 
-	windowsX86ClangCppflags = []string{
-		"-isystem ${WindowsGccRoot}/${WindowsGccTriple}/include/c++/4.8.3/${WindowsGccTriple}/32",
-	}
+	windowsX86ClangCppflags = []string{}
 
-	windowsX8664ClangCppflags = []string{
-		"-isystem ${WindowsGccRoot}/${WindowsGccTriple}/include/c++/4.8.3/${WindowsGccTriple}",
-	}
+	windowsX8664ClangCppflags = []string{}
 
 	windowsLdflags = []string{
 		"--enable-stdcall-fixup",
+		"-Wl,--dynamicbase",
+		"-Wl,--nxcompat",
 	}
 	windowsClangLdflags  = append(ClangFilterUnknownCflags(windowsLdflags), []string{}...)
 	windowsClangLldflags = ClangFilterUnknownLldflags(windowsClangLdflags)
@@ -78,34 +73,25 @@ var (
 		"-m32",
 		"-Wl,--large-address-aware",
 		"-L${WindowsGccRoot}/${WindowsGccTriple}/lib32",
-		"-static-libgcc",
 	}
 	windowsX86ClangLdflags = append(ClangFilterUnknownCflags(windowsX86Ldflags), []string{
 		"-B${WindowsGccRoot}/${WindowsGccTriple}/bin",
 		"-B${WindowsGccRoot}/lib/gcc/${WindowsGccTriple}/4.8.3/32",
 		"-L${WindowsGccRoot}/lib/gcc/${WindowsGccTriple}/4.8.3/32",
 		"-B${WindowsGccRoot}/${WindowsGccTriple}/lib32",
-		"-pthread",
-		// Bug: http://b/109759970 - WAR until issue with ld.bfd's
-		// inability to handle Clang-generated section names is fixed.
-		"-Wl,--allow-multiple-definition",
 	}...)
 	windowsX86ClangLldflags = ClangFilterUnknownLldflags(windowsX86ClangLdflags)
 
 	windowsX8664Ldflags = []string{
 		"-m64",
 		"-L${WindowsGccRoot}/${WindowsGccTriple}/lib64",
-		"-static-libgcc",
+		"-Wl,--high-entropy-va",
 	}
 	windowsX8664ClangLdflags = append(ClangFilterUnknownCflags(windowsX8664Ldflags), []string{
 		"-B${WindowsGccRoot}/${WindowsGccTriple}/bin",
 		"-B${WindowsGccRoot}/lib/gcc/${WindowsGccTriple}/4.8.3",
 		"-L${WindowsGccRoot}/lib/gcc/${WindowsGccTriple}/4.8.3",
 		"-B${WindowsGccRoot}/${WindowsGccTriple}/lib64",
-		"-pthread",
-		// Bug: http://b/109759970 - WAR until issue with ld.bfd's
-		// inability to handle Clang-generated section names is fixed.
-		"-Wl,--allow-multiple-definition",
 	}...)
 	windowsX8664ClangLldflags = ClangFilterUnknownLldflags(windowsX8664ClangLdflags)
 
@@ -137,18 +123,10 @@ func init() {
 
 	pctx.StaticVariable("WindowsGccTriple", "x86_64-w64-mingw32")
 
-	pctx.StaticVariable("WindowsCflags", strings.Join(windowsCflags, " "))
-	pctx.StaticVariable("WindowsLdflags", strings.Join(windowsLdflags, " "))
-
 	pctx.StaticVariable("WindowsClangCflags", strings.Join(windowsClangCflags, " "))
 	pctx.StaticVariable("WindowsClangLdflags", strings.Join(windowsClangLdflags, " "))
 	pctx.StaticVariable("WindowsClangLldflags", strings.Join(windowsClangLldflags, " "))
 	pctx.StaticVariable("WindowsClangCppflags", strings.Join(windowsClangCppflags, " "))
-
-	pctx.StaticVariable("WindowsX86Cflags", strings.Join(windowsX86Cflags, " "))
-	pctx.StaticVariable("WindowsX8664Cflags", strings.Join(windowsX8664Cflags, " "))
-	pctx.StaticVariable("WindowsX86Ldflags", strings.Join(windowsX86Ldflags, " "))
-	pctx.StaticVariable("WindowsX8664Ldflags", strings.Join(windowsX8664Ldflags, " "))
 
 	pctx.StaticVariable("WindowsX86ClangCflags",
 		strings.Join(ClangFilterUnknownCflags(windowsX86Cflags), " "))
@@ -162,6 +140,9 @@ func init() {
 	pctx.StaticVariable("WindowsX8664ClangCppflags", strings.Join(windowsX8664ClangCppflags, " "))
 
 	pctx.StaticVariable("WindowsIncludeFlags", strings.Join(windowsIncludeFlags, " "))
+	// Yasm flags
+	pctx.StaticVariable("WindowsX86YasmFlags", "-f win32 -m x86")
+	pctx.StaticVariable("WindowsX8664YasmFlags", "-f win64 -m amd64")
 }
 
 type toolchainWindows struct {
@@ -198,26 +179,6 @@ func (t *toolchainWindows) GccVersion() string {
 	return windowsGccVersion
 }
 
-func (t *toolchainWindowsX86) Cflags() string {
-	return "${config.WindowsCflags} ${config.WindowsX86Cflags}"
-}
-
-func (t *toolchainWindowsX8664) Cflags() string {
-	return "${config.WindowsCflags} ${config.WindowsX8664Cflags}"
-}
-
-func (t *toolchainWindows) Cppflags() string {
-	return ""
-}
-
-func (t *toolchainWindowsX86) Ldflags() string {
-	return "${config.WindowsLdflags} ${config.WindowsX86Ldflags}"
-}
-
-func (t *toolchainWindowsX8664) Ldflags() string {
-	return "${config.WindowsLdflags} ${config.WindowsX8664Ldflags}"
-}
-
 func (t *toolchainWindows) IncludeFlags() string {
 	return "${config.WindowsIncludeFlags}"
 }
@@ -228,10 +189,6 @@ func (t *toolchainWindowsX86) WindresFlags() string {
 
 func (t *toolchainWindowsX8664) WindresFlags() string {
 	return "-F pe-x86-64"
-}
-
-func (t *toolchainWindows) ClangSupported() bool {
-	return true
 }
 
 func (t *toolchainWindowsX86) ClangTriple() string {
@@ -272,6 +229,14 @@ func (t *toolchainWindowsX8664) ClangLdflags() string {
 
 func (t *toolchainWindowsX8664) ClangLldflags() string {
 	return "${config.WindowsClangLldflags} ${config.WindowsX8664ClangLldflags}"
+}
+
+func (t *toolchainWindowsX86) YasmFlags() string {
+	return "${config.WindowsX86YasmFlags}"
+}
+
+func (t *toolchainWindowsX8664) YasmFlags() string {
+	return "${config.WindowsX8664YasmFlags}"
 }
 
 func (t *toolchainWindows) ShlibSuffix() string {

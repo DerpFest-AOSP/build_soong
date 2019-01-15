@@ -12,21 +12,26 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-blueprint_go_binary {
-    name: "symbol_inject",
-    srcs: [
-        "symbol_inject.go",
-        "elf.go",
-        "macho.go",
-        "pe.go",
+bootstrap_go_package {
+    name: "soong-ui-metrics",
+    pkgPath: "android/soong/ui/metrics",
+    deps: [
+        "golang-protobuf-proto",
+        "soong-ui-metrics_proto",
+        "soong-ui-tracer",
     ],
-    testSrcs: [
-        "elf_symboldata_test.go",
-        "elf_test.go",
-        "macho_symboldata_test.go",
-        "macho_test.go",
-        "pe_symboldata_test.go",
-        "pe_test.go",
-        "symbol_inject_test.go",
+    srcs: [
+        "metrics.go",
+        "time.go",
     ],
 }
+
+bootstrap_go_package {
+    name: "soong-ui-metrics_proto",
+    pkgPath: "android/soong/ui/metrics/metrics_proto",
+    deps: ["golang-protobuf-proto"],
+    srcs: [
+        "metrics_proto/metrics.pb.go",
+    ],
+}
+

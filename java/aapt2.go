@@ -111,7 +111,8 @@ func aapt2CompileDirs(ctx android.ModuleContext, flata android.WritablePath, dir
 
 var aapt2LinkRule = pctx.AndroidStaticRule("aapt2Link",
 	blueprint.RuleParams{
-		Command: `${config.Aapt2Cmd} link -o $out $flags --java $genDir --proguard $proguardOptions ` +
+		Command: `rm -rf $genDir && ` +
+			`${config.Aapt2Cmd} link -o $out $flags --java $genDir --proguard $proguardOptions ` +
 			`--output-text-symbols ${rTxt} $inFlags && ` +
 			`${config.SoongZipCmd} -write_if_changed -jar -o $genJar -C $genDir -D $genDir &&` +
 			`${config.ExtractJarPackagesCmd} -i $genJar -o $extraPackages --prefix '--extra-packages '`,
@@ -185,5 +186,20 @@ func aapt2Link(ctx android.ModuleContext,
 			"rTxt":            rTxt.String(),
 			"extraPackages":   extraPackages.String(),
 		},
+	})
+}
+
+var aapt2ConvertRule = pctx.AndroidStaticRule("aapt2Convert",
+	blueprint.RuleParams{
+		Command:     `${config.Aapt2Cmd} convert --output-format proto $in -o $out`,
+		CommandDeps: []string{"${config.Aapt2Cmd}"},
+	})
+
+func aapt2Convert(ctx android.ModuleContext, out android.WritablePath, in android.Path) {
+	ctx.Build(pctx, android.BuildParams{
+		Rule:        aapt2ConvertRule,
+		Input:       in,
+		Output:      out,
+		Description: "convert to proto",
 	})
 }

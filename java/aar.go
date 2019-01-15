@@ -47,6 +47,10 @@ type aaptProperties struct {
 	// flags passed to aapt when creating the apk
 	Aaptflags []string
 
+	// include all resource configurations, not just the product-configured
+	// ones.
+	Aapt_include_all_resources *bool
+
 	// list of directories relative to the Blueprints file containing assets.
 	// Defaults to "assets"
 	Asset_dirs []string
@@ -153,11 +157,9 @@ func (a *aapt) aapt2Flags(ctx android.ModuleContext, sdkContext sdkContext, mani
 }
 
 func (a *aapt) deps(ctx android.BottomUpMutatorContext, sdkContext sdkContext) {
-	if !ctx.Config().UnbundledBuild() {
-		sdkDep := decodeSdkDep(ctx, sdkContext)
-		if sdkDep.frameworkResModule != "" {
-			ctx.AddDependency(ctx.Module(), frameworkResTag, sdkDep.frameworkResModule)
-		}
+	sdkDep := decodeSdkDep(ctx, sdkContext)
+	if sdkDep.frameworkResModule != "" {
+		ctx.AddVariationDependencies(nil, frameworkResTag, sdkDep.frameworkResModule)
 	}
 }
 
@@ -186,15 +188,38 @@ func (a *aapt) buildActions(ctx android.ModuleContext, sdkContext sdkContext, ex
 	// This file isn't used by Soong, but is generated for exporting
 	extraPackages := android.PathForModuleOut(ctx, "extra_packages")
 
-	var compiledRes, compiledOverlay android.Paths
+	var compiledResDirs []android.Paths
 	for _, dir := range resDirs {
-		compiledRes = append(compiledRes, aapt2Compile(ctx, dir.dir, dir.files).Paths()...)
+		compiledResDirs = append(compiledResDirs, aapt2Compile(ctx, dir.dir, dir.files).Paths())
 	}
+
+	var compiledRes, compiledOverlay android.Paths
+
+	compiledOverlay = append(compiledOverlay, transitiveStaticLibs...)
+
+	if a.isLibrary {
+		// For a static library we treat all the resources equally with no overlay.
+		for _, compiledResDir := range compiledResDirs {
+			compiledRes = append(compiledRes, compiledResDir...)
+		}
+	} else if len(transitiveStaticLibs) > 0 {
+		// If we are using static android libraries, every source file becomes an overlay.
+		// This is to emulate old AAPT behavior which simulated library support.
+		for _, compiledResDir := range compiledResDirs {
+			compiledOverlay = append(compiledOverlay, compiledResDir...)
+		}
+	} else if len(compiledResDirs) > 0 {
+		// Without static libraries, the first directory is our directory, which can then be
+		// overlaid by the rest.
+		compiledRes = append(compiledRes, compiledResDirs[0]...)
+		for _, compiledResDir := range compiledResDirs[1:] {
+			compiledOverlay = append(compiledOverlay, compiledResDir...)
+		}
+	}
+
 	for _, dir := range overlayDirs {
 		compiledOverlay = append(compiledOverlay, aapt2Compile(ctx, dir.dir, dir.files).Paths()...)
 	}
-
-	compiledOverlay = append(compiledOverlay, transitiveStaticLibs...)
 
 	aapt2Link(ctx, packageRes, srcJar, proguardOptionsFile, rTxt, extraPackages,
 		linkFlags, linkDeps, compiledRes, compiledOverlay)
@@ -227,6 +252,8 @@ func aaptLibs(ctx android.ModuleContext, sdkContext sdkContext) (transitiveStati
 		}
 
 		switch ctx.OtherModuleDependencyTag(module) {
+		case instrumentationForTag:
+			// Nothing, instrumentationForTag is treated as libTag for javac but not for aapt2.
 		case libTag, frameworkResTag:
 			if exportPackage != nil {
 				sharedLibs = append(sharedLibs, exportPackage)
@@ -330,13 +357,14 @@ func AndroidLibraryFactory() android.Module {
 	module.AddProperties(
 		&module.Module.properties,
 		&module.Module.deviceProperties,
+		&module.Module.dexpreoptProperties,
 		&module.Module.protoProperties,
 		&module.aaptProperties,
 		&module.androidLibraryProperties)
 
 	module.androidLibraryProperties.BuildAAR = true
 
-	android.InitAndroidArchModule(module, android.DeviceSupported, android.MultilibCommon)
+	InitJavaModule(module, android.DeviceSupported)
 	return module
 }
 
@@ -352,10 +380,14 @@ type AARImportProperties struct {
 
 	Static_libs []string
 	Libs        []string
+
+	// if set to true, run Jetifier against .aar file. Defaults to false.
+	Jetifier_enabled *bool
 }
 
 type AARImport struct {
 	android.ModuleBase
+	android.DefaultableModuleBase
 	prebuilt android.Prebuilt
 
 	properties AARImportProperties
@@ -377,6 +409,10 @@ func (a *AARImport) minSdkVersion() string {
 	if a.properties.Min_sdk_version != nil {
 		return *a.properties.Min_sdk_version
 	}
+	return a.sdkVersion()
+}
+
+func (a *AARImport) targetSdkVersion() string {
 	return a.sdkVersion()
 }
 
@@ -407,15 +443,15 @@ func (a *AARImport) Name() string {
 }
 
 func (a *AARImport) DepsMutator(ctx android.BottomUpMutatorContext) {
-	if !ctx.Config().UnbundledBuild() {
+	if !ctx.Config().UnbundledBuildPrebuiltSdks() {
 		sdkDep := decodeSdkDep(ctx, sdkContext(a))
 		if sdkDep.useModule && sdkDep.frameworkResModule != "" {
-			ctx.AddDependency(ctx.Module(), frameworkResTag, sdkDep.frameworkResModule)
+			ctx.AddVariationDependencies(nil, frameworkResTag, sdkDep.frameworkResModule)
 		}
 	}
 
-	ctx.AddDependency(ctx.Module(), libTag, a.properties.Libs...)
-	ctx.AddDependency(ctx.Module(), staticLibTag, a.properties.Static_libs...)
+	ctx.AddVariationDependencies(nil, libTag, a.properties.Libs...)
+	ctx.AddVariationDependencies(nil, staticLibTag, a.properties.Static_libs...)
 }
 
 // Unzip an AAR into its constituent files and directories.  Any files in Outputs that don't exist in the AAR will be
@@ -433,7 +469,14 @@ func (a *AARImport) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 		return
 	}
 
-	aar := android.PathForModuleSrc(ctx, a.properties.Aars[0])
+	aarName := ctx.ModuleName() + ".aar"
+	var aar android.Path
+	aar = android.PathForModuleSrc(ctx, a.properties.Aars[0])
+	if Bool(a.properties.Jetifier_enabled) {
+		inputFile := aar
+		aar = android.PathForModuleOut(ctx, "jetifier", aarName)
+		TransformJetifier(ctx, aar.(android.WritablePath), inputFile)
+	}
 
 	extractedAARDir := android.PathForModuleOut(ctx, "aar")
 	extractedResDir := extractedAARDir.Join(ctx, "res")
@@ -522,6 +565,6 @@ func AARImportFactory() android.Module {
 	module.AddProperties(&module.properties)
 
 	android.InitPrebuiltModule(module, &module.properties.Aars)
-	android.InitAndroidArchModule(module, android.DeviceSupported, android.MultilibCommon)
+	InitJavaModule(module, android.DeviceSupported)
 	return module
 }

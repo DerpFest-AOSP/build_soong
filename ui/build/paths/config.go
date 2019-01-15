@@ -25,6 +25,10 @@ type PathConfig struct {
 
 	// Whether to exit with an error instead of invoking the underlying tool.
 	Error bool
+
+	// Whether we use a toybox prebuilt for this tool. Since we don't have
+	// toybox for Darwin, we'll use the host version instead.
+	Toybox bool
 }
 
 var Allowed = PathConfig{
@@ -39,13 +43,27 @@ var Forbidden = PathConfig{
 	Error:   true,
 }
 
-// The configuration used if the tool is not listed in the config below.
-// Currently this will create the symlink, but log a warning. In the future,
-// I expect this to move closer to Forbidden.
-var Missing = PathConfig{
+var Log = PathConfig{
 	Symlink: true,
 	Log:     true,
 	Error:   false,
+}
+
+// The configuration used if the tool is not listed in the config below.
+// Currently this will create the symlink, but log and error when it's used. In
+// the future, I expect the symlink to be removed, and this will be equivalent
+// to Forbidden.
+var Missing = PathConfig{
+	Symlink: true,
+	Log:     true,
+	Error:   true,
+}
+
+var Toybox = PathConfig{
+	Symlink: false,
+	Log:     true,
+	Error:   true,
+	Toybox:  true,
 }
 
 func GetConfig(name string) PathConfig {
@@ -57,89 +75,52 @@ func GetConfig(name string) PathConfig {
 
 var Configuration = map[string]PathConfig{
 	"awk":       Allowed,
-	"basename":  Allowed,
 	"bash":      Allowed,
 	"bc":        Allowed,
 	"bzip2":     Allowed,
-	"cat":       Allowed,
-	"chmod":     Allowed,
-	"cmp":       Allowed,
-	"comm":      Allowed,
 	"cp":        Allowed,
-	"cut":       Allowed,
 	"date":      Allowed,
 	"dd":        Allowed,
 	"diff":      Allowed,
-	"dirname":   Allowed,
-	"du":        Allowed,
-	"echo":      Allowed,
 	"egrep":     Allowed,
-	"env":       Allowed,
-	"expr":      Allowed,
 	"find":      Allowed,
-	"getconf":   Allowed,
+	"fuser":     Allowed,
 	"getopt":    Allowed,
 	"git":       Allowed,
 	"grep":      Allowed,
 	"gzip":      Allowed,
-	"head":      Allowed,
 	"hexdump":   Allowed,
 	"hostname":  Allowed,
-	"id":        Allowed,
 	"jar":       Allowed,
 	"java":      Allowed,
 	"javap":     Allowed,
-	"ln":        Allowed,
-	"ls":        Allowed,
 	"lsof":      Allowed,
 	"m4":        Allowed,
-	"make":      Allowed,
 	"md5sum":    Allowed,
-	"mkdir":     Allowed,
-	"mktemp":    Allowed,
 	"mv":        Allowed,
 	"openssl":   Allowed,
-	"paste":     Allowed,
 	"patch":     Allowed,
-	"perl":      Allowed,
 	"pgrep":     Allowed,
 	"pkill":     Allowed,
 	"ps":        Allowed,
 	"pstree":    Allowed,
-	"pwd":       Allowed,
 	"python":    Allowed,
 	"python2.7": Allowed,
 	"python3":   Allowed,
-	"readlink":  Allowed,
 	"realpath":  Allowed,
 	"rm":        Allowed,
-	"rmdir":     Allowed,
 	"rsync":     Allowed,
-	"runalarm":  Allowed,
 	"sed":       Allowed,
-	"setsid":    Allowed,
 	"sh":        Allowed,
 	"sha1sum":   Allowed,
 	"sha256sum": Allowed,
 	"sha512sum": Allowed,
-	"sleep":     Allowed,
-	"sort":      Allowed,
-	"stat":      Allowed,
-	"sum":       Allowed,
 	"tar":       Allowed,
-	"tail":      Allowed,
-	"touch":     Allowed,
+	"timeout":   Allowed,
 	"tr":        Allowed,
-	"true":      Allowed,
-	"uname":     Allowed,
-	"uniq":      Allowed,
 	"unzip":     Allowed,
 	"wc":        Allowed,
 	"which":     Allowed,
-	"whoami":    Allowed,
-	"xargs":     Allowed,
-	"xmllint":   Allowed,
-	"xxd":       Allowed,
 	"xz":        Allowed,
 	"zip":       Allowed,
 	"zipinfo":   Allowed,
@@ -158,10 +139,44 @@ var Configuration = map[string]PathConfig{
 	"ld.gold":    Forbidden,
 	"pkg-config": Forbidden,
 
-	// We've got prebuilts of these
-	//"dtc":  Forbidden,
-	//"lz4":  Forbidden,
-	//"lz4c": Forbidden,
+	// On linux we'll use the toybox version of these instead
+	"basename": Toybox,
+	"cat":      Toybox,
+	"chmod":    Toybox,
+	"cmp":      Toybox,
+	"comm":     Toybox,
+	"cut":      Toybox,
+	"dirname":  Toybox,
+	"du":       Toybox,
+	"echo":     Toybox,
+	"env":      Toybox,
+	"expr":     Toybox,
+	"head":     Toybox,
+	"getconf":  Toybox,
+	"id":       Toybox,
+	"ln":       Toybox,
+	"ls":       Toybox,
+	"mkdir":    Toybox,
+	"mktemp":   Toybox,
+	"od":       Toybox,
+	"paste":    Toybox,
+	"pwd":      Toybox,
+	"readlink": Toybox,
+	"rmdir":    Toybox,
+	"setsid":   Toybox,
+	"sleep":    Toybox,
+	"sort":     Toybox,
+	"stat":     Toybox,
+	"tail":     Toybox,
+	"tee":      Toybox,
+	"touch":    Toybox,
+	"true":     Toybox,
+	"uname":    Toybox,
+	"uniq":     Toybox,
+	"unix2dos": Toybox,
+	"whoami":   Toybox,
+	"xargs":    Toybox,
+	"xxd":      Toybox,
 }
 
 func init() {
@@ -169,5 +184,13 @@ func init() {
 		Configuration["md5"] = Allowed
 		Configuration["sw_vers"] = Allowed
 		Configuration["xcrun"] = Allowed
+
+		// We don't have toybox prebuilts for darwin, so allow the
+		// host versions.
+		for name, config := range Configuration {
+			if config.Toybox {
+				Configuration[name] = Allowed
+			}
+		}
 	}
 }

@@ -42,6 +42,7 @@ type variableAssignmentContext struct {
 
 var rewriteProperties = map[string](func(variableAssignmentContext) error){
 	// custom functions
+	"LOCAL_32_BIT_ONLY":           local32BitOnly,
 	"LOCAL_AIDL_INCLUDES":         localAidlIncludes,
 	"LOCAL_C_INCLUDES":            localIncludeDirs,
 	"LOCAL_EXPORT_C_INCLUDE_DIRS": exportIncludeDirs,
@@ -51,6 +52,7 @@ var rewriteProperties = map[string](func(variableAssignmentContext) error){
 	"LOCAL_MODULE_HOST_OS":        hostOs,
 	"LOCAL_SANITIZE":              sanitize(""),
 	"LOCAL_SANITIZE_DIAG":         sanitize("diag."),
+	"LOCAL_STRIP_MODULE":          strip(),
 	"LOCAL_CFLAGS":                cflags,
 	"LOCAL_UNINSTALLABLE_MODULE":  invert("installable"),
 	"LOCAL_PROGUARD_ENABLED":      proguardEnabled,
@@ -81,7 +83,6 @@ func init() {
 		map[string]string{
 			"LOCAL_MODULE":                  "name",
 			"LOCAL_CXX_STL":                 "stl",
-			"LOCAL_STRIP_MODULE":            "strip",
 			"LOCAL_MULTILIB":                "compile_multilib",
 			"LOCAL_ARM_MODE_HACK":           "instruction_set",
 			"LOCAL_SDK_VERSION":             "sdk_version",
@@ -140,9 +141,11 @@ func init() {
 			"LOCAL_DX_FLAGS":              "dxflags",
 			"LOCAL_JAVA_LIBRARIES":        "libs",
 			"LOCAL_STATIC_JAVA_LIBRARIES": "static_libs",
+			"LOCAL_JNI_SHARED_LIBRARIES":  "jni_libs",
 			"LOCAL_AAPT_FLAGS":            "aaptflags",
 			"LOCAL_PACKAGE_SPLITS":        "package_splits",
 			"LOCAL_COMPATIBILITY_SUITE":   "test_suites",
+			"LOCAL_OVERRIDES_PACKAGES":    "overrides",
 
 			"LOCAL_ANNOTATION_PROCESSORS":        "annotation_processors",
 			"LOCAL_ANNOTATION_PROCESSOR_CLASSES": "annotation_processor_classes",
@@ -154,29 +157,35 @@ func init() {
 			// java_library_static to android_library.
 			"LOCAL_SHARED_ANDROID_LIBRARIES": "android_libs",
 			"LOCAL_STATIC_ANDROID_LIBRARIES": "android_static_libs",
+			"LOCAL_ADDITIONAL_CERTIFICATES":  "additional_certificates",
+
+			// Jacoco filters:
+			"LOCAL_JACK_COVERAGE_INCLUDE_FILTER": "jacoco.include_filter",
+			"LOCAL_JACK_COVERAGE_EXCLUDE_FILTER": "jacoco.exclude_filter",
 		})
 
 	addStandardProperties(bpparser.BoolType,
 		map[string]string{
 			// Bool properties
-			"LOCAL_IS_HOST_MODULE":           "host",
-			"LOCAL_CLANG":                    "clang",
-			"LOCAL_FORCE_STATIC_EXECUTABLE":  "static_executable",
-			"LOCAL_NATIVE_COVERAGE":          "native_coverage",
-			"LOCAL_NO_CRT":                   "nocrt",
-			"LOCAL_ALLOW_UNDEFINED_SYMBOLS":  "allow_undefined_symbols",
-			"LOCAL_RTTI_FLAG":                "rtti",
-			"LOCAL_NO_STANDARD_LIBRARIES":    "no_standard_libs",
-			"LOCAL_PACK_MODULE_RELOCATIONS":  "pack_relocations",
-			"LOCAL_TIDY":                     "tidy",
-			"LOCAL_USE_CLANG_LLD":            "use_clang_lld",
-			"LOCAL_PROPRIETARY_MODULE":       "proprietary",
-			"LOCAL_VENDOR_MODULE":            "vendor",
-			"LOCAL_ODM_MODULE":               "device_specific",
-			"LOCAL_PRODUCT_MODULE":           "product_specific",
-			"LOCAL_PRODUCT_SERVICES_MODULE":  "product_services_specific",
-			"LOCAL_EXPORT_PACKAGE_RESOURCES": "export_package_resources",
-			"LOCAL_PRIVILEGED_MODULE":        "privileged",
+			"LOCAL_IS_HOST_MODULE":             "host",
+			"LOCAL_CLANG":                      "clang",
+			"LOCAL_FORCE_STATIC_EXECUTABLE":    "static_executable",
+			"LOCAL_NATIVE_COVERAGE":            "native_coverage",
+			"LOCAL_NO_CRT":                     "nocrt",
+			"LOCAL_ALLOW_UNDEFINED_SYMBOLS":    "allow_undefined_symbols",
+			"LOCAL_RTTI_FLAG":                  "rtti",
+			"LOCAL_NO_STANDARD_LIBRARIES":      "no_standard_libs",
+			"LOCAL_PACK_MODULE_RELOCATIONS":    "pack_relocations",
+			"LOCAL_TIDY":                       "tidy",
+			"LOCAL_USE_CLANG_LLD":              "use_clang_lld",
+			"LOCAL_PROPRIETARY_MODULE":         "proprietary",
+			"LOCAL_VENDOR_MODULE":              "vendor",
+			"LOCAL_ODM_MODULE":                 "device_specific",
+			"LOCAL_PRODUCT_MODULE":             "product_specific",
+			"LOCAL_PRODUCT_SERVICES_MODULE":    "product_services_specific",
+			"LOCAL_EXPORT_PACKAGE_RESOURCES":   "export_package_resources",
+			"LOCAL_PRIVILEGED_MODULE":          "privileged",
+			"LOCAL_AAPT_INCLUDE_ALL_RESOURCES": "aapt_include_all_resources",
 
 			"LOCAL_DEX_PREOPT":                  "dex_preopt.enabled",
 			"LOCAL_DEX_PREOPT_APP_IMAGE":        "dex_preopt.app_image",
@@ -356,6 +365,20 @@ func exportIncludeDirs(ctx variableAssignmentContext) error {
 	return splitAndAssign(ctx, classifyLocalOrGlobalPath, map[string]string{"global": "export_include_dirs", "local": "export_include_dirs"})
 }
 
+func local32BitOnly(ctx variableAssignmentContext) error {
+	val, err := makeVariableToBlueprint(ctx.file, ctx.mkvalue, bpparser.BoolType)
+	if err != nil {
+		return err
+	}
+	if val.(*bpparser.Bool).Value {
+		thirtyTwo := &bpparser.String{
+			Value: "32",
+		}
+		setVariable(ctx.file, false, ctx.prefix, "compile_multilib", thirtyTwo, true)
+	}
+	return nil
+}
+
 func localAidlIncludes(ctx variableAssignmentContext) error {
 	return splitAndAssign(ctx, classifyLocalOrGlobalPath, map[string]string{"global": "aidl.include_dirs", "local": "aidl.local_include_dirs"})
 }
@@ -458,6 +481,29 @@ func sanitize(sub string) func(ctx variableAssignmentContext) error {
 		}
 
 		return err
+	}
+}
+
+func strip() func(ctx variableAssignmentContext) error {
+	return func(ctx variableAssignmentContext) error {
+		val, err := makeVariableToBlueprint(ctx.file, ctx.mkvalue, bpparser.StringType)
+		if err != nil {
+			return err
+		}
+
+		if _, ok := val.(*bpparser.String); !ok {
+			return fmt.Errorf("unsupported strip expression")
+		}
+
+		bpTrue := &bpparser.Bool{
+			Value: true,
+		}
+		v := val.(*bpparser.String).Value
+		sub := (map[string]string{"false": "none", "true": "all", "keep_symbols": "keep_symbols"})[v]
+		if sub == "" {
+			return fmt.Errorf("unexpected strip option: %s", v)
+		}
+		return setVariable(ctx.file, false, ctx.prefix, "strip."+sub, bpTrue, true)
 	}
 }
 
@@ -712,27 +758,31 @@ var conditionalTranslations = map[string]map[bool]string{
 		true: "product_variables.pdk"},
 }
 
-func mydir(args []string) string {
-	return "."
+func mydir(args []string) []string {
+	return []string{"."}
 }
 
-func allFilesUnder(wildcard string) func(args []string) string {
-	return func(args []string) string {
-		dir := ""
+func allFilesUnder(wildcard string) func(args []string) []string {
+	return func(args []string) []string {
+		dirs := []string{""}
 		if len(args) > 0 {
-			dir = strings.TrimSpace(args[0])
+			dirs = strings.Fields(args[0])
 		}
 
-		return fmt.Sprintf("%s/**/"+wildcard, dir)
+		paths := make([]string, len(dirs))
+		for i := range paths {
+			paths[i] = fmt.Sprintf("%s/**/"+wildcard, dirs[i])
+		}
+		return paths
 	}
 }
 
-func allSubdirJavaFiles(args []string) string {
-	return "**/*.java"
+func allSubdirJavaFiles(args []string) []string {
+	return []string{"**/*.java"}
 }
 
-func includeIgnored(args []string) string {
-	return include_ignored
+func includeIgnored(args []string) []string {
+	return []string{include_ignored}
 }
 
 var moduleTypes = map[string]string{
