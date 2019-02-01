@@ -71,6 +71,7 @@ func testContext(config android.Config, bp string,
 
 	ctx := android.NewTestArchContext()
 	ctx.RegisterModuleType("android_app", android.ModuleFactoryAdaptor(AndroidAppFactory))
+	ctx.RegisterModuleType("android_app_certificate", android.ModuleFactoryAdaptor(AndroidAppCertificateFactory))
 	ctx.RegisterModuleType("android_library", android.ModuleFactoryAdaptor(AndroidLibraryFactory))
 	ctx.RegisterModuleType("android_test", android.ModuleFactoryAdaptor(AndroidTestFactory))
 	ctx.RegisterModuleType("android_test_helper_app", android.ModuleFactoryAdaptor(AndroidTestHelperAppFactory))
@@ -83,6 +84,7 @@ func testContext(config android.Config, bp string,
 	ctx.RegisterModuleType("java_defaults", android.ModuleFactoryAdaptor(defaultsFactory))
 	ctx.RegisterModuleType("java_system_modules", android.ModuleFactoryAdaptor(SystemModulesFactory))
 	ctx.RegisterModuleType("java_genrule", android.ModuleFactoryAdaptor(genRuleFactory))
+	ctx.RegisterModuleType("java_plugin", android.ModuleFactoryAdaptor(PluginFactory))
 	ctx.RegisterModuleType("filegroup", android.ModuleFactoryAdaptor(android.FileGroupFactory))
 	ctx.RegisterModuleType("genrule", android.ModuleFactoryAdaptor(genrule.GenRuleFactory))
 	ctx.RegisterModuleType("droiddoc", android.ModuleFactoryAdaptor(DroiddocFactory))
@@ -121,6 +123,7 @@ func testContext(config android.Config, bp string,
 		"core.current.stubs",
 		"core.platform.api.stubs",
 		"kotlin-stdlib",
+		"kotlin-annotations",
 	}
 
 	for _, extra := range extraModules {
@@ -224,6 +227,9 @@ func testContext(config android.Config, bp string,
 		"bar-doc/IFoo.aidl":              nil,
 		"bar-doc/known_oj_tags.txt":      nil,
 		"external/doclava/templates-sdk": nil,
+
+		"cert/new_cert.x509.pem": nil,
+		"cert/new_cert.pk8":      nil,
 	}
 
 	for k, v := range fs {
@@ -571,68 +577,6 @@ func TestGeneratedSources(t *testing.T) {
 	}
 }
 
-func TestKotlin(t *testing.T) {
-	ctx := testJava(t, `
-		java_library {
-			name: "foo",
-			srcs: ["a.java", "b.kt"],
-		}
-
-		java_library {
-			name: "bar",
-			srcs: ["b.kt"],
-			libs: ["foo"],
-			static_libs: ["baz"],
-		}
-
-		java_library {
-			name: "baz",
-			srcs: ["c.java"],
-		}
-		`)
-
-	fooKotlinc := ctx.ModuleForTests("foo", "android_common").Rule("kotlinc")
-	fooJavac := ctx.ModuleForTests("foo", "android_common").Rule("javac")
-	fooJar := ctx.ModuleForTests("foo", "android_common").Output("combined/foo.jar")
-
-	if len(fooKotlinc.Inputs) != 2 || fooKotlinc.Inputs[0].String() != "a.java" ||
-		fooKotlinc.Inputs[1].String() != "b.kt" {
-		t.Errorf(`foo kotlinc inputs %v != ["a.java", "b.kt"]`, fooKotlinc.Inputs)
-	}
-
-	if len(fooJavac.Inputs) != 1 || fooJavac.Inputs[0].String() != "a.java" {
-		t.Errorf(`foo inputs %v != ["a.java"]`, fooJavac.Inputs)
-	}
-
-	if !strings.Contains(fooJavac.Args["classpath"], fooKotlinc.Output.String()) {
-		t.Errorf("foo classpath %v does not contain %q",
-			fooJavac.Args["classpath"], fooKotlinc.Output.String())
-	}
-
-	if !inList(fooKotlinc.Output.String(), fooJar.Inputs.Strings()) {
-		t.Errorf("foo jar inputs %v does not contain %q",
-			fooJar.Inputs.Strings(), fooKotlinc.Output.String())
-	}
-
-	fooHeaderJar := ctx.ModuleForTests("foo", "android_common").Output("turbine-combined/foo.jar")
-	bazHeaderJar := ctx.ModuleForTests("baz", "android_common").Output("turbine-combined/baz.jar")
-	barKotlinc := ctx.ModuleForTests("bar", "android_common").Rule("kotlinc")
-
-	if len(barKotlinc.Inputs) != 1 || barKotlinc.Inputs[0].String() != "b.kt" {
-		t.Errorf(`bar kotlinc inputs %v != ["b.kt"]`, barKotlinc.Inputs)
-	}
-
-	if !inList(fooHeaderJar.Output.String(), barKotlinc.Implicits.Strings()) {
-		t.Errorf(`expected %q in bar implicits %v`,
-			fooHeaderJar.Output.String(), barKotlinc.Implicits.Strings())
-	}
-
-	if !inList(bazHeaderJar.Output.String(), barKotlinc.Implicits.Strings()) {
-		t.Errorf(`expected %q in bar implicits %v`,
-			bazHeaderJar.Output.String(), barKotlinc.Implicits.Strings())
-	}
-}
-
 func TestTurbine(t *testing.T) {
 	ctx := testJava(t, `
 		java_library {
@@ -861,8 +805,7 @@ func TestJavaSdkLibrary(t *testing.T) {
 	ctx.ModuleForTests("foo"+sdkDocsSuffix, "android_common")
 	ctx.ModuleForTests("foo"+sdkDocsSuffix+sdkSystemApiSuffix, "android_common")
 	ctx.ModuleForTests("foo"+sdkDocsSuffix+sdkTestApiSuffix, "android_common")
-	ctx.ModuleForTests("foo"+sdkImplLibrarySuffix, "android_common")
-	ctx.ModuleForTests("foo"+sdkXmlFileSuffix, "android_common")
+	ctx.ModuleForTests("foo"+sdkXmlFileSuffix, "android_arm64_armv8-a")
 	ctx.ModuleForTests("foo.api.public.28", "")
 	ctx.ModuleForTests("foo.api.system.28", "")
 	ctx.ModuleForTests("foo.api.test.28", "")
@@ -874,9 +817,9 @@ func TestJavaSdkLibrary(t *testing.T) {
 			"foo.stubs.system.jar")
 	}
 	// ... and not to the impl lib
-	if strings.Contains(bazJavac.Args["classpath"], "foo.impl.jar") {
+	if strings.Contains(bazJavac.Args["classpath"], "foo.jar") {
 		t.Errorf("baz javac classpath %v should not contain %q", bazJavac.Args["classpath"],
-			"foo.impl.jar")
+			"foo.jar")
 	}
 	// test if baz is not linked to the system variant of foo
 	if strings.Contains(bazJavac.Args["classpath"], "foo.stubs.jar") {

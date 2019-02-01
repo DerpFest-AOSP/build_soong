@@ -125,7 +125,8 @@ func (p *PrebuiltEtc) GenerateAndroidBuildActions(ctx ModuleContext) {
 	p.outputFilePath = PathForModuleOut(ctx, filename).OutputPath
 	p.installDirPath = PathForModuleInstall(ctx, "etc", String(p.properties.Sub_dir))
 
-	// This ensures that outputFilePath has the same name as this module.
+	// This ensures that outputFilePath has the correct name for others to
+	// use, as the source file may have a different name.
 	ctx.Build(pctx, BuildParams{
 		Rule:   Cp,
 		Output: p.outputFilePath,
@@ -170,7 +171,7 @@ func PrebuiltEtcFactory() Module {
 	module := &PrebuiltEtc{}
 	InitPrebuiltEtcModule(module)
 	// This module is device-only
-	InitAndroidArchModule(module, DeviceSupported, MultilibCommon)
+	InitAndroidArchModule(module, DeviceSupported, MultilibFirst)
 	return module
 }
 

@@ -150,6 +150,9 @@ type BaseLinkerProperties struct {
 
 	// local file name to pass to the linker as --version_script
 	Version_script *string `android:"arch_variant"`
+
+	// Local file name to pass to the linker as --symbol-ordering-file
+	Symbol_ordering_file *string `android:"arch_variant"`
 }
 
 func NewBaseLinker(sanitize *sanitize) *baseLinker {
@@ -237,11 +240,11 @@ func (linker *baseLinker) linkerDeps(ctx DepsContext, deps Deps) Deps {
 			deps.LateStaticLibs = append(deps.LateStaticLibs, "libgcc")
 		}
 
-		var systemSharedLibs []string
-		if !ctx.useSdk() && !ctx.useVndk() {
-			systemSharedLibs = linker.Properties.System_shared_libs
-		}
+		systemSharedLibs := linker.Properties.System_shared_libs
 		if systemSharedLibs == nil {
+			// Provide a default system_shared_libs if it is unspecified. Note: If an
+			// empty list [] is specified, it implies that the module declines the
+			// default system_shared_libs.
 			systemSharedLibs = []string{"libc", "libm", "libdl"}
 		}
 
@@ -267,6 +270,18 @@ func (linker *baseLinker) linkerDeps(ctx DepsContext, deps Deps) Deps {
 		deps.LateSharedLibs = append(deps.LateSharedLibs, systemSharedLibs...)
 	}
 
+	if ctx.Fuchsia() {
+		if ctx.ModuleName() != "libbioniccompat" &&
+			ctx.ModuleName() != "libcompiler_rt-extras" &&
+			ctx.ModuleName() != "libcompiler_rt" {
+			deps.StaticLibs = append(deps.StaticLibs, "libbioniccompat")
+		}
+		if ctx.ModuleName() != "libcompiler_rt" && ctx.ModuleName() != "libcompiler_rt-extras" {
+			deps.LateStaticLibs = append(deps.LateStaticLibs, "libcompiler_rt")
+		}
+
+	}
+
 	if ctx.Windows() {
 		deps.LateStaticLibs = append(deps.LateStaticLibs, "libwinpthread")
 	}
@@ -278,6 +293,8 @@ func (linker *baseLinker) linkerDeps(ctx DepsContext, deps Deps) Deps {
 		android.ExtractSourceDeps(ctx,
 			linker.Properties.Target.Vendor.Version_script)
 	}
+
+	android.ExtractSourceDeps(ctx, linker.Properties.Symbol_ordering_file)
 
 	return deps
 }
@@ -355,7 +372,7 @@ func (linker *baseLinker) linkerFlags(ctx ModuleContext, flags Flags) Flags {
 		flags.LdFlags = append(flags.LdFlags, toolchain.ClangLdflags())
 	}
 
-	if !ctx.toolchain().Bionic() {
+	if !ctx.toolchain().Bionic() && !ctx.Fuchsia() {
 		CheckBadHostLdlibs(ctx, "host_ldlibs", linker.Properties.Host_ldlibs)
 
 		flags.LdFlags = append(flags.LdFlags, linker.Properties.Host_ldlibs...)
@@ -372,6 +389,10 @@ func (linker *baseLinker) linkerFlags(ctx ModuleContext, flags Flags) Flags {
 				flags.LdFlags = append(flags.LdFlags, "-lrt")
 			}
 		}
+	}
+
+	if ctx.Fuchsia() {
+		flags.LdFlags = append(flags.LdFlags, "-lfdio", "-lzircon")
 	}
 
 	CheckBadLinkerFlags(ctx, "ldflags", linker.Properties.Ldflags)
@@ -432,6 +453,16 @@ func (linker *baseLinker) linkerFlags(ctx ModuleContext, flags Flags) Flags {
 					flags.LdFlagsDeps = append(flags.LdFlagsDeps, cfiExportsMap)
 				}
 			}
+		}
+	}
+
+	if !linker.dynamicProperties.BuildStubs {
+		symbolOrderingFile := ctx.ExpandOptionalSource(
+			linker.Properties.Symbol_ordering_file, "Symbol_ordering_file")
+		if symbolOrderingFile.Valid() {
+			flags.LdFlags = append(flags.LdFlags,
+				"-Wl,--symbol-ordering-file,"+symbolOrderingFile.String())
+			flags.LdFlagsDeps = append(flags.LdFlagsDeps, symbolOrderingFile.Path())
 		}
 	}
 

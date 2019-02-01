@@ -22,6 +22,27 @@ import (
 	"android/soong/android"
 )
 
+func (library *Library) AndroidMkHostDex(w io.Writer, name string, data android.AndroidMkData) {
+	if Bool(library.deviceProperties.Hostdex) && !library.Host() {
+		fmt.Fprintln(w, "include $(CLEAR_VARS)")
+		fmt.Fprintln(w, "LOCAL_MODULE := "+name+"-hostdex")
+		fmt.Fprintln(w, "LOCAL_IS_HOST_MODULE := true")
+		fmt.Fprintln(w, "LOCAL_MODULE_CLASS := JAVA_LIBRARIES")
+		if library.dexJarFile != nil {
+			fmt.Fprintln(w, "LOCAL_PREBUILT_MODULE_FILE :=", library.dexJarFile.String())
+		} else {
+			fmt.Fprintln(w, "LOCAL_PREBUILT_MODULE_FILE :=", library.implementationAndResourcesJar.String())
+		}
+		if library.dexJarFile != nil {
+			fmt.Fprintln(w, "LOCAL_SOONG_DEX_JAR :=", library.dexJarFile.String())
+		}
+		fmt.Fprintln(w, "LOCAL_SOONG_HEADER_JAR :=", library.headerJarFile.String())
+		fmt.Fprintln(w, "LOCAL_SOONG_CLASSES_JAR :=", library.implementationAndResourcesJar.String())
+		fmt.Fprintln(w, "LOCAL_REQUIRED_MODULES := "+strings.Join(data.Required, " "))
+		fmt.Fprintln(w, "include $(BUILD_SYSTEM)/soong_java_prebuilt.mk")
+	}
+}
+
 func (library *Library) AndroidMk() android.AndroidMkData {
 	return android.AndroidMkData{
 		Class:      "JAVA_LIBRARIES",
@@ -69,23 +90,7 @@ func (library *Library) AndroidMk() android.AndroidMkData {
 		},
 		Custom: func(w io.Writer, name, prefix, moduleDir string, data android.AndroidMkData) {
 			android.WriteAndroidMkData(w, data)
-
-			if Bool(library.deviceProperties.Hostdex) && !library.Host() {
-				fmt.Fprintln(w, "include $(CLEAR_VARS)")
-				fmt.Fprintln(w, "LOCAL_MODULE := "+name+"-hostdex")
-				fmt.Fprintln(w, "LOCAL_IS_HOST_MODULE := true")
-				fmt.Fprintln(w, "LOCAL_MODULE_CLASS := JAVA_LIBRARIES")
-				if library.installFile == nil {
-					fmt.Fprintln(w, "LOCAL_UNINSTALLABLE_MODULE := true")
-				}
-				if library.dexJarFile != nil {
-					fmt.Fprintln(w, "LOCAL_SOONG_DEX_JAR :=", library.dexJarFile.String())
-				}
-				fmt.Fprintln(w, "LOCAL_SOONG_HEADER_JAR :=", library.headerJarFile.String())
-				fmt.Fprintln(w, "LOCAL_SOONG_CLASSES_JAR :=", library.implementationAndResourcesJar.String())
-				fmt.Fprintln(w, "LOCAL_REQUIRED_MODULES := "+strings.Join(data.Required, " "))
-				fmt.Fprintln(w, "include $(BUILD_SYSTEM)/soong_java_prebuilt.mk")
-			}
+			library.AndroidMkHostDex(w, name, data)
 		},
 	}
 }
@@ -376,6 +381,15 @@ func (ddoc *Droiddoc) AndroidMk() android.AndroidMkData {
 					fmt.Fprintln(w, ".PHONY:", ddoc.Name()+"-check-last-released-api")
 					fmt.Fprintln(w, ddoc.Name()+"-check-last-released-api:",
 						ddoc.checkLastReleasedApiTimestamp.String())
+
+					if ddoc.Name() == "api-stubs-docs" || ddoc.Name() == "system-api-stubs-docs" {
+						fmt.Fprintln(w, ".PHONY: checkapi")
+						fmt.Fprintln(w, "checkapi:",
+							ddoc.checkLastReleasedApiTimestamp.String())
+
+						fmt.Fprintln(w, ".PHONY: droidcore")
+						fmt.Fprintln(w, "droidcore: checkapi")
+					}
 				}
 				apiFilePrefix := "INTERNAL_PLATFORM_"
 				if String(ddoc.properties.Api_tag_name) != "" {
@@ -454,6 +468,15 @@ func (dstubs *Droidstubs) AndroidMk() android.AndroidMkData {
 					fmt.Fprintln(w, ".PHONY:", dstubs.Name()+"-check-last-released-api")
 					fmt.Fprintln(w, dstubs.Name()+"-check-last-released-api:",
 						dstubs.checkLastReleasedApiTimestamp.String())
+
+					if dstubs.Name() == "api-stubs-docs" || dstubs.Name() == "system-api-stubs-docs" {
+						fmt.Fprintln(w, ".PHONY: checkapi")
+						fmt.Fprintln(w, "checkapi:",
+							dstubs.checkLastReleasedApiTimestamp.String())
+
+						fmt.Fprintln(w, ".PHONY: droidcore")
+						fmt.Fprintln(w, "droidcore: checkapi")
+					}
 				}
 				if dstubs.checkNullabilityWarningsTimestamp != nil {
 					fmt.Fprintln(w, ".PHONY:", dstubs.Name()+"-check-nullability-warnings")
