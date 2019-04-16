@@ -200,12 +200,14 @@ func saveToConfigFile(config jsonConfigurable, filename string) error {
 func TestConfig(buildDir string, env map[string]string) Config {
 	config := &config{
 		productVariables: productVariables{
-			DeviceName:           stringPtr("test_device"),
-			Platform_sdk_version: intPtr(26),
-			AAPTConfig:           []string{"normal", "large", "xlarge", "hdpi", "xhdpi", "xxhdpi"},
-			AAPTPreferredConfig:  stringPtr("xhdpi"),
-			AAPTCharacteristics:  stringPtr("nosdcard"),
-			AAPTPrebuiltDPI:      []string{"xhdpi", "xxhdpi"},
+			DeviceName:                  stringPtr("test_device"),
+			Platform_sdk_version:        intPtr(26),
+			DeviceSystemSdkVersions:     []string{"14", "15"},
+			Platform_systemsdk_versions: []string{"25", "26"},
+			AAPTConfig:                  []string{"normal", "large", "xlarge", "hdpi", "xhdpi", "xxhdpi"},
+			AAPTPreferredConfig:         stringPtr("xhdpi"),
+			AAPTCharacteristics:         stringPtr("nosdcard"),
+			AAPTPrebuiltDPI:             []string{"xhdpi", "xxhdpi"},
 		},
 
 		buildDir:     buildDir,
@@ -403,6 +405,10 @@ func (c *config) GoRoot() string {
 	return fmt.Sprintf("%s/prebuilts/go/%s", c.srcDir, c.PrebuiltOS())
 }
 
+func (c *config) PrebuiltBuildTool(ctx PathContext, tool string) Path {
+	return PathForSource(ctx, "prebuilts/build-tools", c.PrebuiltOS(), "bin", tool)
+}
+
 func (c *config) CpPreserveSymlinksFlags() string {
 	switch runtime.GOOS {
 	case "darwin":
@@ -475,8 +481,12 @@ func (c *config) DeviceName() string {
 	return *c.productVariables.DeviceName
 }
 
-func (c *config) ResourceOverlays() []string {
-	return c.productVariables.ResourceOverlays
+func (c *config) DeviceResourceOverlays() []string {
+	return c.productVariables.DeviceResourceOverlays
+}
+
+func (c *config) ProductResourceOverlays() []string {
+	return c.productVariables.ProductResourceOverlays
 }
 
 func (c *config) PlatformVersionName() string {
@@ -493,6 +503,22 @@ func (c *config) PlatformSdkVersion() string {
 
 func (c *config) PlatformSdkCodename() string {
 	return String(c.productVariables.Platform_sdk_codename)
+}
+
+func (c *config) PlatformSecurityPatch() string {
+	return String(c.productVariables.Platform_security_patch)
+}
+
+func (c *config) PlatformPreviewSdkVersion() string {
+	return String(c.productVariables.Platform_preview_sdk_version)
+}
+
+func (c *config) PlatformMinSupportedTargetSdkVersion() string {
+	return String(c.productVariables.Platform_min_supported_target_sdk_version)
+}
+
+func (c *config) PlatformBaseOS() string {
+	return String(c.productVariables.Platform_base_os)
 }
 
 func (c *config) MinSupportedSdkVersion() int {
@@ -561,7 +587,7 @@ func (c *config) DefaultAppCertificateDir(ctx PathContext) SourcePath {
 	if defaultCert != "" {
 		return PathForSource(ctx, filepath.Dir(defaultCert))
 	} else {
-		return PathForSource(ctx, "build/target/product/security")
+		return PathForSource(ctx, "build/make/target/product/security")
 	}
 }
 
@@ -578,10 +604,10 @@ func (c *config) DefaultAppCertificate(ctx PathContext) (pem, key SourcePath) {
 func (c *config) ApexKeyDir(ctx ModuleContext) SourcePath {
 	// TODO(b/121224311): define another variable such as TARGET_APEX_KEY_OVERRIDE
 	defaultCert := String(c.productVariables.DefaultAppCertificate)
-	if defaultCert == "" || filepath.Dir(defaultCert) == "build/target/product/security" {
+	if defaultCert == "" || filepath.Dir(defaultCert) == "build/make/target/product/security" {
 		// When defaultCert is unset or is set to the testkeys path, use the APEX keys
 		// that is under the module dir
-		return PathForModuleSrc(ctx).SourcePath
+		return pathForModuleSrc(ctx)
 	} else {
 		// If not, APEX keys are under the specified directory
 		return PathForSource(ctx, filepath.Dir(defaultCert))
@@ -775,20 +801,8 @@ func (c *config) BootJars() []string {
 	return c.productVariables.BootJars
 }
 
-func (c *config) PreoptBootJars() []string {
-	return c.productVariables.PreoptBootJars
-}
-
-func (c *config) DisableDexPreopt(name string) bool {
-	return Bool(c.productVariables.DisableDexPreopt) || InList(name, c.productVariables.DisableDexPreoptModules)
-}
-
 func (c *config) DexpreoptGlobalConfig() string {
 	return String(c.productVariables.DexpreoptGlobalConfig)
-}
-
-func (c *config) DexPreoptProfileDir() string {
-	return String(c.productVariables.DexPreoptProfileDir)
 }
 
 func (c *config) FrameworksBaseDirExists(ctx PathContext) bool {
@@ -828,6 +842,10 @@ func (c *deviceConfig) PlatformVndkVersion() string {
 
 func (c *deviceConfig) ExtraVndkVersions() []string {
 	return c.config.productVariables.ExtraVndkVersions
+}
+
+func (c *deviceConfig) VndkUseCoreVariant() bool {
+	return Bool(c.config.productVariables.VndkUseCoreVariant)
 }
 
 func (c *deviceConfig) SystemSdkVersions() []string {
@@ -874,7 +892,7 @@ func (c *deviceConfig) NativeCoverageEnabled() bool {
 func (c *deviceConfig) CoverageEnabledForPath(path string) bool {
 	coverage := false
 	if c.config.productVariables.CoveragePaths != nil {
-		if PrefixInList(path, c.config.productVariables.CoveragePaths) {
+		if InList("*", c.config.productVariables.CoveragePaths) || PrefixInList(path, c.config.productVariables.CoveragePaths) {
 			coverage = true
 		}
 	}
@@ -944,6 +962,8 @@ func findOverrideValue(overrides []string, name string, errorMsg string) (newVal
 	return "", false
 }
 
+// SecondArchIsTranslated returns true if the primary device arch is X86 or X86_64 and the device also has an arch
+// that is Arm or Arm64.
 func (c *config) SecondArchIsTranslated() bool {
 	deviceTargets := c.Targets[Android]
 	if len(deviceTargets) < 2 {
@@ -952,8 +972,7 @@ func (c *config) SecondArchIsTranslated() bool {
 
 	arch := deviceTargets[0].Arch
 
-	return (arch.ArchType == X86 || arch.ArchType == X86_64) &&
-		(hasArmAbi(arch) || hasArmAndroidArch(deviceTargets))
+	return (arch.ArchType == X86 || arch.ArchType == X86_64) && hasArmAndroidArch(deviceTargets)
 }
 
 func (c *config) IntegerOverflowDisabledForPath(path string) bool {
@@ -1032,4 +1051,8 @@ func (c *config) ProductHiddenAPIStubsSystem() []string {
 
 func (c *config) ProductHiddenAPIStubsTest() []string {
 	return c.productVariables.ProductHiddenAPIStubsTest
+}
+
+func (c *deviceConfig) TargetFSConfigGen() *string {
+	return c.config.productVariables.TargetFSConfigGen
 }

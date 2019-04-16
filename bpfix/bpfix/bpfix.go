@@ -98,6 +98,10 @@ var fixSteps = []fixStep{
 		name: "removeTags",
 		fix:  runPatchListMod(removeTags),
 	},
+	{
+		name: "rewriteAndroidTest",
+		fix:  rewriteAndroidTest,
+	},
 }
 
 func NewFixRequest() FixRequest {
@@ -561,6 +565,30 @@ func rewriteAndroidmkPrebuiltEtc(f *Fixer) error {
 	return nil
 }
 
+func rewriteAndroidTest(f *Fixer) error {
+	for _, def := range f.tree.Defs {
+		mod, ok := def.(*parser.Module)
+		if !(ok && mod.Type == "android_test") {
+			continue
+		}
+		// The rewriter converts LOCAL_MODULE_PATH attribute into a struct attribute
+		// 'local_module_path'. For the android_test module, it should be  $(TARGET_OUT_DATA_APPS),
+		// that is, `local_module_path: { var: "TARGET_OUT_DATA_APPS"}`
+		const local_module_path = "local_module_path"
+		if prop_local_module_path, ok := mod.GetProperty(local_module_path); ok {
+			removeProperty(mod, local_module_path)
+			prefixVariableName := getStringProperty(prop_local_module_path, "var")
+			path := getStringProperty(prop_local_module_path, "fixed")
+			if prefixVariableName == "TARGET_OUT_DATA_APPS" && path == "" {
+				continue
+			}
+			return indicateAttributeError(mod, "filename",
+				"Only LOCAL_MODULE_PATH := $(TARGET_OUT_DATA_APPS) is allowed for the android_test")
+		}
+	}
+	return nil
+}
+
 func runPatchListMod(modFunc func(mod *parser.Module, buf []byte, patchlist *parser.PatchList) error) func(*Fixer) error {
 	return func(f *Fixer) error {
 		// Make sure all the offsets are accurate
@@ -758,6 +786,14 @@ func mergeMatchingProperties(properties *[]*parser.Property, buf []byte, patchli
 }
 
 func mergeProperties(a, b *parser.Property, buf []byte, patchlist *parser.PatchList) error {
+	// The value of one of the properties may be a variable reference with no type assigned
+	// Bail out in this case. Soong will notice duplicate entries and will tell to merge them.
+	if _, isVar := a.Value.(*parser.Variable); isVar {
+		return nil
+	}
+	if _, isVar := b.Value.(*parser.Variable); isVar {
+		return nil
+	}
 	if a.Value.Type() != b.Value.Type() {
 		return fmt.Errorf("type mismatch when merging properties %q: %s and %s", a.Name, a.Value.Type(), b.Value.Type())
 	}

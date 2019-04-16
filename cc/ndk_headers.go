@@ -70,13 +70,13 @@ type headerProperties struct {
 	To *string
 
 	// List of headers to install. Glob compatible. Common case is "include/**/*.h".
-	Srcs []string
+	Srcs []string `android:"path"`
 
 	// Source paths that should be excluded from the srcs glob.
-	Exclude_srcs []string
+	Exclude_srcs []string `android:"path"`
 
 	// Path to the NOTICE file associated with the headers.
-	License *string
+	License *string `android:"path"`
 
 	// True if this API is not yet ready to be shipped in the NDK. It will be
 	// available in the platform for testing, but will be excluded from the
@@ -90,7 +90,7 @@ type headerModule struct {
 	properties headerProperties
 
 	installPaths android.Paths
-	licensePath  android.ModuleSrcPath
+	licensePath  android.Path
 }
 
 func getHeaderInstallDir(ctx android.ModuleContext, header android.Path, from string,
@@ -140,7 +140,7 @@ func (m *headerModule) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 		return
 	}
 
-	srcFiles := ctx.ExpandSources(m.properties.Srcs, m.properties.Exclude_srcs)
+	srcFiles := android.PathsForModuleSrcExcludes(ctx, m.properties.Srcs, m.properties.Exclude_srcs)
 	for _, header := range srcFiles {
 		installDir := getHeaderInstallDir(ctx, header, String(m.properties.From),
 			String(m.properties.To))
@@ -159,6 +159,16 @@ func (m *headerModule) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 	}
 }
 
+// ndk_headers installs the sets of ndk headers defined in the srcs property
+// to the sysroot base + "usr/include" + to directory + directory component.
+// ndk_headers requires the license file to be specified. Example:
+//
+//    Given:
+//    sysroot base = "ndk/sysroot"
+//    from = "include/foo"
+//    to = "bar"
+//    header = "include/foo/woodly/doodly.h"
+//    output path = "ndk/sysroot/usr/include/bar/woodly/doodly.h"
 func ndkHeadersFactory() android.Module {
 	module := &headerModule{}
 	module.AddProperties(&module.properties)
@@ -204,7 +214,7 @@ type versionedHeaderModule struct {
 	properties versionedHeaderProperties
 
 	installPaths android.Paths
-	licensePath  android.ModuleSrcPath
+	licensePath  android.Path
 }
 
 func (m *versionedHeaderModule) GenerateAndroidBuildActions(ctx android.ModuleContext) {
@@ -232,7 +242,8 @@ func (m *versionedHeaderModule) GenerateAndroidBuildActions(ctx android.ModuleCo
 	processHeadersWithVersioner(ctx, fromSrcPath, toOutputPath, srcFiles, installPaths)
 }
 
-func processHeadersWithVersioner(ctx android.ModuleContext, srcDir, outDir android.Path, srcFiles android.Paths, installPaths []android.WritablePath) android.Path {
+func processHeadersWithVersioner(ctx android.ModuleContext, srcDir, outDir android.Path,
+	srcFiles android.Paths, installPaths []android.WritablePath) android.Path {
 	// The versioner depends on a dependencies directory to simplify determining include paths
 	// when parsing headers. This directory contains architecture specific directories as well
 	// as a common directory, each of which contains symlinks to the actually directories to
@@ -277,6 +288,11 @@ func processHeadersWithVersioner(ctx android.ModuleContext, srcDir, outDir andro
 	return timestampFile
 }
 
+// versioned_ndk_headers preprocesses the headers with the bionic versioner:
+// https://android.googlesource.com/platform/bionic/+/master/tools/versioner/README.md.
+// Unlike the ndk_headers soong module, versioned_ndk_headers operates on a
+// directory level specified in `from` property. This is only used to process
+// the bionic/libc/include directory.
 func versionedNdkHeadersFactory() android.Module {
 	module := &versionedHeaderModule{}
 
@@ -326,7 +342,7 @@ type preprocessedHeadersModule struct {
 	properties preprocessedHeadersProperties
 
 	installPaths android.Paths
-	licensePath  android.ModuleSrcPath
+	licensePath  android.Path
 }
 
 func (m *preprocessedHeadersModule) GenerateAndroidBuildActions(ctx android.ModuleContext) {
@@ -337,7 +353,7 @@ func (m *preprocessedHeadersModule) GenerateAndroidBuildActions(ctx android.Modu
 	preprocessor := android.PathForModuleSrc(ctx, String(m.properties.Preprocessor))
 	m.licensePath = android.PathForModuleSrc(ctx, String(m.properties.License))
 
-	srcFiles := ctx.ExpandSources(m.properties.Srcs, m.properties.Exclude_srcs)
+	srcFiles := android.PathsForModuleSrcExcludes(ctx, m.properties.Srcs, m.properties.Exclude_srcs)
 	installDir := getCurrentIncludePath(ctx).Join(ctx, String(m.properties.To))
 	for _, src := range srcFiles {
 		installPath := installDir.Join(ctx, src.Base())
@@ -359,6 +375,8 @@ func (m *preprocessedHeadersModule) GenerateAndroidBuildActions(ctx android.Modu
 	}
 }
 
+// preprocessed_ndk_headers preprocesses all the ndk headers listed in the srcs
+// property by executing the command defined in the preprocessor property.
 func preprocessedNdkHeadersFactory() android.Module {
 	module := &preprocessedHeadersModule{}
 

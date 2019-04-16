@@ -67,7 +67,6 @@ func flagsToBuilderFlags(in Flags) builderFlags {
 		toolingCppFlags: strings.Join(in.ToolingCppFlags, " "),
 		conlyFlags:      strings.Join(in.ConlyFlags, " "),
 		cppFlags:        strings.Join(in.CppFlags, " "),
-		yaccFlags:       strings.Join(in.YaccFlags, " "),
 		aidlFlags:       strings.Join(in.aidlFlags, " "),
 		rsFlags:         strings.Join(in.rsFlags, " "),
 		ldFlags:         strings.Join(in.LdFlags, " "),
@@ -84,13 +83,11 @@ func flagsToBuilderFlags(in Flags) builderFlags {
 
 		groupStaticLibs: in.GroupStaticLibs,
 
-		protoDeps:        in.protoDeps,
-		protoFlags:       strings.Join(in.protoFlags, " "),
-		protoOutTypeFlag: in.protoOutTypeFlag,
-		protoOutParams:   strings.Join(in.protoOutParams, ","),
+		proto:            in.proto,
 		protoC:           in.protoC,
 		protoOptionsFile: in.protoOptionsFile,
-		protoRoot:        in.ProtoRoot,
+
+		yacc: in.Yacc,
 	}
 }
 
@@ -132,4 +129,11 @@ func splitFileExt(name string) (string, string, string) {
 	suffix = ext + suffix
 
 	return root, suffix, ext
+}
+
+// linkDirOnDevice/linkName -> target
+func makeSymlinkCmd(linkDirOnDevice string, linkName string, target string) string {
+	dir := filepath.Join("$(PRODUCT_OUT)", linkDirOnDevice)
+	return "mkdir -p " + dir + " && " +
+		"ln -sf " + target + " " + filepath.Join(dir, linkName)
 }

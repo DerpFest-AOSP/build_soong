@@ -88,6 +88,7 @@ type BaseContext interface {
 type BaseModuleContext interface {
 	ModuleName() string
 	ModuleDir() string
+	ModuleType() string
 	Config() Config
 
 	ContainsProperty(name string) bool
@@ -116,13 +117,13 @@ type ModuleContext interface {
 	ExpandSources(srcFiles, excludes []string) Paths
 	ExpandSource(srcFile, prop string) Path
 	ExpandOptionalSource(srcFile *string, prop string) OptionalPath
-	ExpandSourcesSubDir(srcFiles, excludes []string, subDir string) Paths
 	Glob(globPattern string, excludes []string) Paths
 	GlobFiles(globPattern string, excludes []string) Paths
 
 	InstallExecutable(installPath OutputPath, name string, srcPath Path, deps ...Path) OutputPath
 	InstallFile(installPath OutputPath, name string, srcPath Path, deps ...Path) OutputPath
 	InstallSymlink(installPath OutputPath, name string, srcPath OutputPath) OutputPath
+	InstallAbsoluteSymlink(installPath OutputPath, name string, absPath string) OutputPath
 	CheckbuildFile(srcPath Path)
 
 	AddMissingDependencies(deps []string)
@@ -132,6 +133,8 @@ type ModuleContext interface {
 	InstallInRecovery() bool
 
 	RequiredModuleNames() []string
+	HostRequiredModuleNames() []string
+	TargetRequiredModuleNames() []string
 
 	// android.ModuleContext methods
 	// These are duplicated instead of embedded so that can eventually be wrapped to take an
@@ -154,6 +157,7 @@ type ModuleContext interface {
 	// Deprecated: use WalkDeps instead to support multiple dependency tags on the same module
 	VisitDepsDepthFirstIf(pred func(Module) bool, visit func(Module))
 	WalkDeps(visit func(Module, Module) bool)
+	WalkDepsBlueprint(visit func(blueprint.Module, blueprint.Module) bool)
 
 	Variable(pctx PackageContext, name, value string)
 	Rule(pctx PackageContext, name string, params blueprint.RuleParams, argNames ...string) blueprint.Rule
@@ -187,11 +191,13 @@ type Module interface {
 	InstallInRecovery() bool
 	SkipInstall()
 	ExportedToMake() bool
+	NoticeFile() OptionalPath
 
 	AddProperties(props ...interface{})
 	GetProperties() []interface{}
 
 	BuildParamsForTests() []BuildParams
+	RuleParamsForTests() map[blueprint.Rule]blueprint.RuleParams
 	VariablesForTests() map[string]string
 }
 
@@ -257,16 +263,22 @@ type commonProperties struct {
 	Recovery *bool
 
 	// init.rc files to be installed if this module is installed
-	Init_rc []string
+	Init_rc []string `android:"path"`
 
 	// VINTF manifest fragments to be installed if this module is installed
-	Vintf_fragments []string
+	Vintf_fragments []string `android:"path"`
 
 	// names of other modules to install if this module is installed
 	Required []string `android:"arch_variant"`
 
+	// names of other modules to install on host if this module is installed
+	Host_required []string `android:"arch_variant"`
+
+	// names of other modules to install on target if this module is installed
+	Target_required []string `android:"arch_variant"`
+
 	// relative path to a file to include in the list of notices for the device
-	Notice *string
+	Notice *string `android:"path"`
 
 	Dist struct {
 		// copy the output of this module to the $DIST_DIR when `dist` is specified on the
@@ -379,6 +391,7 @@ func InitAndroidModule(m Module) {
 		&base.nameProperties,
 		&base.commonProperties,
 		&base.variableProperties)
+	base.generalProperties = m.GetProperties()
 	base.customizableProperties = m.GetProperties()
 }
 
@@ -462,7 +475,7 @@ type ModuleBase struct {
 	noAddressSanitizer bool
 	installFiles       Paths
 	checkbuildFiles    Paths
-	noticeFile         Path
+	noticeFile         OptionalPath
 
 	// Used by buildTargetSingleton to create checkbuild and per-directory build targets
 	// Only set on the final variant of each module
@@ -476,6 +489,7 @@ type ModuleBase struct {
 
 	// For tests
 	buildParams []BuildParams
+	ruleParams  map[blueprint.Rule]blueprint.RuleParams
 	variables   map[string]string
 
 	prefer32 func(ctx BaseModuleContext, base *ModuleBase, class OsClass) bool
@@ -493,6 +507,10 @@ func (a *ModuleBase) GetProperties() []interface{} {
 
 func (a *ModuleBase) BuildParamsForTests() []BuildParams {
 	return a.buildParams
+}
+
+func (a *ModuleBase) RuleParamsForTests() map[blueprint.Rule]blueprint.RuleParams {
+	return a.ruleParams
 }
 
 func (a *ModuleBase) VariablesForTests() map[string]string {
@@ -658,6 +676,10 @@ func (a *ModuleBase) Owner() string {
 	return String(a.commonProperties.Owner)
 }
 
+func (a *ModuleBase) NoticeFile() OptionalPath {
+	return a.noticeFile
+}
+
 func (a *ModuleBase) generateModuleTarget(ctx ModuleContext) {
 	allInstalledFiles := Paths{}
 	allCheckbuildFiles := Paths{}
@@ -794,6 +816,10 @@ func (a *ModuleBase) GenerateBuildActions(blueprintCtx blueprint.ModuleContext) 
 		variables:              make(map[string]string),
 	}
 
+	if ctx.config.captureBuild {
+		ctx.ruleParams = make(map[blueprint.Rule]blueprint.RuleParams)
+	}
+
 	desc := "//" + ctx.ModuleDir() + ":" + ctx.ModuleName() + " "
 	var suffix []string
 	if ctx.Os().Class != Device && ctx.Os().Class != Generic {
@@ -839,9 +865,12 @@ func (a *ModuleBase) GenerateBuildActions(blueprintCtx blueprint.ModuleContext) 
 		a.installFiles = append(a.installFiles, ctx.installFiles...)
 		a.checkbuildFiles = append(a.checkbuildFiles, ctx.checkbuildFiles...)
 
-		if a.commonProperties.Notice != nil {
-			// For filegroup-based notice file references.
-			a.noticeFile = ctx.ExpandSource(*a.commonProperties.Notice, "notice")
+		notice := proptools.StringDefault(a.commonProperties.Notice, "NOTICE")
+		if m := SrcIsModule(notice); m != "" {
+			a.noticeFile = ctx.ExpandOptionalSource(&notice, "notice")
+		} else {
+			noticePath := filepath.Join(ctx.ModuleDir(), notice)
+			a.noticeFile = ExistentPathForSource(ctx, noticePath)
 		}
 	}
 
@@ -853,6 +882,7 @@ func (a *ModuleBase) GenerateBuildActions(blueprintCtx blueprint.ModuleContext) 
 	}
 
 	a.buildParams = ctx.buildParams
+	a.ruleParams = ctx.ruleParams
 	a.variables = ctx.variables
 }
 
@@ -876,6 +906,7 @@ type androidModuleContext struct {
 
 	// For tests
 	buildParams []BuildParams
+	ruleParams  map[blueprint.Rule]blueprint.RuleParams
 	variables   map[string]string
 }
 
@@ -930,12 +961,12 @@ func convertBuildParams(params BuildParams) blueprint.BuildParams {
 		bparams.Implicits = append(bparams.Implicits, params.Implicit.String())
 	}
 
-	bparams.Outputs = proptools.NinjaEscape(bparams.Outputs)
-	bparams.ImplicitOutputs = proptools.NinjaEscape(bparams.ImplicitOutputs)
-	bparams.Inputs = proptools.NinjaEscape(bparams.Inputs)
-	bparams.Implicits = proptools.NinjaEscape(bparams.Implicits)
-	bparams.OrderOnly = proptools.NinjaEscape(bparams.OrderOnly)
-	bparams.Depfile = proptools.NinjaEscape([]string{bparams.Depfile})[0]
+	bparams.Outputs = proptools.NinjaEscapeList(bparams.Outputs)
+	bparams.ImplicitOutputs = proptools.NinjaEscapeList(bparams.ImplicitOutputs)
+	bparams.Inputs = proptools.NinjaEscapeList(bparams.Inputs)
+	bparams.Implicits = proptools.NinjaEscapeList(bparams.Implicits)
+	bparams.OrderOnly = proptools.NinjaEscapeList(bparams.OrderOnly)
+	bparams.Depfile = proptools.NinjaEscapeList([]string{bparams.Depfile})[0]
 
 	return bparams
 }
@@ -951,7 +982,13 @@ func (a *androidModuleContext) Variable(pctx PackageContext, name, value string)
 func (a *androidModuleContext) Rule(pctx PackageContext, name string, params blueprint.RuleParams,
 	argNames ...string) blueprint.Rule {
 
-	return a.ModuleContext.Rule(pctx.PackageContext, name, params, argNames...)
+	rule := a.ModuleContext.Rule(pctx.PackageContext, name, params, argNames...)
+
+	if a.config.captureBuild {
+		a.ruleParams[rule] = params
+	}
+
+	return rule
 }
 
 func (a *androidModuleContext) Build(pctx PackageContext, params BuildParams) {
@@ -1065,6 +1102,10 @@ func (a *androidModuleContext) VisitDepsDepthFirstIf(pred func(Module) bool, vis
 		func(module blueprint.Module) {
 			visit(module.(Module))
 		})
+}
+
+func (a *androidModuleContext) WalkDepsBlueprint(visit func(blueprint.Module, blueprint.Module) bool) {
+	a.ModuleContext.WalkDeps(visit)
 }
 
 func (a *androidModuleContext) WalkDeps(visit func(Module, Module) bool) {
@@ -1292,6 +1333,28 @@ func (a *androidModuleContext) InstallSymlink(installPath OutputPath, name strin
 	return fullInstallPath
 }
 
+// installPath/name -> absPath where absPath might be a path that is available only at runtime
+// (e.g. /apex/...)
+func (a *androidModuleContext) InstallAbsoluteSymlink(installPath OutputPath, name string, absPath string) OutputPath {
+	fullInstallPath := installPath.Join(a, name)
+	a.module.base().hooks.runInstallHooks(a, fullInstallPath, true)
+
+	if !a.skipInstall(fullInstallPath) {
+		a.Build(pctx, BuildParams{
+			Rule:        Symlink,
+			Description: "install symlink " + fullInstallPath.Base() + " -> " + absPath,
+			Output:      fullInstallPath,
+			Default:     !a.Config().EmbeddedInMake(),
+			Args: map[string]string{
+				"fromPath": absPath,
+			},
+		})
+
+		a.installFiles = append(a.installFiles, fullInstallPath)
+	}
+	return fullInstallPath
+}
+
 func (a *androidModuleContext) CheckbuildFile(srcPath Path) {
 	a.checkbuildFiles = append(a.checkbuildFiles, srcPath)
 }
@@ -1334,6 +1397,8 @@ var SourceDepTag sourceDependencyTag
 
 // Adds necessary dependencies to satisfy filegroup or generated sources modules listed in srcFiles
 // using ":module" syntax, if any.
+//
+// Deprecated: tag the property with `android:"path"` instead.
 func ExtractSourcesDeps(ctx BottomUpMutatorContext, srcFiles []string) {
 	var deps []string
 	set := make(map[string]bool)
@@ -1354,6 +1419,8 @@ func ExtractSourcesDeps(ctx BottomUpMutatorContext, srcFiles []string) {
 
 // Adds necessary dependencies to satisfy filegroup or generated sources modules specified in s
 // using ":module" syntax, if any.
+//
+// Deprecated: tag the property with `android:"path"` instead.
 func ExtractSourceDeps(ctx BottomUpMutatorContext, s *string) {
 	if s != nil {
 		if m := SrcIsModule(*s); m != "" {
@@ -1366,106 +1433,46 @@ type SourceFileProducer interface {
 	Srcs() Paths
 }
 
-// Returns a list of paths expanded from globs and modules referenced using ":module" syntax.
-// ExtractSourcesDeps must have already been called during the dependency resolution phase.
-func (ctx *androidModuleContext) ExpandSources(srcFiles, excludes []string) Paths {
-	return ctx.ExpandSourcesSubDir(srcFiles, excludes, "")
+type HostToolProvider interface {
+	HostToolPath() OptionalPath
 }
 
-// Returns a single path expanded from globs and modules referenced using ":module" syntax.
-// ExtractSourceDeps must have already been called during the dependency resolution phase.
+// Returns a list of paths expanded from globs and modules referenced using ":module" syntax.  The property must
+// be tagged with `android:"path" to support automatic source module dependency resolution.
+//
+// Deprecated: use PathsForModuleSrc or PathsForModuleSrcExcludes instead.
+func (ctx *androidModuleContext) ExpandSources(srcFiles, excludes []string) Paths {
+	return PathsForModuleSrcExcludes(ctx, srcFiles, excludes)
+}
+
+// Returns a single path expanded from globs and modules referenced using ":module" syntax.  The property must
+// be tagged with `android:"path" to support automatic source module dependency resolution.
+//
+// Deprecated: use PathForModuleSrc instead.
 func (ctx *androidModuleContext) ExpandSource(srcFile, prop string) Path {
-	srcFiles := ctx.ExpandSourcesSubDir([]string{srcFile}, nil, "")
-	if len(srcFiles) == 1 {
-		return srcFiles[0]
-	} else if len(srcFiles) == 0 {
-		if ctx.Config().AllowMissingDependencies() {
-			ctx.AddMissingDependencies([]string{srcFile})
-		} else {
-			ctx.PropertyErrorf(prop, "%s path %s does not exist", prop, srcFile)
-		}
-		return nil
-	} else {
-		ctx.PropertyErrorf(prop, "module providing %s must produce exactly one file", prop)
-		return nil
-	}
+	return PathForModuleSrc(ctx, srcFile)
 }
 
 // Returns an optional single path expanded from globs and modules referenced using ":module" syntax if
-// the srcFile is non-nil.
-// ExtractSourceDeps must have already been called during the dependency resolution phase.
+// the srcFile is non-nil.  The property must be tagged with `android:"path" to support automatic source module
+// dependency resolution.
 func (ctx *androidModuleContext) ExpandOptionalSource(srcFile *string, prop string) OptionalPath {
 	if srcFile != nil {
-		return OptionalPathForPath(ctx.ExpandSource(*srcFile, prop))
+		return OptionalPathForPath(PathForModuleSrc(ctx, *srcFile))
 	}
 	return OptionalPath{}
 }
 
-func (ctx *androidModuleContext) ExpandSourcesSubDir(srcFiles, excludes []string, subDir string) Paths {
-	prefix := PathForModuleSrc(ctx).String()
-
-	var expandedExcludes []string
-	if excludes != nil {
-		expandedExcludes = make([]string, 0, len(excludes))
-	}
-
-	for _, e := range excludes {
-		if m := SrcIsModule(e); m != "" {
-			module := ctx.GetDirectDepWithTag(m, SourceDepTag)
-			if module == nil {
-				// Error will have been handled by ExtractSourcesDeps
-				continue
-			}
-			if srcProducer, ok := module.(SourceFileProducer); ok {
-				expandedExcludes = append(expandedExcludes, srcProducer.Srcs().Strings()...)
-			} else {
-				ctx.ModuleErrorf("srcs dependency %q is not a source file producing module", m)
-			}
-		} else {
-			expandedExcludes = append(expandedExcludes, filepath.Join(prefix, e))
-		}
-	}
-	expandedSrcFiles := make(Paths, 0, len(srcFiles))
-	for _, s := range srcFiles {
-		if m := SrcIsModule(s); m != "" {
-			module := ctx.GetDirectDepWithTag(m, SourceDepTag)
-			if module == nil {
-				// Error will have been handled by ExtractSourcesDeps
-				continue
-			}
-			if srcProducer, ok := module.(SourceFileProducer); ok {
-				moduleSrcs := srcProducer.Srcs()
-				for _, e := range expandedExcludes {
-					for j, ms := range moduleSrcs {
-						if ms.String() == e {
-							moduleSrcs = append(moduleSrcs[:j], moduleSrcs[j+1:]...)
-						}
-					}
-				}
-				expandedSrcFiles = append(expandedSrcFiles, moduleSrcs...)
-			} else {
-				ctx.ModuleErrorf("srcs dependency %q is not a source file producing module", m)
-			}
-		} else if pathtools.IsGlob(s) {
-			globbedSrcFiles := ctx.GlobFiles(filepath.Join(prefix, s), expandedExcludes)
-			for i, s := range globbedSrcFiles {
-				globbedSrcFiles[i] = s.(ModuleSrcPath).WithSubDir(ctx, subDir)
-			}
-			expandedSrcFiles = append(expandedSrcFiles, globbedSrcFiles...)
-		} else {
-			p := PathForModuleSrc(ctx, s).WithSubDir(ctx, subDir)
-			j := findStringInSlice(p.String(), expandedExcludes)
-			if j == -1 {
-				expandedSrcFiles = append(expandedSrcFiles, p)
-			}
-
-		}
-	}
-	return expandedSrcFiles
-}
-
 func (ctx *androidModuleContext) RequiredModuleNames() []string {
 	return ctx.module.base().commonProperties.Required
+}
+
+func (ctx *androidModuleContext) HostRequiredModuleNames() []string {
+	return ctx.module.base().commonProperties.Host_required
+}
+
+func (ctx *androidModuleContext) TargetRequiredModuleNames() []string {
+	return ctx.module.base().commonProperties.Target_required
 }
 
 func (ctx *androidModuleContext) Glob(globPattern string, excludes []string) Paths {

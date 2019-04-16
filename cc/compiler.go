@@ -31,11 +31,11 @@ type BaseCompilerProperties struct {
 	// list of source files used to compile the C/C++ module.  May be .c, .cpp, or .S files.
 	// srcs may reference the outputs of other modules that produce source files like genrule
 	// or filegroup using the syntax ":module".
-	Srcs []string `android:"arch_variant"`
+	Srcs []string `android:"path,arch_variant"`
 
 	// list of source files that should not be used to build the C/C++ module.
 	// This is most useful in the arch/multilib variants to remove non-common files
-	Exclude_srcs []string `android:"arch_variant"`
+	Exclude_srcs []string `android:"path,arch_variant"`
 
 	// list of module-specific flags that will be used for C and C++ compiles.
 	Cflags []string `android:"arch_variant"`
@@ -56,9 +56,6 @@ type BaseCompilerProperties struct {
 	// list of module-specific flags that will be used for .S compiles when
 	// compiling with clang
 	Clang_asflags []string `android:"arch_variant"`
-
-	// list of module-specific flags that will be used for .y and .yy compiles
-	Yaccflags []string
 
 	// the instruction set architecture to use to compile the C/C++
 	// module.
@@ -103,6 +100,8 @@ type BaseCompilerProperties struct {
 	// if set to false, use -std=c++* instead of -std=gnu++*
 	Gnu_extensions *bool
 
+	Yacc *YaccProperties
+
 	Aidl struct {
 		// list of directories that will be added to the aidl include paths.
 		Include_dirs []string
@@ -136,11 +135,11 @@ type BaseCompilerProperties struct {
 		Vendor struct {
 			// list of source files that should only be used in the
 			// vendor variant of the C/C++ module.
-			Srcs []string
+			Srcs []string `android:"path"`
 
 			// list of source files that should not be used to
 			// build the vendor variant of the C/C++ module.
-			Exclude_srcs []string
+			Exclude_srcs []string `android:"path"`
 
 			// List of additional cflags that should be used to build the vendor
 			// variant of the C/C++ module.
@@ -149,11 +148,11 @@ type BaseCompilerProperties struct {
 		Recovery struct {
 			// list of source files that should only be used in the
 			// recovery variant of the C/C++ module.
-			Srcs []string
+			Srcs []string `android:"path"`
 
 			// list of source files that should not be used to
 			// build the recovery variant of the C/C++ module.
-			Exclude_srcs []string
+			Exclude_srcs []string `android:"path"`
 
 			// List of additional cflags that should be used to build the recovery
 			// variant of the C/C++ module.
@@ -221,15 +220,14 @@ func (compiler *baseCompiler) compilerDeps(ctx DepsContext, deps Deps) Deps {
 	deps.GeneratedSources = append(deps.GeneratedSources, compiler.Properties.Generated_sources...)
 	deps.GeneratedHeaders = append(deps.GeneratedHeaders, compiler.Properties.Generated_headers...)
 
-	android.ExtractSourcesDeps(ctx, compiler.Properties.Srcs)
-	android.ExtractSourcesDeps(ctx, compiler.Properties.Exclude_srcs)
-
+	android.ProtoDeps(ctx, &compiler.Proto)
 	if compiler.hasSrcExt(".proto") {
 		deps = protoDeps(ctx, deps, &compiler.Proto, Bool(compiler.Properties.Proto.Static))
 	}
 
 	if compiler.hasSrcExt(".sysprop") {
-		deps.SharedLibs = append(deps.SharedLibs, "libbase")
+		deps.HeaderLibs = append(deps.HeaderLibs, "libbase_headers")
+		deps.SharedLibs = append(deps.SharedLibs, "liblog")
 	}
 
 	if Bool(compiler.Properties.Openmp) {
@@ -259,7 +257,7 @@ func addToModuleList(ctx ModuleContext, key android.OnceKey, module string) {
 func (compiler *baseCompiler) compilerFlags(ctx ModuleContext, flags Flags, deps PathDeps) Flags {
 	tc := ctx.toolchain()
 
-	compiler.srcsBeforeGen = ctx.ExpandSources(compiler.Properties.Srcs, compiler.Properties.Exclude_srcs)
+	compiler.srcsBeforeGen = android.PathsForModuleSrcExcludes(ctx, compiler.Properties.Srcs, compiler.Properties.Exclude_srcs)
 	compiler.srcsBeforeGen = append(compiler.srcsBeforeGen, deps.GeneratedSources...)
 
 	CheckBadCompilerFlags(ctx, "cflags", compiler.Properties.Cflags)
@@ -269,14 +267,15 @@ func (compiler *baseCompiler) compilerFlags(ctx ModuleContext, flags Flags, deps
 	CheckBadCompilerFlags(ctx, "vendor.cflags", compiler.Properties.Target.Vendor.Cflags)
 	CheckBadCompilerFlags(ctx, "recovery.cflags", compiler.Properties.Target.Recovery.Cflags)
 
-	esc := proptools.NinjaAndShellEscape
+	esc := proptools.NinjaAndShellEscapeList
 
 	flags.CFlags = append(flags.CFlags, esc(compiler.Properties.Cflags)...)
 	flags.CppFlags = append(flags.CppFlags, esc(compiler.Properties.Cppflags)...)
 	flags.ConlyFlags = append(flags.ConlyFlags, esc(compiler.Properties.Conlyflags)...)
 	flags.AsFlags = append(flags.AsFlags, esc(compiler.Properties.Asflags)...)
 	flags.YasmFlags = append(flags.YasmFlags, esc(compiler.Properties.Asflags)...)
-	flags.YaccFlags = append(flags.YaccFlags, esc(compiler.Properties.Yaccflags)...)
+
+	flags.Yacc = compiler.Properties.Yacc
 
 	// Include dir cflags
 	localIncludeDirs := android.PathsForModuleSrc(ctx, compiler.Properties.Local_include_dirs)

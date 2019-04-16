@@ -112,6 +112,25 @@ cc_library_shared {
 }`,
 	},
 	{
+		desc: "Convert to local path",
+		in: `
+include $(CLEAR_VARS)
+LOCAL_RESOURCE_DIR := $(LOCAL_PATH)/res $(LOCAL_PATH)/res2
+LOCAL_ASSET_DIR := $(LOCAL_PATH)/asset
+LOCAL_JARJAR_RULES := $(LOCAL_PATH)/jarjar-rules.txt
+include $(BUILD_PACKAGE)
+	`,
+		expected: `
+android_app {
+	resource_dirs: [
+		"res",
+		"res2",
+	],
+	asset_dirs: ["asset"],
+	jarjar_rules: "jarjar-rules.txt",
+}`,
+	},
+	{
 		desc: "LOCAL_MODULE_STEM",
 		in: `
 include $(CLEAR_VARS)
@@ -485,9 +504,9 @@ endif # b==false
 //  # b==false
 // echo end
 //
-// ANDROIDMK TRANSLATION ERROR: endif from unsupported contitional
+// ANDROIDMK TRANSLATION ERROR: endif from unsupported conditional
 // endif
-// ANDROIDMK TRANSLATION ERROR: endif from unsupported contitional
+// ANDROIDMK TRANSLATION ERROR: endif from unsupported conditional
 // endif
 		`,
 	},
@@ -558,6 +577,10 @@ include $(call all-makefiles-under,$(LOCAL_PATH))
 			include $(CLEAR_VARS)
 			LOCAL_SRC_FILES := $(call all-java-files-under, src gen)
 			include $(BUILD_STATIC_JAVA_LIBRARY)
+
+			include $(CLEAR_VARS)
+			LOCAL_JAVA_RESOURCE_FILES := foo bar
+			include $(BUILD_STATIC_JAVA_LIBRARY)
 		`,
 		expected: `
 			java_library {
@@ -583,6 +606,13 @@ include $(call all-makefiles-under,$(LOCAL_PATH))
 				srcs: [
 					"src/**/*.java",
 					"gen/**/*.java",
+				],
+			}
+
+			java_library {
+				java_resources: [
+					"foo",
+					"bar",
 				],
 			}
 		`,
@@ -612,12 +642,14 @@ include $(call all-makefiles-under,$(LOCAL_PATH))
 			LOCAL_SRC_FILES := test.jar
 			LOCAL_MODULE_CLASS := JAVA_LIBRARIES
 			LOCAL_STATIC_ANDROID_LIBRARIES :=
+			LOCAL_JETIFIER_ENABLED := true
 			include $(BUILD_PREBUILT)
 		`,
 		expected: `
 			java_import {
 				jars: ["test.jar"],
 
+				jetifier: true,
 			}
 		`,
 	},
@@ -642,7 +674,7 @@ include $(call all-makefiles-under,$(LOCAL_PATH))
 		in: `
 			include $(CLEAR_VARS)
 			LOCAL_SRC_FILES := test.java
-			LOCAL_RESOURCE_DIR := res
+			LOCAL_RESOURCE_DIR := $(LOCAL_PATH)/res
 			LOCAL_JACK_COVERAGE_INCLUDE_FILTER := foo.*
 			include $(BUILD_STATIC_JAVA_LIBRARY)
 
@@ -758,6 +790,7 @@ cc_library_shared {
 include $(CLEAR_VARS)
 LOCAL_PACKAGE_NAME := FooTest
 LOCAL_COMPATIBILITY_SUITE := cts
+LOCAL_MODULE_PATH := $(TARGET_OUT_DATA_APPS)
 include $(BUILD_CTS_SUPPORT_PACKAGE)
 `,
 		expected: `
@@ -765,6 +798,7 @@ android_test {
     name: "FooTest",
     defaults: ["cts_support_defaults"],
     test_suites: ["cts"],
+
 }
 `,
 	},
@@ -774,6 +808,7 @@ android_test {
 include $(CLEAR_VARS)
 LOCAL_PACKAGE_NAME := FooTest
 LOCAL_COMPATIBILITY_SUITE := cts
+LOCAL_CTS_TEST_PACKAGE := foo.bar
 include $(BUILD_CTS_PACKAGE)
 `,
 		expected: `
@@ -781,6 +816,7 @@ android_test {
     name: "FooTest",
     defaults: ["cts_defaults"],
     test_suites: ["cts"],
+
 }
 `,
 	},
@@ -1027,6 +1063,65 @@ prebuilt_etc {
 
 }
 `,
+	},
+	{
+		desc: "vts_config",
+		in: `
+include $(CLEAR_VARS)
+LOCAL_MODULE := vtsconf
+include test/vts/tools/build/Android.host_config.mk
+`,
+		expected: `
+vts_config {
+	name: "vtsconf",
+}
+`,
+	},
+	{
+		desc: "comment with ESC",
+		in: `
+# Comment line 1 \
+# Comment line 2
+`,
+		expected: `
+// Comment line 1 \
+// Comment line 2
+`,
+	},
+	{
+		desc: "Merge with variable reference",
+		in: `
+include $(CLEAR_VARS)
+LOCAL_MODULE := foo
+LOCAL_STATIC_ANDROID_LIBRARIES := $(FOO)
+LOCAL_STATIC_JAVA_LIBRARIES := javalib
+LOCAL_JAVA_RESOURCE_DIRS := $(FOO)
+include $(BUILD_PACKAGE)
+`,
+		expected: `
+android_app {
+	name: "foo",
+	static_libs: FOO,
+	static_libs: ["javalib"],
+	java_resource_dirs: FOO,
+}
+`,
+	},
+	{
+		desc: "LOCAL_JACK_ENABLED and LOCAL_JACK_FLAGS skipped",
+		in: `
+include $(CLEAR_VARS)
+LOCAL_MODULE := foo
+LOCAL_JACK_ENABLED := incremental
+LOCAL_JACK_FLAGS := --multi-dex native
+include $(BUILD_PACKAGE)
+		`,
+		expected: `
+android_app {
+	name: "foo",
+
+}
+		`,
 	},
 }
 

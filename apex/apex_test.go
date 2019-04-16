@@ -24,6 +24,7 @@ import (
 
 	"android/soong/android"
 	"android/soong/cc"
+	"android/soong/java"
 )
 
 func testApex(t *testing.T, bp string) *android.TestContext {
@@ -35,11 +36,14 @@ func testApex(t *testing.T, bp string) *android.TestContext {
 	ctx.RegisterModuleType("apex_test", android.ModuleFactoryAdaptor(testApexBundleFactory))
 	ctx.RegisterModuleType("apex_key", android.ModuleFactoryAdaptor(apexKeyFactory))
 	ctx.RegisterModuleType("apex_defaults", android.ModuleFactoryAdaptor(defaultsFactory))
+	ctx.RegisterModuleType("prebuilt_apex", android.ModuleFactoryAdaptor(PrebuiltFactory))
 	ctx.PreArchMutators(android.RegisterDefaultsPreArchMutators)
 
 	ctx.PostDepsMutators(func(ctx android.RegisterMutatorsContext) {
 		ctx.TopDown("apex_deps", apexDepsMutator)
 		ctx.BottomUp("apex", apexMutator)
+		ctx.TopDown("prebuilt_select", android.PrebuiltSelectModuleMutator).Parallel()
+		ctx.BottomUp("prebuilt_postdeps", android.PrebuiltPostDepsMutator).Parallel()
 	})
 
 	ctx.RegisterModuleType("cc_library", android.ModuleFactoryAdaptor(cc.LibraryFactory))
@@ -51,6 +55,11 @@ func testApex(t *testing.T, bp string) *android.TestContext {
 	ctx.RegisterModuleType("toolchain_library", android.ModuleFactoryAdaptor(cc.ToolchainLibraryFactory))
 	ctx.RegisterModuleType("prebuilt_etc", android.ModuleFactoryAdaptor(android.PrebuiltEtcFactory))
 	ctx.RegisterModuleType("sh_binary", android.ModuleFactoryAdaptor(android.ShBinaryFactory))
+	ctx.RegisterModuleType("android_app_certificate", android.ModuleFactoryAdaptor(java.AndroidAppCertificateFactory))
+	ctx.RegisterModuleType("filegroup", android.ModuleFactoryAdaptor(android.FileGroupFactory))
+	ctx.PreArchMutators(func(ctx android.RegisterMutatorsContext) {
+		ctx.BottomUp("prebuilts", android.PrebuiltMutator).Parallel()
+	})
 	ctx.PreDepsMutators(func(ctx android.RegisterMutatorsContext) {
 		ctx.BottomUp("image", cc.ImageMutator).Parallel()
 		ctx.BottomUp("link", cc.LinkageMutator).Parallel()
@@ -138,18 +147,30 @@ func testApex(t *testing.T, bp string) *android.TestContext {
 	`
 
 	ctx.MockFileSystem(map[string][]byte{
-		"Android.bp":                                   []byte(bp),
-		"build/target/product/security":                nil,
-		"apex_manifest.json":                           nil,
-		"system/sepolicy/apex/myapex-file_contexts":    nil,
-		"system/sepolicy/apex/otherapex-file_contexts": nil,
-		"mylib.cpp":                                    nil,
-		"myprebuilt":                                   nil,
-		"my_include":                                   nil,
-		"vendor/foo/devkeys/test.x509.pem":             nil,
-		"vendor/foo/devkeys/test.pk8":                  nil,
-		"vendor/foo/devkeys/testkey.avbpubkey":         nil,
-		"vendor/foo/devkeys/testkey.pem":               nil,
+		"Android.bp":                                        []byte(bp),
+		"build/make/target/product/security":                nil,
+		"apex_manifest.json":                                nil,
+		"AndroidManifest.xml":                               nil,
+		"system/sepolicy/apex/myapex-file_contexts":         nil,
+		"system/sepolicy/apex/myapex_keytest-file_contexts": nil,
+		"system/sepolicy/apex/otherapex-file_contexts":      nil,
+		"mylib.cpp":                            nil,
+		"myprebuilt":                           nil,
+		"my_include":                           nil,
+		"vendor/foo/devkeys/test.x509.pem":     nil,
+		"vendor/foo/devkeys/test.pk8":          nil,
+		"testkey.x509.pem":                     nil,
+		"testkey.pk8":                          nil,
+		"testkey.override.x509.pem":            nil,
+		"testkey.override.pk8":                 nil,
+		"vendor/foo/devkeys/testkey.avbpubkey": nil,
+		"vendor/foo/devkeys/testkey.pem":       nil,
+		"NOTICE":                               nil,
+		"custom_notice":                        nil,
+		"testkey2.avbpubkey":                   nil,
+		"testkey2.pem":                         nil,
+		"myapex-arm64.apex":                    nil,
+		"myapex-arm.apex":                      nil,
 	})
 	_, errs := ctx.ParseFileList(".", []string{"Android.bp"})
 	android.FailIfErrored(t, errs)
@@ -168,6 +189,7 @@ func setup(t *testing.T) (config android.Config, buildDir string) {
 	config = android.TestArchConfig(buildDir, nil)
 	config.TestProductVariables.DeviceVndkVersion = proptools.StringPtr("current")
 	config.TestProductVariables.DefaultAppCertificate = proptools.StringPtr("vendor/foo/devkeys/test")
+	config.TestProductVariables.CertificateOverrides = []string{"myapex_keytest:myapex.certificate.override"}
 	return
 }
 
@@ -206,6 +228,8 @@ func TestBasicApex(t *testing.T) {
 	ctx := testApex(t, `
 		apex_defaults {
 			name: "myapex-defaults",
+			manifest: ":myapex.manifest",
+			androidManifest: ":myapex.androidmanifest",
 			key: "myapex.key",
 			native_shared_libs: ["mylib"],
 			multilib: {
@@ -224,6 +248,16 @@ func TestBasicApex(t *testing.T) {
 			name: "myapex.key",
 			public_key: "testkey.avbpubkey",
 			private_key: "testkey.pem",
+		}
+
+		filegroup {
+			name: "myapex.manifest",
+			srcs: ["apex_manifest.json"],
+		}
+
+		filegroup {
+			name: "myapex.androidmanifest",
+			srcs: ["AndroidManifest.xml"],
 		}
 
 		cc_library {
@@ -258,10 +292,15 @@ func TestBasicApex(t *testing.T) {
 			srcs: ["mylib.cpp"],
 			system_shared_libs: [],
 			stl: "none",
+			notice: "custom_notice",
 		}
 	`)
 
 	apexRule := ctx.ModuleForTests("myapex", "android_common_myapex").Rule("apexRule")
+
+	optFlags := apexRule.Args["opt_flags"]
+	ensureContains(t, optFlags, "--pubkey vendor/foo/devkeys/testkey.avbpubkey")
+
 	copyCmds := apexRule.Args["copy_commands"]
 
 	// Ensure that main rule creates an output
@@ -297,6 +336,14 @@ func TestBasicApex(t *testing.T) {
 	if !good {
 		t.Errorf("Could not find all expected symlinks! foo: %t, foo_link_64: %t. Command was %s", found_foo, found_foo_link_64, copyCmds)
 	}
+
+	apexMergeNoticeRule := ctx.ModuleForTests("myapex", "android_common_myapex").Rule("apexMergeNoticeRule")
+	noticeInputs := strings.Split(apexMergeNoticeRule.Args["inputs"], " ")
+	if len(noticeInputs) != 3 {
+		t.Errorf("number of input notice files: expected = 3, actual = %d", len(noticeInputs))
+	}
+	ensureListContains(t, noticeInputs, "NOTICE")
+	ensureListContains(t, noticeInputs, "custom_notice")
 }
 
 func TestBasicZipApex(t *testing.T) {
@@ -674,10 +721,9 @@ func TestFilesInSubDir(t *testing.T) {
 	ensureListContains(t, dirs, "lib/foo")
 	ensureListContains(t, dirs, "lib/foo/bar")
 
-	// TODO(b/123721777) respect relative path for binaries
-	// ensureListContains(t, dirs, "bin")
-	// ensureListContains(t, dirs, "bin/foo")
-	// ensureListContains(t, dirs, "bin/foo/bar")
+	ensureListContains(t, dirs, "bin")
+	ensureListContains(t, dirs, "bin/foo")
+	ensureListContains(t, dirs, "bin/foo/bar")
 }
 
 func TestUseVendor(t *testing.T) {
@@ -773,8 +819,9 @@ func TestStaticLinking(t *testing.T) {
 func TestKeys(t *testing.T) {
 	ctx := testApex(t, `
 		apex {
-			name: "myapex",
+			name: "myapex_keytest",
 			key: "myapex.key",
+			certificate: ":myapex.certificate",
 			native_shared_libs: ["mylib"],
 		}
 
@@ -791,10 +838,20 @@ func TestKeys(t *testing.T) {
 			private_key: "testkey.pem",
 		}
 
+		android_app_certificate {
+			name: "myapex.certificate",
+			certificate: "testkey",
+		}
+
+		android_app_certificate {
+			name: "myapex.certificate.override",
+			certificate: "testkey.override",
+		}
+
 	`)
 
 	// check the APEX keys
-	keys := ctx.ModuleForTests("myapex.key", "").Module().(*apexKey)
+	keys := ctx.ModuleForTests("myapex.key", "android_common").Module().(*apexKey)
 
 	if keys.public_key_file.String() != "vendor/foo/devkeys/testkey.avbpubkey" {
 		t.Errorf("public key %q is not %q", keys.public_key_file.String(),
@@ -805,11 +862,11 @@ func TestKeys(t *testing.T) {
 			"vendor/foo/devkeys/testkey.pem")
 	}
 
-	// check the APK certs
-	certs := ctx.ModuleForTests("myapex", "android_common_myapex").Rule("signapk").Args["certificates"]
-	if certs != "vendor/foo/devkeys/test.x509.pem vendor/foo/devkeys/test.pk8" {
+	// check the APK certs. It should be overridden to myapex.certificate.override
+	certs := ctx.ModuleForTests("myapex_keytest", "android_common_myapex_keytest").Rule("signapk").Args["certificates"]
+	if certs != "testkey.override.x509.pem testkey.override.pk8" {
 		t.Errorf("cert and private key %q are not %q", certs,
-			"vendor/foo/devkeys/test.x509.pem vendor/foo/devkeys/test.pk8")
+			"testkey.override.509.pem testkey.override.pk8")
 	}
 }
 
@@ -1110,4 +1167,109 @@ func TestApexWithShBinary(t *testing.T) {
 	copyCmds := apexRule.Args["copy_commands"]
 
 	ensureContains(t, copyCmds, "image.apex/bin/script/myscript.sh")
+}
+
+func TestApexInProductPartition(t *testing.T) {
+	ctx := testApex(t, `
+		apex {
+			name: "myapex",
+			key: "myapex.key",
+			native_shared_libs: ["mylib"],
+			product_specific: true,
+		}
+
+		apex_key {
+			name: "myapex.key",
+			public_key: "testkey.avbpubkey",
+			private_key: "testkey.pem",
+			product_specific: true,
+		}
+
+		cc_library {
+			name: "mylib",
+			srcs: ["mylib.cpp"],
+			system_shared_libs: [],
+			stl: "none",
+		}
+	`)
+
+	apex := ctx.ModuleForTests("myapex", "android_common_myapex").Module().(*apexBundle)
+	expected := "target/product/test_device/product/apex"
+	actual := apex.installDir.RelPathString()
+	if actual != expected {
+		t.Errorf("wrong install path. expected %q. actual %q", expected, actual)
+	}
+}
+
+func TestApexKeyFromOtherModule(t *testing.T) {
+	ctx := testApex(t, `
+		apex_key {
+			name: "myapex.key",
+			public_key: ":my.avbpubkey",
+			private_key: ":my.pem",
+			product_specific: true,
+		}
+
+		filegroup {
+			name: "my.avbpubkey",
+			srcs: ["testkey2.avbpubkey"],
+		}
+
+		filegroup {
+			name: "my.pem",
+			srcs: ["testkey2.pem"],
+		}
+	`)
+
+	apex_key := ctx.ModuleForTests("myapex.key", "android_common").Module().(*apexKey)
+	expected_pubkey := "testkey2.avbpubkey"
+	actual_pubkey := apex_key.public_key_file.String()
+	if actual_pubkey != expected_pubkey {
+		t.Errorf("wrong public key path. expected %q. actual %q", expected_pubkey, actual_pubkey)
+	}
+	expected_privkey := "testkey2.pem"
+	actual_privkey := apex_key.private_key_file.String()
+	if actual_privkey != expected_privkey {
+		t.Errorf("wrong private key path. expected %q. actual %q", expected_privkey, actual_privkey)
+	}
+}
+
+func TestPrebuilt(t *testing.T) {
+	ctx := testApex(t, `
+		prebuilt_apex {
+			name: "myapex",
+			arch: {
+				arm64: {
+					src: "myapex-arm64.apex",
+				},
+				arm: {
+					src: "myapex-arm.apex",
+				},
+			},
+		}
+	`)
+
+	prebuilt := ctx.ModuleForTests("myapex", "android_common").Module().(*Prebuilt)
+
+	expectedInput := "myapex-arm64.apex"
+	if prebuilt.inputApex.String() != expectedInput {
+		t.Errorf("inputApex invalid. expected: %q, actual: %q", expectedInput, prebuilt.inputApex.String())
+	}
+}
+
+func TestPrebuiltFilenameOverride(t *testing.T) {
+	ctx := testApex(t, `
+		prebuilt_apex {
+			name: "myapex",
+			src: "myapex-arm.apex",
+			filename: "notmyapex.apex",
+		}
+	`)
+
+	p := ctx.ModuleForTests("myapex", "android_common").Module().(*Prebuilt)
+
+	expected := "notmyapex.apex"
+	if p.installFilename != expected {
+		t.Errorf("installFilename invalid. expected: %q, actual: %q", expected, p.installFilename)
+	}
 }

@@ -21,7 +21,6 @@ import (
 	"github.com/google/blueprint"
 
 	"android/soong/android"
-	"android/soong/java/config"
 )
 
 var manifestFixerRule = pctx.AndroidStaticRule("manifestFixer",
@@ -37,14 +36,13 @@ var manifestFixerRule = pctx.AndroidStaticRule("manifestFixer",
 
 var manifestMergerRule = pctx.AndroidStaticRule("manifestMerger",
 	blueprint.RuleParams{
-		Command: `${config.JavaCmd} -classpath ${config.ManifestMergerClasspath} com.android.manifmerger.Merger ` +
-			`--main $in $libs --out $out`,
-		CommandDeps: config.ManifestMergerClasspath,
+		Command:     `${config.ManifestMergerCmd} --main $in $libs --out $out`,
+		CommandDeps: []string{"${config.ManifestMergerCmd}"},
 	},
 	"libs")
 
 func manifestMerger(ctx android.ModuleContext, manifest android.Path, sdkContext sdkContext,
-	staticLibManifests android.Paths, isLibrary bool, uncompressedJNI, useEmbeddedDex bool) android.Path {
+	staticLibManifests android.Paths, isLibrary, uncompressedJNI, useEmbeddedDex, usesNonSdkApis bool) android.Path {
 
 	var args []string
 	if isLibrary {
@@ -60,6 +58,10 @@ func manifestMerger(ctx android.ModuleContext, manifest android.Path, sdkContext
 			ctx.ModuleErrorf("module attempted to store uncompressed native libraries, but minSdkVersion=%d doesn't support it",
 				minSdkVersion)
 		}
+	}
+
+	if usesNonSdkApis {
+		args = append(args, "--uses-non-sdk-api")
 	}
 
 	if useEmbeddedDex {

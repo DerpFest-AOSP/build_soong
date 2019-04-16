@@ -75,7 +75,6 @@ func makeVarsProvider(ctx android.MakeVarsContext) {
 	ctx.Strict("LLVM_OBJCOPY", "${config.ClangBin}/llvm-objcopy")
 	ctx.Strict("LLVM_STRIP", "${config.ClangBin}/llvm-strip")
 	ctx.Strict("PATH_TO_CLANG_TIDY", "${config.ClangBin}/clang-tidy")
-	ctx.Strict("PATH_TO_CLANG_TIDY_SHELL", "${config.ClangTidyShellPath}")
 	ctx.StrictSorted("CLANG_CONFIG_UNKNOWN_CFLAGS", strings.Join(config.ClangUnknownCflags, " "))
 
 	ctx.Strict("RS_LLVM_PREBUILTS_VERSION", "${config.RSClangVersion}")
@@ -97,6 +96,7 @@ func makeVarsProvider(ctx android.MakeVarsContext) {
 	ctx.Strict("VNDK_SAMEPROCESS_LIBRARIES", strings.Join(vndkSpLibraries, " "))
 	ctx.Strict("LLNDK_LIBRARIES", strings.Join(llndkLibraries, " "))
 	ctx.Strict("VNDK_PRIVATE_LIBRARIES", strings.Join(vndkPrivateLibraries, " "))
+	ctx.Strict("VNDK_USING_CORE_VARIANT_LIBRARIES", strings.Join(vndkUsingCoreVariantLibraries, " "))
 
 	// Filter vendor_public_library that are exported to make
 	exportedVendorPublicLibraries := []string{}

@@ -15,9 +15,11 @@
 package android
 
 import (
+	"encoding"
 	"fmt"
 	"reflect"
 	"runtime"
+	"strconv"
 	"strings"
 
 	"github.com/google/blueprint/proptools"
@@ -105,6 +107,7 @@ module {
 
 var archVariants = map[ArchType][]string{
 	Arm: {
+		"armv7-a",
 		"armv7-a-neon",
 		"armv8-a",
 		"armv8-2a",
@@ -152,18 +155,34 @@ var archVariants = map[ArchType][]string{
 		"mips64r6",
 	},
 	X86: {
+		"amberlake",
 		"atom",
+		"broadwell",
 		"haswell",
+		"icelake",
 		"ivybridge",
+		"kabylake",
 		"sandybridge",
 		"silvermont",
+		"skylake",
+		"stoneyridge",
+		"tigerlake",
+		"whiskeylake",
 		"x86_64",
 	},
 	X86_64: {
+		"amberlake",
+		"broadwell",
 		"haswell",
+		"icelake",
 		"ivybridge",
+		"kabylake",
 		"sandybridge",
 		"silvermont",
+		"skylake",
+		"stoneyridge",
+		"tigerlake",
+		"whiskeylake",
 	},
 }
 
@@ -187,6 +206,8 @@ var archFeatures = map[ArchType][]string{
 		"sse4_2",
 		"aes_ni",
 		"avx",
+		"avx2",
+		"avx512",
 		"popcnt",
 		"movbe",
 	},
@@ -197,6 +218,8 @@ var archFeatures = map[ArchType][]string{
 		"sse4_2",
 		"aes_ni",
 		"avx",
+		"avx2",
+		"avx512",
 		"popcnt",
 	},
 }
@@ -227,9 +250,29 @@ var archFeatureMap = map[ArchType]map[string][]string{
 		},
 	},
 	X86: {
+		"amberlake": {
+			"ssse3",
+			"sse4",
+			"sse4_1",
+			"sse4_2",
+			"avx",
+			"avx2",
+			"aes_ni",
+			"popcnt",
+		},
 		"atom": {
 			"ssse3",
 			"movbe",
+		},
+		"broadwell": {
+			"ssse3",
+			"sse4",
+			"sse4_1",
+			"sse4_2",
+			"avx",
+			"avx2",
+			"aes_ni",
+			"popcnt",
 		},
 		"haswell": {
 			"ssse3",
@@ -241,6 +284,17 @@ var archFeatureMap = map[ArchType]map[string][]string{
 			"popcnt",
 			"movbe",
 		},
+		"icelake": {
+			"ssse3",
+			"sse4",
+			"sse4_1",
+			"sse4_2",
+			"avx",
+			"avx2",
+			"avx512",
+			"aes_ni",
+			"popcnt",
+		},
 		"ivybridge": {
 			"ssse3",
 			"sse4",
@@ -248,6 +302,16 @@ var archFeatureMap = map[ArchType]map[string][]string{
 			"sse4_2",
 			"aes_ni",
 			"avx",
+			"popcnt",
+		},
+		"kabylake": {
+			"ssse3",
+			"sse4",
+			"sse4_1",
+			"sse4_2",
+			"avx",
+			"avx2",
+			"aes_ni",
 			"popcnt",
 		},
 		"sandybridge": {
@@ -265,6 +329,50 @@ var archFeatureMap = map[ArchType]map[string][]string{
 			"aes_ni",
 			"popcnt",
 			"movbe",
+		},
+		"skylake": {
+			"ssse3",
+			"sse4",
+			"sse4_1",
+			"sse4_2",
+			"avx",
+			"avx2",
+			"avx512",
+			"aes_ni",
+			"popcnt",
+		},
+		"stoneyridge": {
+			"ssse3",
+			"sse4",
+			"sse4_1",
+			"sse4_2",
+			"aes_ni",
+			"avx",
+			"avx2",
+			"popcnt",
+			"movbe",
+		},
+		"tigerlake": {
+			"ssse3",
+			"sse4",
+			"sse4_1",
+			"sse4_2",
+			"avx",
+			"avx2",
+			"avx512",
+			"aes_ni",
+			"popcnt",
+		},
+		"whiskeylake": {
+			"ssse3",
+			"sse4",
+			"sse4_1",
+			"sse4_2",
+			"avx",
+			"avx2",
+			"avx512",
+			"aes_ni",
+			"popcnt",
 		},
 		"x86_64": {
 			"ssse3",
@@ -275,6 +383,26 @@ var archFeatureMap = map[ArchType]map[string][]string{
 		},
 	},
 	X86_64: {
+		"amberlake": {
+			"ssse3",
+			"sse4",
+			"sse4_1",
+			"sse4_2",
+			"avx",
+			"avx2",
+			"aes_ni",
+			"popcnt",
+		},
+		"broadwell": {
+			"ssse3",
+			"sse4",
+			"sse4_1",
+			"sse4_2",
+			"avx",
+			"avx2",
+			"aes_ni",
+			"popcnt",
+		},
 		"haswell": {
 			"ssse3",
 			"sse4",
@@ -284,6 +412,17 @@ var archFeatureMap = map[ArchType]map[string][]string{
 			"avx",
 			"popcnt",
 		},
+		"icelake": {
+			"ssse3",
+			"sse4",
+			"sse4_1",
+			"sse4_2",
+			"avx",
+			"avx2",
+			"avx512",
+			"aes_ni",
+			"popcnt",
+		},
 		"ivybridge": {
 			"ssse3",
 			"sse4",
@@ -291,6 +430,16 @@ var archFeatureMap = map[ArchType]map[string][]string{
 			"sse4_2",
 			"aes_ni",
 			"avx",
+			"popcnt",
+		},
+		"kabylake": {
+			"ssse3",
+			"sse4",
+			"sse4_1",
+			"sse4_2",
+			"avx",
+			"avx2",
+			"aes_ni",
 			"popcnt",
 		},
 		"sandybridge": {
@@ -305,6 +454,49 @@ var archFeatureMap = map[ArchType]map[string][]string{
 			"sse4",
 			"sse4_1",
 			"sse4_2",
+			"aes_ni",
+			"popcnt",
+		},
+		"skylake": {
+			"ssse3",
+			"sse4",
+			"sse4_1",
+			"sse4_2",
+			"avx",
+			"avx2",
+			"avx512",
+			"aes_ni",
+			"popcnt",
+		},
+		"stoneyridge": {
+			"ssse3",
+			"sse4",
+			"sse4_1",
+			"sse4_2",
+			"aes_ni",
+			"avx",
+			"avx2",
+			"popcnt",
+		},
+		"tigerlake": {
+			"ssse3",
+			"sse4",
+			"sse4_1",
+			"sse4_2",
+			"avx",
+			"avx2",
+			"avx512",
+			"aes_ni",
+			"popcnt",
+		},
+		"whiskeylake": {
+			"ssse3",
+			"sse4",
+			"sse4_1",
+			"sse4_2",
+			"avx",
+			"avx2",
+			"avx512",
 			"aes_ni",
 			"popcnt",
 		},
@@ -367,6 +559,23 @@ func newArch(name, multilib string) ArchType {
 
 func (a ArchType) String() string {
 	return a.Name
+}
+
+var _ encoding.TextMarshaler = ArchType{}
+
+func (a ArchType) MarshalText() ([]byte, error) {
+	return []byte(strconv.Quote(a.String())), nil
+}
+
+var _ encoding.TextUnmarshaler = &ArchType{}
+
+func (a *ArchType) UnmarshalText(text []byte) error {
+	if u, ok := archTypeMap[string(text)]; ok {
+		*a = u
+		return nil
+	}
+
+	return fmt.Errorf("unknown ArchType %q", text)
 }
 
 var BuildOs = func() OsType {
@@ -1295,6 +1504,7 @@ type archConfig struct {
 
 func getMegaDeviceConfig() []archConfig {
 	return []archConfig{
+		{"arm", "armv7-a", "generic", []string{"armeabi-v7a"}},
 		{"arm", "armv7-a-neon", "generic", []string{"armeabi-v7a"}},
 		{"arm", "armv7-a-neon", "cortex-a7", []string{"armeabi-v7a"}},
 		{"arm", "armv7-a-neon", "cortex-a8", []string{"armeabi-v7a"}},
@@ -1335,18 +1545,20 @@ func getMegaDeviceConfig() []archConfig {
 		{"x86", "ivybridge", "", []string{"x86"}},
 		{"x86", "sandybridge", "", []string{"x86"}},
 		{"x86", "silvermont", "", []string{"x86"}},
+		{"x86", "stoneyridge", "", []string{"x86"}},
 		{"x86", "x86_64", "", []string{"x86"}},
 		{"x86_64", "", "", []string{"x86_64"}},
 		{"x86_64", "haswell", "", []string{"x86_64"}},
 		{"x86_64", "ivybridge", "", []string{"x86_64"}},
 		{"x86_64", "sandybridge", "", []string{"x86_64"}},
 		{"x86_64", "silvermont", "", []string{"x86_64"}},
+		{"x86_64", "stoneyridge", "", []string{"x86_64"}},
 	}
 }
 
 func getNdkAbisConfig() []archConfig {
 	return []archConfig{
-		{"arm", "armv7-a-neon", "", []string{"armeabi"}},
+		{"arm", "armv7-a", "", []string{"armeabi"}},
 		{"arm64", "armv8-a", "", []string{"arm64-v8a"}},
 		{"x86", "", "", []string{"x86"}},
 		{"x86_64", "", "", []string{"x86_64"}},

@@ -66,7 +66,7 @@ func (stl *stl) begin(ctx BaseModuleContext) {
 		}
 		if ctx.useSdk() && ctx.Device() {
 			switch s {
-			case "":
+			case "", "system":
 				return "ndk_system"
 			case "c++_shared", "c++_static":
 				return "ndk_lib" + s
@@ -245,7 +245,10 @@ func (stl *stl) flags(ctx ModuleContext, flags Flags) Flags {
 		ndkSrcRoot := android.PathForSource(ctx, "prebuilts/ndk/current/sources/cxx-stl/system/include")
 		flags.CFlags = append(flags.CFlags, "-isystem "+ndkSrcRoot.String())
 	case "ndk_libc++_shared", "ndk_libc++_static":
-		// Nothing.
+		if ctx.Arch().ArchType == android.Arm {
+			// Make sure the _Unwind_XXX symbols are not re-exported.
+			flags.LdFlags = append(flags.LdFlags, "-Wl,--exclude-libs,libunwind.a")
+		}
 	case "":
 		// None or error.
 		if !ctx.toolchain().Bionic() {

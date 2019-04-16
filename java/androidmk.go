@@ -38,7 +38,7 @@ func (library *Library) AndroidMkHostDex(w io.Writer, name string, data android.
 		}
 		fmt.Fprintln(w, "LOCAL_SOONG_HEADER_JAR :=", library.headerJarFile.String())
 		fmt.Fprintln(w, "LOCAL_SOONG_CLASSES_JAR :=", library.implementationAndResourcesJar.String())
-		fmt.Fprintln(w, "LOCAL_REQUIRED_MODULES := "+strings.Join(data.Required, " "))
+		android.WriteRequiredModulesSettings(w, data)
 		fmt.Fprintln(w, "include $(BUILD_SYSTEM)/soong_java_prebuilt.mk")
 	}
 }
@@ -65,7 +65,7 @@ func (library *Library) AndroidMk() android.AndroidMkData {
 					fmt.Fprintln(w, "LOCAL_SOONG_DEX_JAR :=", library.dexJarFile.String())
 				}
 				if len(library.dexpreopter.builtInstalled) > 0 {
-					fmt.Fprintln(w, "LOCAL_SOONG_BUILT_INSTALLED :=", strings.Join(library.dexpreopter.builtInstalled, " "))
+					fmt.Fprintln(w, "LOCAL_SOONG_BUILT_INSTALLED :=", library.dexpreopter.builtInstalled)
 				}
 				fmt.Fprintln(w, "LOCAL_SDK_VERSION :=", library.sdkVersion())
 				fmt.Fprintln(w, "LOCAL_SOONG_CLASSES_JAR :=", library.implementationAndResourcesJar.String())
@@ -77,6 +77,10 @@ func (library *Library) AndroidMk() android.AndroidMkData {
 
 				if len(library.exportedSdkLibs) != 0 {
 					fmt.Fprintln(w, "LOCAL_EXPORT_SDK_LIBRARIES :=", strings.Join(library.exportedSdkLibs, " "))
+				}
+
+				if len(library.additionalCheckedModules) != 0 {
+					fmt.Fprintln(w, "LOCAL_ADDITIONAL_CHECKED_MODULE +=", strings.Join(library.additionalCheckedModules.Strings(), " "))
 				}
 
 				// Temporary hack: export sources used to compile framework.jar to Make
@@ -95,22 +99,36 @@ func (library *Library) AndroidMk() android.AndroidMkData {
 	}
 }
 
+// Called for modules that are a component of a test suite.
+func testSuiteComponent(w io.Writer, test_suites []string) {
+	fmt.Fprintln(w, "LOCAL_MODULE_TAGS := tests")
+	if len(test_suites) > 0 {
+		fmt.Fprintln(w, "LOCAL_COMPATIBILITY_SUITE :=",
+			strings.Join(test_suites, " "))
+	} else {
+		fmt.Fprintln(w, "LOCAL_COMPATIBILITY_SUITE := null-suite")
+	}
+}
+
 func (j *Test) AndroidMk() android.AndroidMkData {
 	data := j.Library.AndroidMk()
 	data.Extra = append(data.Extra, func(w io.Writer, outputFile android.Path) {
-		fmt.Fprintln(w, "LOCAL_MODULE_TAGS := tests")
-		if len(j.testProperties.Test_suites) > 0 {
-			fmt.Fprintln(w, "LOCAL_COMPATIBILITY_SUITE :=",
-				strings.Join(j.testProperties.Test_suites, " "))
-		} else {
-			fmt.Fprintln(w, "LOCAL_COMPATIBILITY_SUITE := null-suite")
-		}
+		testSuiteComponent(w, j.testProperties.Test_suites)
 		if j.testConfig != nil {
 			fmt.Fprintln(w, "LOCAL_FULL_TEST_CONFIG :=", j.testConfig.String())
 		}
 	})
 
 	androidMkWriteTestData(j.data, &data)
+
+	return data
+}
+
+func (j *TestHelperLibrary) AndroidMk() android.AndroidMkData {
+	data := j.Library.AndroidMk()
+	data.Extra = append(data.Extra, func(w io.Writer, outputFile android.Path) {
+		testSuiteComponent(w, j.testHelperLibraryProperties.Test_suites)
+	})
 
 	return data
 }
@@ -126,6 +144,28 @@ func (prebuilt *Import) AndroidMk() android.AndroidMkData {
 				fmt.Fprintln(w, "LOCAL_SOONG_HEADER_JAR :=", prebuilt.combinedClasspathFile.String())
 				fmt.Fprintln(w, "LOCAL_SOONG_CLASSES_JAR :=", prebuilt.combinedClasspathFile.String())
 				fmt.Fprintln(w, "LOCAL_SDK_VERSION :=", prebuilt.sdkVersion())
+			},
+		},
+	}
+}
+
+func (prebuilt *DexImport) AndroidMk() android.AndroidMkData {
+	return android.AndroidMkData{
+		Class:      "JAVA_LIBRARIES",
+		OutputFile: android.OptionalPathForPath(prebuilt.maybeStrippedDexJarFile),
+		Include:    "$(BUILD_SYSTEM)/soong_java_prebuilt.mk",
+		Extra: []android.AndroidMkExtraFunc{
+			func(w io.Writer, outputFile android.Path) {
+				if prebuilt.dexJarFile != nil {
+					fmt.Fprintln(w, "LOCAL_SOONG_DEX_JAR :=", prebuilt.dexJarFile.String())
+					// TODO(b/125517186): export the dex jar as a classes jar to match some mis-uses in Make until
+					// boot_jars_package_check.mk can check dex jars.
+					fmt.Fprintln(w, "LOCAL_SOONG_HEADER_JAR :=", prebuilt.dexJarFile.String())
+					fmt.Fprintln(w, "LOCAL_SOONG_CLASSES_JAR :=", prebuilt.dexJarFile.String())
+				}
+				if len(prebuilt.dexpreopter.builtInstalled) > 0 {
+					fmt.Fprintln(w, "LOCAL_SOONG_BUILT_INSTALLED :=", prebuilt.dexpreopter.builtInstalled)
+				}
 			},
 		},
 	}
@@ -166,7 +206,7 @@ func (binary *Binary) AndroidMk() android.AndroidMkData {
 						fmt.Fprintln(w, "LOCAL_SOONG_DEX_JAR :=", binary.dexJarFile.String())
 					}
 					if len(binary.dexpreopter.builtInstalled) > 0 {
-						fmt.Fprintln(w, "LOCAL_SOONG_BUILT_INSTALLED :=", strings.Join(binary.dexpreopter.builtInstalled, " "))
+						fmt.Fprintln(w, "LOCAL_SOONG_BUILT_INSTALLED :=", binary.dexpreopter.builtInstalled)
 					}
 				},
 			},
@@ -235,10 +275,24 @@ func (app *AndroidApp) AndroidMk() android.AndroidMkData {
 					fmt.Fprintln(w, "LOCAL_NO_STANDARD_LIBRARIES := true")
 				}
 
-				if len(app.rroDirs) > 0 {
+				filterRRO := func(filter overlayType) android.Paths {
+					var paths android.Paths
+					for _, d := range app.rroDirs {
+						if d.overlayType == filter {
+							paths = append(paths, d.path)
+						}
+					}
 					// Reverse the order, Soong stores rroDirs in aapt2 order (low to high priority), but Make
 					// expects it in LOCAL_RESOURCE_DIRS order (high to low priority).
-					fmt.Fprintln(w, "LOCAL_SOONG_RRO_DIRS :=", strings.Join(android.ReversePaths(app.rroDirs).Strings(), " "))
+					return android.ReversePaths(paths)
+				}
+				deviceRRODirs := filterRRO(device)
+				if len(deviceRRODirs) > 0 {
+					fmt.Fprintln(w, "LOCAL_SOONG_DEVICE_RRO_DIRS :=", strings.Join(deviceRRODirs.Strings(), " "))
+				}
+				productRRODirs := filterRRO(product)
+				if len(productRRODirs) > 0 {
+					fmt.Fprintln(w, "LOCAL_SOONG_PRODUCT_RRO_DIRS :=", strings.Join(productRRODirs.Strings(), " "))
 				}
 
 				if Bool(app.appProperties.Export_package_resources) {
@@ -260,7 +314,11 @@ func (app *AndroidApp) AndroidMk() android.AndroidMkData {
 					fmt.Fprintln(w, "LOCAL_SOONG_JNI_LIBS_"+jniLib.target.Arch.ArchType.String(), "+=", jniLib.name)
 				}
 				if len(app.dexpreopter.builtInstalled) > 0 {
-					fmt.Fprintln(w, "LOCAL_SOONG_BUILT_INSTALLED :=", strings.Join(app.dexpreopter.builtInstalled, " "))
+					fmt.Fprintln(w, "LOCAL_SOONG_BUILT_INSTALLED :=", app.dexpreopter.builtInstalled)
+				}
+				for _, split := range app.aapt.splits {
+					install := "$(LOCAL_MODULE_PATH)/" + strings.TrimSuffix(app.installApkName, ".apk") + split.suffix + ".apk"
+					fmt.Fprintln(w, "LOCAL_SOONG_BUILT_INSTALLED +=", split.path.String()+":"+install)
 				}
 			},
 		},
@@ -281,13 +339,7 @@ func (a *AndroidApp) getOverriddenPackages() []string {
 func (a *AndroidTest) AndroidMk() android.AndroidMkData {
 	data := a.AndroidApp.AndroidMk()
 	data.Extra = append(data.Extra, func(w io.Writer, outputFile android.Path) {
-		fmt.Fprintln(w, "LOCAL_MODULE_TAGS := tests")
-		if len(a.testProperties.Test_suites) > 0 {
-			fmt.Fprintln(w, "LOCAL_COMPATIBILITY_SUITE :=",
-				strings.Join(a.testProperties.Test_suites, " "))
-		} else {
-			fmt.Fprintln(w, "LOCAL_COMPATIBILITY_SUITE := null-suite")
-		}
+		testSuiteComponent(w, a.testProperties.Test_suites)
 		if a.testConfig != nil {
 			fmt.Fprintln(w, "LOCAL_FULL_TEST_CONFIG :=", a.testConfig.String())
 		}
@@ -300,13 +352,7 @@ func (a *AndroidTest) AndroidMk() android.AndroidMkData {
 func (a *AndroidTestHelperApp) AndroidMk() android.AndroidMkData {
 	data := a.AndroidApp.AndroidMk()
 	data.Extra = append(data.Extra, func(w io.Writer, outputFile android.Path) {
-		fmt.Fprintln(w, "LOCAL_MODULE_TAGS := tests")
-		if len(a.appTestHelperAppProperties.Test_suites) > 0 {
-			fmt.Fprintln(w, "LOCAL_COMPATIBILITY_SUITE :=",
-				strings.Join(a.appTestHelperAppProperties.Test_suites, " "))
-		} else {
-			fmt.Fprintln(w, "LOCAL_COMPATIBILITY_SUITE := null-suite")
-		}
+		testSuiteComponent(w, a.appTestHelperAppProperties.Test_suites)
 	})
 
 	return data

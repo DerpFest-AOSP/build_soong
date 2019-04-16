@@ -17,15 +17,15 @@ package android
 import (
 	"fmt"
 	"io"
-	"strings"
 )
 
-// prebuilt_etc is for prebuilts that will be installed to
-// <partition>/etc/<subdir>
+// TODO(jungw): Now that it handles more than the ones in etc/, consider renaming this file.
 
 func init() {
 	RegisterModuleType("prebuilt_etc", PrebuiltEtcFactory)
 	RegisterModuleType("prebuilt_etc_host", PrebuiltEtcHostFactory)
+	RegisterModuleType("prebuilt_usr_share", PrebuiltUserShareFactory)
+	RegisterModuleType("prebuilt_usr_share_host", PrebuiltUserShareHostFactory)
 
 	PreDepsMutators(func(ctx RegisterMutatorsContext) {
 		ctx.BottomUp("prebuilt_etc", prebuiltEtcMutator).Parallel()
@@ -34,7 +34,7 @@ func init() {
 
 type prebuiltEtcProperties struct {
 	// Source file of this prebuilt.
-	Src *string `android:"arch_variant"`
+	Src *string `android:"path,arch_variant"`
 
 	// optional subdirectory under which this file is installed into
 	Sub_dir *string `android:"arch_variant"`
@@ -60,8 +60,10 @@ type PrebuiltEtc struct {
 
 	properties prebuiltEtcProperties
 
-	sourceFilePath         Path
-	outputFilePath         OutputPath
+	sourceFilePath Path
+	outputFilePath OutputPath
+	// The base install location, e.g. "etc" for prebuilt_etc, "usr/share" for prebuilt_usr_share.
+	installDirBase         string
 	installDirPath         OutputPath
 	additionalDependencies *Paths
 }
@@ -82,13 +84,10 @@ func (p *PrebuiltEtc) DepsMutator(ctx BottomUpMutatorContext) {
 	if p.properties.Src == nil {
 		ctx.PropertyErrorf("src", "missing prebuilt source file")
 	}
-
-	// To support ":modulename" in src
-	ExtractSourceDeps(ctx, p.properties.Src)
 }
 
 func (p *PrebuiltEtc) SourceFilePath(ctx ModuleContext) Path {
-	return ctx.ExpandSource(String(p.properties.Src), "src")
+	return PathForModuleSrc(ctx, String(p.properties.Src))
 }
 
 // This allows other derivative modules (e.g. prebuilt_etc_xml) to perform
@@ -110,7 +109,7 @@ func (p *PrebuiltEtc) Installable() bool {
 }
 
 func (p *PrebuiltEtc) GenerateAndroidBuildActions(ctx ModuleContext) {
-	p.sourceFilePath = ctx.ExpandSource(String(p.properties.Src), "src")
+	p.sourceFilePath = PathForModuleSrc(ctx, String(p.properties.Src))
 	filename := String(p.properties.Filename)
 	filename_from_src := Bool(p.properties.Filename_from_src)
 	if filename == "" {
@@ -124,7 +123,7 @@ func (p *PrebuiltEtc) GenerateAndroidBuildActions(ctx ModuleContext) {
 		return
 	}
 	p.outputFilePath = PathForModuleOut(ctx, filename).OutputPath
-	p.installDirPath = PathForModuleInstall(ctx, "etc", String(p.properties.Sub_dir))
+	p.installDirPath = PathForModuleInstall(ctx, p.installDirBase, String(p.properties.Sub_dir))
 
 	// This ensures that outputFilePath has the correct name for others to
 	// use, as the source file may have a different name.
@@ -157,7 +156,7 @@ func (p *PrebuiltEtc) AndroidMk() AndroidMkData {
 			fmt.Fprintln(w, "LOCAL_MODULE_PATH :=", "$(OUT_DIR)/"+p.installDirPath.RelPathString())
 			fmt.Fprintln(w, "LOCAL_INSTALLED_MODULE_STEM :=", p.outputFilePath.Base())
 			fmt.Fprintln(w, "LOCAL_UNINSTALLABLE_MODULE :=", !p.Installable())
-			fmt.Fprintln(w, "LOCAL_REQUIRED_MODULES :=", strings.Join(data.Required, " "))
+			WriteRequiredModulesSettings(w, data)
 			if p.additionalDependencies != nil {
 				fmt.Fprint(w, "LOCAL_ADDITIONAL_DEPENDENCIES :=")
 				for _, path := range *p.additionalDependencies {
@@ -174,16 +173,40 @@ func InitPrebuiltEtcModule(p *PrebuiltEtc) {
 	p.AddProperties(&p.properties)
 }
 
+// prebuilt_etc is for a prebuilt artifact that is installed in
+// <partition>/etc/<sub_dir> directory.
 func PrebuiltEtcFactory() Module {
-	module := &PrebuiltEtc{}
+	module := &PrebuiltEtc{installDirBase: "etc"}
 	InitPrebuiltEtcModule(module)
 	// This module is device-only
 	InitAndroidArchModule(module, DeviceSupported, MultilibFirst)
 	return module
 }
 
+// prebuilt_etc_host is for a host prebuilt artifact that is installed in
+// $(HOST_OUT)/etc/<sub_dir> directory.
 func PrebuiltEtcHostFactory() Module {
-	module := &PrebuiltEtc{}
+	module := &PrebuiltEtc{installDirBase: "etc"}
+	InitPrebuiltEtcModule(module)
+	// This module is host-only
+	InitAndroidArchModule(module, HostSupported, MultilibCommon)
+	return module
+}
+
+// prebuilt_usr_share is for a prebuilt artifact that is installed in
+// <partition>/usr/share/<sub_dir> directory.
+func PrebuiltUserShareFactory() Module {
+	module := &PrebuiltEtc{installDirBase: "usr/share"}
+	InitPrebuiltEtcModule(module)
+	// This module is device-only
+	InitAndroidArchModule(module, DeviceSupported, MultilibFirst)
+	return module
+}
+
+// prebuild_usr_share_host is for a host prebuilt artifact that is installed in
+// $(HOST_OUT)/usr/share/<sub_dir> directory.
+func PrebuiltUserShareHostFactory() Module {
+	module := &PrebuiltEtc{installDirBase: "usr/share"}
 	InitPrebuiltEtcModule(module)
 	// This module is host-only
 	InitAndroidArchModule(module, HostSupported, MultilibCommon)

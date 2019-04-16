@@ -338,6 +338,10 @@ func (stub *stubDecorator) link(ctx ModuleContext, flags Flags, deps PathDeps,
 	return stub.libraryDecorator.link(ctx, flags, deps, objs)
 }
 
+func (stub *stubDecorator) nativeCoverage() bool {
+	return false
+}
+
 func (stub *stubDecorator) install(ctx ModuleContext, path android.Path) {
 	arch := ctx.Target().Arch.ArchType.Name
 	apiLevel := stub.properties.ApiLevel
@@ -373,6 +377,8 @@ func newStubLibrary() *Module {
 	return module
 }
 
+// ndk_library creates a stub library that exposes dummy implementation
+// of functions and variables for use at build time only.
 func ndkLibraryFactory() android.Module {
 	module := newStubLibrary()
 	android.InitAndroidArchModule(module, android.DeviceSupported, android.MultilibBoth)

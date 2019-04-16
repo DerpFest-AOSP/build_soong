@@ -328,6 +328,9 @@ var bpTemplate = template.Must(template.New("bp").Parse(`
     {{- if .IsAar}}
     min_sdk_version: "{{.MinSdkVersion}}",
     static_libs: [
+        {{- range .BpJarDeps}}
+        "{{.}}",
+        {{- end}}
         {{- range .BpAarDeps}}
         "{{.}}",
         {{- end}}
@@ -349,7 +352,7 @@ var bpTemplate = template.Must(template.New("bp").Parse(`
     {{- end}}
     static_libs: [
         "{{.BpName}}-nodeps",
-         {{- range .BpJarDeps}}
+        {{- range .BpJarDeps}}
         "{{.}}",
         {{- end}}
         {{- range .BpAarDeps}}
@@ -605,7 +608,7 @@ Usage: %s [--rewrite <regex>=<replace>] [-exclude <module>] [--extra-deps <modul
 	buf := &bytes.Buffer{}
 
 	fmt.Fprintln(buf, "// Automatically generated with:")
-	fmt.Fprintln(buf, "// pom2bp", strings.Join(proptools.ShellEscape(os.Args[1:]), " "))
+	fmt.Fprintln(buf, "// pom2bp", strings.Join(proptools.ShellEscapeList(os.Args[1:]), " "))
 
 	for _, pom := range poms {
 		var err error

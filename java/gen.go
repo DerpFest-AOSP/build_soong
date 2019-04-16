@@ -23,8 +23,9 @@ import (
 func init() {
 	pctx.HostBinToolVariable("aidlCmd", "aidl")
 	pctx.HostBinToolVariable("syspropCmd", "sysprop_java")
-	pctx.SourcePathVariable("logtagsCmd", "build/tools/java-event-log-tags.py")
-	pctx.SourcePathVariable("mergeLogtagsCmd", "build/tools/merge-event-log-tags.py")
+	pctx.SourcePathVariable("logtagsCmd", "build/make/tools/java-event-log-tags.py")
+	pctx.SourcePathVariable("mergeLogtagsCmd", "build/make/tools/merge-event-log-tags.py")
+	pctx.SourcePathVariable("logtagsLib", "build/make/tools/event_log_tags.py")
 }
 
 var (
@@ -38,13 +39,13 @@ var (
 	logtags = pctx.AndroidStaticRule("logtags",
 		blueprint.RuleParams{
 			Command:     "$logtagsCmd -o $out $in",
-			CommandDeps: []string{"$logtagsCmd"},
+			CommandDeps: []string{"$logtagsCmd", "$logtagsLib"},
 		})
 
 	mergeLogtags = pctx.AndroidStaticRule("mergeLogtags",
 		blueprint.RuleParams{
 			Command:     "$mergeLogtagsCmd -o $out $in",
-			CommandDeps: []string{"$mergeLogtagsCmd"},
+			CommandDeps: []string{"$mergeLogtagsCmd", "$logtagsLib"},
 		})
 
 	sysprop = pctx.AndroidStaticRule("sysprop",
@@ -118,7 +119,7 @@ func (j *Module) genSources(ctx android.ModuleContext, srcFiles android.Paths,
 			javaFile := genLogtags(ctx, srcFile)
 			outSrcFiles = append(outSrcFiles, javaFile)
 		case ".proto":
-			srcJarFile := genProto(ctx, srcFile, flags)
+			srcJarFile := genProto(ctx, srcFile, flags.proto)
 			outSrcFiles = append(outSrcFiles, srcJarFile)
 		case ".sysprop":
 			srcJarFile := genSysprop(ctx, srcFile)

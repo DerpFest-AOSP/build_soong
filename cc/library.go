@@ -15,6 +15,7 @@
 package cc
 
 import (
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -30,8 +31,8 @@ import (
 )
 
 type StaticSharedLibraryProperties struct {
-	Srcs   []string `android:"arch_variant"`
-	Cflags []string `android:"arch_variant"`
+	Srcs   []string `android:"path,arch_variant"`
+	Cflags []string `android:"path,arch_variant"`
 
 	Enabled            *bool    `android:"arch_variant"`
 	Whole_static_libs  []string `android:"arch_variant"`
@@ -48,11 +49,11 @@ type LibraryProperties struct {
 	Shared StaticSharedLibraryProperties `android:"arch_variant"`
 
 	// local file name to pass to the linker as -unexported_symbols_list
-	Unexported_symbols_list *string `android:"arch_variant"`
+	Unexported_symbols_list *string `android:"path,arch_variant"`
 	// local file name to pass to the linker as -force_symbols_not_weak_list
-	Force_symbols_not_weak_list *string `android:"arch_variant"`
+	Force_symbols_not_weak_list *string `android:"path,arch_variant"`
 	// local file name to pass to the linker as -force_symbols_weak_list
-	Force_symbols_weak_list *string `android:"arch_variant"`
+	Force_symbols_weak_list *string `android:"path,arch_variant"`
 
 	// rename host libraries to prevent overlap with system installed libraries
 	Unique_host_soname *bool
@@ -67,12 +68,17 @@ type LibraryProperties struct {
 		Export_proto_headers *bool
 	}
 
+	Sysprop struct {
+		// Whether platform owns this sysprop library.
+		Platform *bool
+	} `blueprint:"mutated"`
+
 	Static_ndk_lib *bool
 
 	Stubs struct {
 		// Relative path to the symbol map. The symbol map provides the list of
 		// symbols that are exported for stubs variant of this library.
-		Symbol_file *string
+		Symbol_file *string `android:"path"`
 
 		// List versions to generate stubs libs for.
 		Versions []string
@@ -92,7 +98,7 @@ type LibraryProperties struct {
 	Header_abi_checker struct {
 		// Path to a symbol file that specifies the symbols to be included in the generated
 		// ABI dump file
-		Symbol_file *string
+		Symbol_file *string `android:"path"`
 
 		// Symbol versions that should be ignored from the symbol file
 		Exclude_symbol_versions []string
@@ -147,42 +153,48 @@ func init() {
 	android.RegisterModuleType("cc_library_headers", LibraryHeaderFactory)
 }
 
-// Module factory for combined static + shared libraries, device by default but with possible host
-// support
+// cc_library creates both static and/or shared libraries for a device and/or
+// host. By default, a cc_library has a single variant that targets the device.
+// Specifying `host_supported: true` also creates a library that targets the
+// host.
 func LibraryFactory() android.Module {
 	module, _ := NewLibrary(android.HostAndDeviceSupported)
 	return module.Init()
 }
 
-// Module factory for static libraries
+// cc_library_static creates a static library for a device and/or host binary.
 func LibraryStaticFactory() android.Module {
 	module, library := NewLibrary(android.HostAndDeviceSupported)
 	library.BuildOnlyStatic()
 	return module.Init()
 }
 
-// Module factory for shared libraries
+// cc_library_shared creates a shared library for a device and/or host.
 func LibrarySharedFactory() android.Module {
 	module, library := NewLibrary(android.HostAndDeviceSupported)
 	library.BuildOnlyShared()
 	return module.Init()
 }
 
-// Module factory for host static libraries
+// cc_library_host_static creates a static library that is linkable to a host
+// binary.
 func LibraryHostStaticFactory() android.Module {
 	module, library := NewLibrary(android.HostSupported)
 	library.BuildOnlyStatic()
 	return module.Init()
 }
 
-// Module factory for host shared libraries
+// cc_library_host_shared creates a shared library that is usable on a host.
 func LibraryHostSharedFactory() android.Module {
 	module, library := NewLibrary(android.HostSupported)
 	library.BuildOnlyShared()
 	return module.Init()
 }
 
-// Module factory for header-only libraries
+// cc_library_headers contains a set of c/c++ headers which are imported by
+// other soong cc modules using the header_libs property. For best practices,
+// use export_include_dirs property or LOCAL_EXPORT_C_INCLUDE_DIRS for
+// Make.
 func LibraryHeaderFactory() android.Module {
 	module, library := NewLibrary(android.HostAndDeviceSupported)
 	library.HeaderOnly()
@@ -284,6 +296,12 @@ type libraryDecorator struct {
 	distFile android.OptionalPath
 
 	versionScriptPath android.ModuleGenPath
+
+	post_install_cmds []string
+
+	// If useCoreVariant is true, the vendor variant of a VNDK library is
+	// not installed.
+	useCoreVariant bool
 
 	// Decorated interafaces
 	*baseCompiler
@@ -442,11 +460,11 @@ func (library *libraryDecorator) compile(ctx ModuleContext, flags Flags, deps Pa
 	buildFlags := flagsToBuilderFlags(flags)
 
 	if library.static() {
-		srcs := ctx.ExpandSources(library.Properties.Static.Srcs, nil)
+		srcs := android.PathsForModuleSrc(ctx, library.Properties.Static.Srcs)
 		objs = objs.Append(compileObjs(ctx, buildFlags, android.DeviceStaticLibrary,
 			srcs, library.baseCompiler.pathDeps, library.baseCompiler.cFlagsDeps))
 	} else if library.shared() {
-		srcs := ctx.ExpandSources(library.Properties.Shared.Srcs, nil)
+		srcs := android.PathsForModuleSrc(ctx, library.Properties.Shared.Srcs)
 		objs = objs.Append(compileObjs(ctx, buildFlags, android.DeviceSharedLibrary,
 			srcs, library.baseCompiler.pathDeps, library.baseCompiler.cFlagsDeps))
 	}
@@ -521,12 +539,6 @@ func (library *libraryDecorator) linkerInit(ctx BaseModuleContext) {
 func (library *libraryDecorator) compilerDeps(ctx DepsContext, deps Deps) Deps {
 	deps = library.baseCompiler.compilerDeps(ctx, deps)
 
-	if library.static() {
-		android.ExtractSourcesDeps(ctx, library.Properties.Static.Srcs)
-	} else if library.shared() {
-		android.ExtractSourcesDeps(ctx, library.Properties.Shared.Srcs)
-	}
-
 	return deps
 }
 
@@ -590,10 +602,6 @@ func (library *libraryDecorator) linkerDeps(ctx DepsContext, deps Deps) Deps {
 		deps.ReexportSharedLibHeaders = removeListFromList(deps.ReexportSharedLibHeaders, library.baseLinker.Properties.Target.Recovery.Exclude_shared_libs)
 		deps.ReexportStaticLibHeaders = removeListFromList(deps.ReexportStaticLibHeaders, library.baseLinker.Properties.Target.Recovery.Exclude_static_libs)
 	}
-
-	android.ExtractSourceDeps(ctx, library.Properties.Unexported_symbols_list)
-	android.ExtractSourceDeps(ctx, library.Properties.Force_symbols_not_weak_list)
-	android.ExtractSourceDeps(ctx, library.Properties.Force_symbols_weak_list)
 
 	return deps
 }
@@ -744,6 +752,13 @@ func (library *libraryDecorator) unstrippedOutputFilePath() android.Path {
 	return library.unstrippedOutputFile
 }
 
+func (library *libraryDecorator) nativeCoverage() bool {
+	if library.header() || library.buildStubs() {
+		return false
+	}
+	return true
+}
+
 func getRefAbiDumpFile(ctx ModuleContext, vndkVersion, fileName string) android.Path {
 	isLlndk := inList(ctx.baseModuleName(), llndkLibraries) || inList(ctx.baseModuleName(), ndkMigratedLibs)
 
@@ -789,7 +804,7 @@ func (library *libraryDecorator) linkSAbiDumpFiles(ctx ModuleContext, objs Objec
 		refAbiDumpFile := getRefAbiDumpFile(ctx, vndkVersion, fileName)
 		if refAbiDumpFile != nil {
 			library.sAbiDiff = SourceAbiDiff(ctx, library.sAbiOutputFile.Path(),
-				refAbiDumpFile, fileName, exportedHeaderFlags, ctx.isVndkExt())
+				refAbiDumpFile, fileName, exportedHeaderFlags, ctx.isLlndk(), ctx.isNdk(), ctx.isVndkExt())
 		}
 	}
 }
@@ -824,10 +839,10 @@ func (library *libraryDecorator) link(ctx ModuleContext,
 	if Bool(library.Properties.Proto.Export_proto_headers) {
 		if library.baseCompiler.hasSrcExt(".proto") {
 			includes := []string{}
-			if flags.ProtoRoot {
-				includes = append(includes, "-I"+android.ProtoSubDir(ctx).String())
+			if flags.proto.CanonicalPathFromRoot {
+				includes = append(includes, "-I"+flags.proto.SubDir.String())
 			}
-			includes = append(includes, "-I"+android.ProtoDir(ctx).String())
+			includes = append(includes, "-I"+flags.proto.Dir.String())
 			library.reexportFlags(includes)
 			library.reuseExportedFlags = append(library.reuseExportedFlags, includes...)
 			library.reexportDeps(library.baseCompiler.pathDeps) // TODO: restrict to proto deps
@@ -836,9 +851,27 @@ func (library *libraryDecorator) link(ctx ModuleContext,
 	}
 
 	if library.baseCompiler.hasSrcExt(".sysprop") {
-		flags := []string{
+		internalFlags := []string{
 			"-I" + android.PathForModuleGen(ctx, "sysprop", "include").String(),
 		}
+		systemFlags := []string{
+			"-I" + android.PathForModuleGen(ctx, "sysprop/system", "include").String(),
+		}
+
+		flags := internalFlags
+
+		if library.Properties.Sysprop.Platform != nil {
+			isProduct := ctx.ProductSpecific() && !ctx.useVndk()
+			isVendor := ctx.useVndk()
+			isOwnerPlatform := Bool(library.Properties.Sysprop.Platform)
+
+			useSystem := isProduct || (isOwnerPlatform == isVendor)
+
+			if useSystem {
+				flags = systemFlags
+			}
+		}
+
 		library.reexportFlags(flags)
 		library.reexportDeps(library.baseCompiler.pathDeps)
 		library.reuseExportedFlags = append(library.reuseExportedFlags, flags...)
@@ -875,12 +908,23 @@ func (library *libraryDecorator) toc() android.OptionalPath {
 	return library.tocFile
 }
 
+func (library *libraryDecorator) installSymlinkToRuntimeApex(ctx ModuleContext, file android.Path) {
+	dir := library.baseInstaller.installDir(ctx)
+	dirOnDevice := android.InstallPathToOnDevicePath(ctx, dir)
+	target := "/" + filepath.Join("apex", "com.android.runtime", dir.Base(), "bionic", file.Base())
+	ctx.InstallAbsoluteSymlink(dir, file.Base(), target)
+	library.post_install_cmds = append(library.post_install_cmds, makeSymlinkCmd(dirOnDevice, file.Base(), target))
+}
+
 func (library *libraryDecorator) install(ctx ModuleContext, file android.Path) {
 	if library.shared() {
 		if ctx.Device() && ctx.useVndk() {
 			if ctx.isVndkSp() {
 				library.baseInstaller.subDir = "vndk-sp"
 			} else if ctx.isVndk() {
+				if ctx.DeviceConfig().VndkUseCoreVariant() && !ctx.mustUseVendorVariant() {
+					library.useCoreVariant = true
+				}
 				library.baseInstaller.subDir = "vndk"
 			}
 
@@ -892,15 +936,13 @@ func (library *libraryDecorator) install(ctx ModuleContext, file android.Path) {
 				}
 			}
 		} else if len(library.Properties.Stubs.Versions) > 0 && android.DirectlyInAnyApex(ctx, ctx.ModuleName()) {
-			// If a library in an APEX has stable versioned APIs, we basically don't need
-			// to have the platform variant of the library in /system partition because
-			// platform components can just use the lib from the APEX without fearing about
-			// compatibility. However, if the library is required for some early processes
-			// before the APEX is activated, the platform variant may also be required.
-			// In that case, it is installed to the subdirectory 'bootstrap' in order to
-			// be distinguished/isolated from other non-bootstrap libraries in /system/lib
-			// so that the bootstrap libraries are used only when the APEX isn't ready.
-			if !library.buildStubs() && ctx.Arch().Native {
+			// Bionic libraries (e.g. libc.so) is installed to the bootstrap subdirectory.
+			// The original path becomes a symlink to the corresponding file in the
+			// runtime APEX.
+			if isBionic(ctx.baseModuleName()) && !library.buildStubs() && ctx.Arch().Native && !ctx.inRecovery() {
+				if ctx.Device() {
+					library.installSymlinkToRuntimeApex(ctx, file)
+				}
 				library.baseInstaller.subDir = "bootstrap"
 			}
 		}

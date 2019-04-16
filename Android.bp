@@ -37,6 +37,7 @@ bootstrap_go_package {
         "blueprint-bootstrap",
         "soong",
         "soong-env",
+        "soong-shared",
     ],
     srcs: [
         "android/androidmk.go",
@@ -55,7 +56,9 @@ bootstrap_go_package {
         "android/namespace.go",
         "android/neverallow.go",
         "android/onceper.go",
+        "android/override_module.go",
         "android/package_ctx.go",
+        "android/path_properties.go",
         "android/paths.go",
         "android/prebuilt.go",
         "android/prebuilt_etc.go",
@@ -67,6 +70,7 @@ bootstrap_go_package {
         "android/testing.go",
         "android/util.go",
         "android/variable.go",
+        "android/vts_config.go",
         "android/writedocs.go",
 
         // Lock down environment access last
@@ -79,12 +83,14 @@ bootstrap_go_package {
         "android/namespace_test.go",
         "android/neverallow_test.go",
         "android/onceper_test.go",
+        "android/path_properties_test.go",
         "android/paths_test.go",
         "android/prebuilt_test.go",
         "android/prebuilt_etc_test.go",
         "android/rule_builder_test.go",
         "android/util_test.go",
         "android/variable_test.go",
+        "android/vts_config_test.go",
     ],
 }
 
@@ -99,6 +105,7 @@ bootstrap_go_package {
         "cc/config/global.go",
         "cc/config/tidy.go",
         "cc/config/toolchain.go",
+        "cc/config/vndk.go",
 
         "cc/config/arm_device.go",
         "cc/config/arm64_device.go",
@@ -148,6 +155,7 @@ bootstrap_go_package {
         "cc/sabi.go",
         "cc/stl.go",
         "cc/strip.go",
+        "cc/sysprop.go",
         "cc/tidy.go",
         "cc/util.go",
         "cc/vndk.go",
@@ -178,12 +186,15 @@ bootstrap_go_package {
         "cc/genrule.go",
 
         "cc/vendor_public_library.go",
+
+        "cc/testing.go",
     ],
     testSrcs: [
         "cc/cc_test.go",
         "cc/gen_test.go",
         "cc/genrule_test.go",
         "cc/library_test.go",
+        "cc/proto_test.go",
         "cc/test_data_test.go",
         "cc/util_test.go",
     ],
@@ -245,8 +256,11 @@ bootstrap_go_package {
         "java/app_builder.go",
         "java/app.go",
         "java/builder.go",
+        "java/device_host_converter.go",
         "java/dex.go",
         "java/dexpreopt.go",
+        "java/dexpreopt_bootjars.go",
+        "java/dexpreopt_config.go",
         "java/droiddoc.go",
         "java/gen.go",
         "java/genrule.go",
@@ -264,10 +278,13 @@ bootstrap_go_package {
         "java/sdk_library.go",
         "java/support_libraries.go",
         "java/system_modules.go",
+        "java/testing.go",
     ],
     testSrcs: [
         "java/app_test.go",
+        "java/device_host_converter_test.go",
         "java/dexpreopt_test.go",
+        "java/dexpreopt_bootjars_test.go",
         "java/java_test.go",
         "java/jdeps_test.go",
         "java/kotlin_test.go",
@@ -367,6 +384,7 @@ bootstrap_go_package {
         "soong-android",
         "soong-cc",
         "soong-java",
+        "soong-python",
     ],
     srcs: [
         "apex/apex.go",
@@ -374,6 +392,25 @@ bootstrap_go_package {
     ],
     testSrcs: [
         "apex/apex_test.go",
+    ],
+    pluginFor: ["soong_build"],
+}
+
+bootstrap_go_package {
+    name: "soong-sysprop",
+    pkgPath: "android/soong/sysprop",
+    deps: [
+        "blueprint",
+        "soong",
+        "soong-android",
+        "soong-cc",
+        "soong-java",
+    ],
+    srcs: [
+        "sysprop/sysprop_library.go",
+    ],
+    testSrcs: [
+        "sysprop/sysprop_test.go",
     ],
     pluginFor: ["soong_build"],
 }

@@ -65,7 +65,8 @@ var combineApk = pctx.AndroidStaticRule("combineApk",
 func CreateAppPackage(ctx android.ModuleContext, outputFile android.WritablePath,
 	packageFile, jniJarFile, dexJarFile android.Path, certificates []Certificate) {
 
-	unsignedApk := android.PathForModuleOut(ctx, "unsigned.apk")
+	unsignedApkName := strings.TrimSuffix(outputFile.Base(), ".apk") + "-unsigned.apk"
+	unsignedApk := android.PathForModuleOut(ctx, unsignedApkName)
 
 	var inputs android.Paths
 	if dexJarFile != nil {
@@ -83,8 +84,10 @@ func CreateAppPackage(ctx android.ModuleContext, outputFile android.WritablePath
 	})
 
 	var certificateArgs []string
+	var deps android.Paths
 	for _, c := range certificates {
 		certificateArgs = append(certificateArgs, c.Pem.String(), c.Key.String())
+		deps = append(deps, c.Pem, c.Key)
 	}
 
 	ctx.Build(pctx, android.BuildParams{
@@ -92,6 +95,7 @@ func CreateAppPackage(ctx android.ModuleContext, outputFile android.WritablePath
 		Description: "signapk",
 		Output:      outputFile,
 		Input:       unsignedApk,
+		Implicits:   deps,
 		Args: map[string]string{
 			"certificates": strings.Join(certificateArgs, " "),
 		},
@@ -224,7 +228,7 @@ func TransformJniLibsToJar(ctx android.ModuleContext, outputFile android.Writabl
 		Output:      outputFile,
 		Implicits:   deps,
 		Args: map[string]string{
-			"jarArgs": strings.Join(proptools.NinjaAndShellEscape(jarArgs), " "),
+			"jarArgs": strings.Join(proptools.NinjaAndShellEscapeList(jarArgs), " "),
 		},
 	})
 }
