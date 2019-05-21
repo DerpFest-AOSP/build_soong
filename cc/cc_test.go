@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"os"
+	"path/filepath"
 	"reflect"
 	"sort"
 	"strings"
@@ -51,55 +52,14 @@ func TestMain(m *testing.M) {
 	os.Exit(run())
 }
 
-func createTestContext(t *testing.T, config android.Config, bp string, os android.OsType) *android.TestContext {
-	ctx := android.NewTestArchContext()
-	ctx.RegisterModuleType("cc_binary", android.ModuleFactoryAdaptor(BinaryFactory))
-	ctx.RegisterModuleType("cc_binary_host", android.ModuleFactoryAdaptor(binaryHostFactory))
-	ctx.RegisterModuleType("cc_library", android.ModuleFactoryAdaptor(LibraryFactory))
-	ctx.RegisterModuleType("cc_library_shared", android.ModuleFactoryAdaptor(LibrarySharedFactory))
-	ctx.RegisterModuleType("cc_library_static", android.ModuleFactoryAdaptor(LibraryStaticFactory))
-	ctx.RegisterModuleType("cc_library_headers", android.ModuleFactoryAdaptor(LibraryHeaderFactory))
-	ctx.RegisterModuleType("toolchain_library", android.ModuleFactoryAdaptor(ToolchainLibraryFactory))
-	ctx.RegisterModuleType("llndk_library", android.ModuleFactoryAdaptor(LlndkLibraryFactory))
-	ctx.RegisterModuleType("llndk_headers", android.ModuleFactoryAdaptor(llndkHeadersFactory))
-	ctx.RegisterModuleType("vendor_public_library", android.ModuleFactoryAdaptor(vendorPublicLibraryFactory))
-	ctx.RegisterModuleType("cc_object", android.ModuleFactoryAdaptor(ObjectFactory))
-	ctx.RegisterModuleType("filegroup", android.ModuleFactoryAdaptor(android.FileGroupFactory))
-	ctx.PreDepsMutators(func(ctx android.RegisterMutatorsContext) {
-		ctx.BottomUp("image", ImageMutator).Parallel()
-		ctx.BottomUp("link", LinkageMutator).Parallel()
-		ctx.BottomUp("vndk", VndkMutator).Parallel()
-		ctx.BottomUp("version", VersionMutator).Parallel()
-		ctx.BottomUp("begin", BeginMutator).Parallel()
-	})
-	ctx.PostDepsMutators(func(ctx android.RegisterMutatorsContext) {
-		ctx.TopDown("double_loadable", checkDoubleLoadableLibraries).Parallel()
-	})
-	ctx.Register()
-
-	// add some modules that are required by the compiler and/or linker
-	bp = bp + GatherRequiredDepsForTest(os)
-
-	ctx.MockFileSystem(map[string][]byte{
-		"Android.bp":  []byte(bp),
-		"foo.c":       nil,
-		"bar.c":       nil,
-		"a.proto":     nil,
-		"b.aidl":      nil,
-		"my_include":  nil,
-		"foo.map.txt": nil,
-	})
-
-	return ctx
-}
-
 func testCcWithConfig(t *testing.T, bp string, config android.Config) *android.TestContext {
 	return testCcWithConfigForOs(t, bp, config, android.Android)
 }
 
 func testCcWithConfigForOs(t *testing.T, bp string, config android.Config, os android.OsType) *android.TestContext {
 	t.Helper()
-	ctx := createTestContext(t, config, bp, os)
+	ctx := CreateTestContext(bp, nil, os)
+	ctx.Register()
 
 	_, errs := ctx.ParseFileList(".", []string{"Android.bp"})
 	android.FailIfErrored(t, errs)
@@ -132,7 +92,8 @@ func testCcError(t *testing.T, pattern string, bp string) {
 	config.TestProductVariables.DeviceVndkVersion = StringPtr("current")
 	config.TestProductVariables.Platform_vndk_version = StringPtr("VER")
 
-	ctx := createTestContext(t, config, bp, android.Android)
+	ctx := CreateTestContext(bp, nil, android.Android)
+	ctx.Register()
 
 	_, errs := ctx.ParseFileList(".", []string{"Android.bp"})
 	if len(errs) > 0 {
@@ -286,8 +247,28 @@ func checkVndkModule(t *testing.T, ctx *android.TestContext, name, subDir string
 	}
 }
 
+func checkVndkSnapshot(t *testing.T, ctx *android.TestContext, name, subDir, variant string) {
+	vndkSnapshot := ctx.SingletonForTests("vndk-snapshot")
+
+	snapshotPath := filepath.Join(subDir, name+".so")
+	mod := ctx.ModuleForTests(name, variant).Module().(*Module)
+	if !mod.outputFile.Valid() {
+		t.Errorf("%q must have output\n", name)
+		return
+	}
+
+	out := vndkSnapshot.Output(snapshotPath)
+	if out.Input != mod.outputFile.Path() {
+		t.Errorf("The input of VNDK snapshot must be %q, but %q", out.Input.String(), mod.outputFile.String())
+	}
+}
+
 func TestVndk(t *testing.T) {
-	ctx := testCc(t, `
+	config := android.TestArchConfig(buildDir, nil)
+	config.TestProductVariables.DeviceVndkVersion = StringPtr("current")
+	config.TestProductVariables.Platform_vndk_version = StringPtr("VER")
+
+	ctx := testCcWithConfig(t, `
 		cc_library {
 			name: "libvndk",
 			vendor_available: true,
@@ -325,12 +306,35 @@ func TestVndk(t *testing.T) {
 			},
 			nocrt: true,
 		}
-	`)
+	`, config)
 
 	checkVndkModule(t, ctx, "libvndk", "vndk-VER", false, "")
 	checkVndkModule(t, ctx, "libvndk_private", "vndk-VER", false, "")
 	checkVndkModule(t, ctx, "libvndk_sp", "vndk-sp-VER", true, "")
 	checkVndkModule(t, ctx, "libvndk_sp_private", "vndk-sp-VER", true, "")
+
+	// Check VNDK snapshot output.
+
+	snapshotDir := "vndk-snapshot"
+	snapshotVariantPath := filepath.Join(buildDir, snapshotDir, "arm64")
+
+	vndkLibPath := filepath.Join(snapshotVariantPath, fmt.Sprintf("arch-%s-%s",
+		"arm64", "armv8-a"))
+	vndkLib2ndPath := filepath.Join(snapshotVariantPath, fmt.Sprintf("arch-%s-%s",
+		"arm", "armv7-a-neon"))
+
+	vndkCoreLibPath := filepath.Join(vndkLibPath, "shared", "vndk-core")
+	vndkSpLibPath := filepath.Join(vndkLibPath, "shared", "vndk-sp")
+	vndkCoreLib2ndPath := filepath.Join(vndkLib2ndPath, "shared", "vndk-core")
+	vndkSpLib2ndPath := filepath.Join(vndkLib2ndPath, "shared", "vndk-sp")
+
+	variant := "android_arm64_armv8-a_vendor_shared"
+	variant2nd := "android_arm_armv7-a-neon_vendor_shared"
+
+	checkVndkSnapshot(t, ctx, "libvndk", vndkCoreLibPath, variant)
+	checkVndkSnapshot(t, ctx, "libvndk", vndkCoreLib2ndPath, variant2nd)
+	checkVndkSnapshot(t, ctx, "libvndk_sp", vndkSpLibPath, variant)
+	checkVndkSnapshot(t, ctx, "libvndk_sp", vndkSpLib2ndPath, variant2nd)
 }
 
 func TestVndkDepError(t *testing.T) {
@@ -1833,13 +1837,13 @@ func TestStaticLibDepExport(t *testing.T) {
 	// Check the shared version of lib2.
 	variant := "android_arm64_armv8-a_core_shared"
 	module := ctx.ModuleForTests("lib2", variant).Module().(*Module)
-	checkStaticLibs(t, []string{"lib1", "libclang_rt.builtins-aarch64-android", "libatomic", "libgcc"}, module)
+	checkStaticLibs(t, []string{"lib1", "libclang_rt.builtins-aarch64-android", "libatomic", "libgcc_stripped"}, module)
 
 	// Check the static version of lib2.
 	variant = "android_arm64_armv8-a_core_static"
 	module = ctx.ModuleForTests("lib2", variant).Module().(*Module)
 	// libc++_static is linked additionally.
-	checkStaticLibs(t, []string{"lib1", "libc++_static", "libclang_rt.builtins-aarch64-android", "libatomic", "libgcc"}, module)
+	checkStaticLibs(t, []string{"lib1", "libc++_static", "libclang_rt.builtins-aarch64-android", "libatomic", "libgcc_stripped"}, module)
 }
 
 var compilerFlagsTestCases = []struct {

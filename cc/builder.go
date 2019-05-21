@@ -26,6 +26,7 @@ import (
 	"strings"
 
 	"github.com/google/blueprint"
+	"github.com/google/blueprint/pathtools"
 
 	"android/soong/android"
 	"android/soong/cc/config"
@@ -122,12 +123,25 @@ var (
 	_ = pctx.SourcePathVariable("stripPath", "build/soong/scripts/strip.sh")
 	_ = pctx.SourcePathVariable("xzCmd", "prebuilts/build-tools/${config.HostPrebuiltTag}/bin/xz")
 
+	// b/132822437: objcopy uses a file descriptor per .o file when called on .a files, which runs the system out of
+	// file descriptors on darwin.  Limit concurrent calls to 10 on darwin.
+	darwinStripPool = func() blueprint.Pool {
+		if runtime.GOOS == "darwin" {
+			return pctx.StaticPool("darwinStripPool", blueprint.PoolParams{
+				Depth: 10,
+			})
+		} else {
+			return nil
+		}
+	}()
+
 	strip = pctx.AndroidStaticRule("strip",
 		blueprint.RuleParams{
 			Depfile:     "${out}.d",
 			Deps:        blueprint.DepsGCC,
 			Command:     "CROSS_COMPILE=$crossCompile XZ=$xzCmd CLANG_BIN=${config.ClangBin} $stripPath ${args} -i ${in} -o ${out} -d ${out}.d",
 			CommandDeps: []string{"$stripPath", "$xzCmd"},
+			Pool:        darwinStripPool,
 		},
 		"args", "crossCompile")
 
@@ -253,10 +267,12 @@ type builderFlags struct {
 
 	groupStaticLibs bool
 
-	stripKeepSymbols       bool
-	stripKeepMiniDebugInfo bool
-	stripAddGnuDebuglink   bool
-	stripUseGnuStrip       bool
+	stripKeepSymbols              bool
+	stripKeepSymbolsList          string
+	stripKeepSymbolsAndDebugFrame bool
+	stripKeepMiniDebugInfo        bool
+	stripAddGnuDebuglink          bool
+	stripUseGnuStrip              bool
 
 	proto            android.ProtoFlags
 	protoC           bool
@@ -596,7 +612,7 @@ func transformDarwinObjToStaticLib(ctx android.ModuleContext, objFiles android.P
 // and shared libraries, to a shared library (.so) or dynamic executable
 func TransformObjToDynamicBinary(ctx android.ModuleContext,
 	objFiles, sharedLibs, staticLibs, lateStaticLibs, wholeStaticLibs, deps android.Paths,
-	crtBegin, crtEnd android.OptionalPath, groupLate bool, flags builderFlags, outputFile android.WritablePath) {
+	crtBegin, crtEnd android.OptionalPath, groupLate bool, flags builderFlags, outputFile android.WritablePath, implicitOutputs android.WritablePaths) {
 
 	ldCmd := "${config.ClangBin}/clang++"
 
@@ -633,7 +649,11 @@ func TransformObjToDynamicBinary(ctx android.ModuleContext,
 	}
 
 	for _, lib := range sharedLibs {
-		libFlagsList = append(libFlagsList, lib.String())
+		libFile := lib.String()
+		if ctx.Windows() {
+			libFile = pathtools.ReplaceExtension(libFile, "lib")
+		}
+		libFlagsList = append(libFlagsList, libFile)
 	}
 
 	deps = append(deps, staticLibs...)
@@ -644,11 +664,12 @@ func TransformObjToDynamicBinary(ctx android.ModuleContext,
 	}
 
 	ctx.Build(pctx, android.BuildParams{
-		Rule:        ld,
-		Description: "link " + outputFile.Base(),
-		Output:      outputFile,
-		Inputs:      objFiles,
-		Implicits:   deps,
+		Rule:            ld,
+		Description:     "link " + outputFile.Base(),
+		Output:          outputFile,
+		ImplicitOutputs: implicitOutputs,
+		Inputs:          objFiles,
+		Implicits:       deps,
 		Args: map[string]string{
 			"ldCmd":    ldCmd,
 			"crtBegin": crtBegin.String(),
@@ -828,6 +849,12 @@ func TransformStrip(ctx android.ModuleContext, inputFile android.Path,
 	}
 	if flags.stripKeepSymbols {
 		args += " --keep-symbols"
+	}
+	if flags.stripKeepSymbolsList != "" {
+		args += " -k" + flags.stripKeepSymbolsList
+	}
+	if flags.stripKeepSymbolsAndDebugFrame {
+		args += " --keep-symbols-and-debug-frame"
 	}
 	if flags.stripUseGnuStrip {
 		args += " --use-gnu-strip"

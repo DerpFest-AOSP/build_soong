@@ -165,6 +165,16 @@ type productVariables struct {
 	DeviceSecondaryCpuVariant  *string  `json:",omitempty"`
 	DeviceSecondaryAbi         []string `json:",omitempty"`
 
+	NativeBridgeArch        *string  `json:",omitempty"`
+	NativeBridgeArchVariant *string  `json:",omitempty"`
+	NativeBridgeCpuVariant  *string  `json:",omitempty"`
+	NativeBridgeAbi         []string `json:",omitempty"`
+
+	NativeBridgeSecondaryArch        *string  `json:",omitempty"`
+	NativeBridgeSecondaryArchVariant *string  `json:",omitempty"`
+	NativeBridgeSecondaryCpuVariant  *string  `json:",omitempty"`
+	NativeBridgeSecondaryAbi         []string `json:",omitempty"`
+
 	HostArch          *string `json:",omitempty"`
 	HostSecondaryArch *string `json:",omitempty"`
 
@@ -267,6 +277,9 @@ type productVariables struct {
 	BoardOdmSepolicyDirs         []string `json:",omitempty"`
 	BoardPlatPublicSepolicyDirs  []string `json:",omitempty"`
 	BoardPlatPrivateSepolicyDirs []string `json:",omitempty"`
+	BoardSepolicyM4Defs          []string `json:",omitempty"`
+
+	BoardVndkRuntimeDisable *bool `json:",omitempty"`
 
 	VendorVars map[string]map[string]string `json:",omitempty"`
 
@@ -288,7 +301,11 @@ type productVariables struct {
 	ProductHiddenAPIStubsSystem []string `json:",omitempty"`
 	ProductHiddenAPIStubsTest   []string `json:",omitempty"`
 
-	TargetFSConfigGen *string `json:",omitempty"`
+	ProductPublicSepolicyDirs  []string `json:",omitempty"`
+	ProductPrivateSepolicyDirs []string `json:",omitempty"`
+	ProductCompatibleProperty  *bool    `json:",omitempty"`
+
+	TargetFSConfigGen []string `json:",omitempty"`
 }
 
 func boolPtr(v bool) *bool {

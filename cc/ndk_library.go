@@ -38,9 +38,12 @@ var (
 	ndkLibrarySuffix = ".ndk"
 
 	ndkPrebuiltSharedLibs = []string{
+		"aaudio",
+		"amidi",
 		"android",
 		"binder_ndk",
 		"c",
+		"camera2ndk",
 		"dl",
 		"EGL",
 		"GLESv1_CM",
@@ -49,6 +52,7 @@ var (
 		"jnigraphics",
 		"log",
 		"mediandk",
+		"nativewindow",
 		"m",
 		"OpenMAXAL",
 		"OpenSLES",
@@ -382,5 +386,6 @@ func newStubLibrary() *Module {
 func ndkLibraryFactory() android.Module {
 	module := newStubLibrary()
 	android.InitAndroidArchModule(module, android.DeviceSupported, android.MultilibBoth)
+	module.ModuleBase.EnableNativeBridgeSupportByDefault()
 	return module
 }

@@ -93,6 +93,13 @@ func testApex(t *testing.T, bp string) *android.TestContext {
 		}
 
 		toolchain_library {
+			name: "libgcc_stripped",
+			src: "",
+			vendor_available: true,
+			recovery_available: true,
+		}
+
+		toolchain_library {
 			name: "libclang_rt.builtins-aarch64-android",
 			src: "",
 			vendor_available: true,
@@ -171,6 +178,7 @@ func testApex(t *testing.T, bp string) *android.TestContext {
 		"testkey2.pem":                         nil,
 		"myapex-arm64.apex":                    nil,
 		"myapex-arm.apex":                      nil,
+		"frameworks/base/api/current.txt":      nil,
 	})
 	_, errs := ctx.ParseFileList(".", []string{"Android.bp"})
 	android.FailIfErrored(t, errs)
@@ -190,6 +198,8 @@ func setup(t *testing.T) (config android.Config, buildDir string) {
 	config.TestProductVariables.DeviceVndkVersion = proptools.StringPtr("current")
 	config.TestProductVariables.DefaultAppCertificate = proptools.StringPtr("vendor/foo/devkeys/test")
 	config.TestProductVariables.CertificateOverrides = []string{"myapex_keytest:myapex.certificate.override"}
+	config.TestProductVariables.Platform_sdk_codename = proptools.StringPtr("Q")
+	config.TestProductVariables.Platform_sdk_final = proptools.BoolPtr(false)
 	return
 }
 

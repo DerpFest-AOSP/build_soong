@@ -84,6 +84,7 @@ var (
 		"-Wl,--fatal-warnings",
 		"-Wl,--no-undefined-version",
 		"-Wl,--exclude-libs,libgcc.a",
+		"-Wl,--exclude-libs,libgcc_stripped.a",
 	}
 
 	deviceGlobalLldflags = append(ClangFilterUnknownLldflags(deviceGlobalLdflags),
@@ -121,8 +122,8 @@ var (
 
 	// prebuilts/clang default settings.
 	ClangDefaultBase         = "prebuilts/clang/host"
-	ClangDefaultVersion      = "clang-r353983b"
-	ClangDefaultShortVersion = "9.0.2"
+	ClangDefaultVersion      = "clang-r353983c"
+	ClangDefaultShortVersion = "9.0.3"
 
 	// Directories with warnings from Android.bp files.
 	WarningAllowedProjects = []string{

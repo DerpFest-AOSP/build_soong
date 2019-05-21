@@ -143,6 +143,7 @@ type ModuleContext interface {
 	OtherModuleErrorf(m blueprint.Module, fmt string, args ...interface{})
 	OtherModuleDependencyTag(m blueprint.Module) blueprint.DependencyTag
 
+	GetDirectDepsWithTag(tag blueprint.DependencyTag) []Module
 	GetDirectDepWithTag(name string, tag blueprint.DependencyTag) blueprint.Module
 	GetDirectDep(name string) (blueprint.Module, blueprint.DependencyTag)
 
@@ -210,6 +211,33 @@ type commonProperties struct {
 	// emit build rules for this module
 	Enabled *bool `android:"arch_variant"`
 
+	// Controls the visibility of this module to other modules. Allowable values are one or more of
+	// these formats:
+	//
+	//  ["//visibility:public"]: Anyone can use this module.
+	//  ["//visibility:private"]: Only rules in the module's package (not its subpackages) can use
+	//      this module.
+	//  ["//some/package:__pkg__", "//other/package:__pkg__"]: Only modules in some/package and
+	//      other/package (defined in some/package/*.bp and other/package/*.bp) have access to
+	//      this module. Note that sub-packages do not have access to the rule; for example,
+	//      //some/package/foo:bar or //other/package/testing:bla wouldn't have access. __pkg__
+	//      is a special module and must be used verbatim. It represents all of the modules in the
+	//      package.
+	//  ["//project:__subpackages__", "//other:__subpackages__"]: Only modules in packages project
+	//      or other or in one of their sub-packages have access to this module. For example,
+	//      //project:rule, //project/library:lib or //other/testing/internal:munge are allowed
+	//      to depend on this rule (but not //independent:evil)
+	//  ["//project"]: This is shorthand for ["//project:__pkg__"]
+	//  [":__subpackages__"]: This is shorthand for ["//project:__subpackages__"] where
+	//      //project is the module's package. e.g. using [":__subpackages__"] in
+	//      packages/apps/Settings/Android.bp is equivalent to
+	//      //packages/apps/Settings:__subpackages__.
+	//  ["//visibility:legacy_public"]: The default visibility, behaves as //visibility:public
+	//      for now. It is an error if it is used in a module.
+	// See https://android.googlesource.com/platform/build/soong/+/master/README.md#visibility for
+	// more details.
+	Visibility []string
+
 	// control whether this module compiles for 32-bit, 64-bit, or both.  Possible values
 	// are "32" (compile for 32-bit only), "64" (compile for 64-bit only), "both" (compile for both
 	// architectures), or "first" (compile for 64-bit on a 64-bit platform, and 32-bit on a 32-bit
@@ -261,6 +289,9 @@ type commonProperties struct {
 
 	// Whether this module is installed to recovery partition
 	Recovery *bool
+
+	// Whether this module is built for non-native architecures (also known as native bridge binary)
+	Native_bridge_supported *bool `android:"arch_variant"`
 
 	// init.rc files to be installed if this module is installed
 	Init_rc []string `android:"path"`
@@ -1042,6 +1073,51 @@ func (a *androidModuleContext) validateAndroidModule(module blueprint.Module) Mo
 	return aModule
 }
 
+func (a *androidModuleContext) getDirectDepInternal(name string, tag blueprint.DependencyTag) (blueprint.Module, blueprint.DependencyTag) {
+	type dep struct {
+		mod blueprint.Module
+		tag blueprint.DependencyTag
+	}
+	var deps []dep
+	a.VisitDirectDepsBlueprint(func(m blueprint.Module) {
+		if aModule, _ := m.(Module); aModule != nil && aModule.base().BaseModuleName() == name {
+			returnedTag := a.ModuleContext.OtherModuleDependencyTag(aModule)
+			if tag == nil || returnedTag == tag {
+				deps = append(deps, dep{aModule, returnedTag})
+			}
+		}
+	})
+	if len(deps) == 1 {
+		return deps[0].mod, deps[0].tag
+	} else if len(deps) >= 2 {
+		panic(fmt.Errorf("Multiple dependencies having same BaseModuleName() %q found from %q",
+			name, a.ModuleName()))
+	} else {
+		return nil, nil
+	}
+}
+
+func (a *androidModuleContext) GetDirectDepsWithTag(tag blueprint.DependencyTag) []Module {
+	var deps []Module
+	a.VisitDirectDepsBlueprint(func(m blueprint.Module) {
+		if aModule, _ := m.(Module); aModule != nil {
+			if a.ModuleContext.OtherModuleDependencyTag(aModule) == tag {
+				deps = append(deps, aModule)
+			}
+		}
+	})
+	return deps
+}
+
+func (a *androidModuleContext) GetDirectDepWithTag(name string, tag blueprint.DependencyTag) blueprint.Module {
+	m, _ := a.getDirectDepInternal(name, tag)
+	return m
+}
+
+func (a *androidModuleContext) GetDirectDep(name string) (blueprint.Module, blueprint.DependencyTag) {
+	return a.getDirectDepInternal(name, nil)
+}
+
 func (a *androidModuleContext) VisitDirectDepsBlueprint(visit func(blueprint.Module)) {
 	a.ModuleContext.VisitDirectDeps(visit)
 }
@@ -1221,6 +1297,10 @@ func (a *ModuleBase) MakeAsPlatform() {
 	a.commonProperties.Soc_specific = boolPtr(false)
 	a.commonProperties.Product_specific = boolPtr(false)
 	a.commonProperties.Product_services_specific = boolPtr(false)
+}
+
+func (a *ModuleBase) EnableNativeBridgeSupportByDefault() {
+	a.commonProperties.Native_bridge_supported = boolPtr(true)
 }
 
 func (a *androidModuleContext) InstallInData() bool {
