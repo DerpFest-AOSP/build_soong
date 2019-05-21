@@ -93,6 +93,13 @@ func testApex(t *testing.T, bp string) *android.TestContext {
 		}
 
 		toolchain_library {
+			name: "libgcc_stripped",
+			src: "",
+			vendor_available: true,
+			recovery_available: true,
+		}
+
+		toolchain_library {
 			name: "libclang_rt.builtins-aarch64-android",
 			src: "",
 			vendor_available: true,
@@ -148,7 +155,7 @@ func testApex(t *testing.T, bp string) *android.TestContext {
 
 	ctx.MockFileSystem(map[string][]byte{
 		"Android.bp":                                        []byte(bp),
-		"build/target/product/security":                     nil,
+		"build/make/target/product/security":                nil,
 		"apex_manifest.json":                                nil,
 		"AndroidManifest.xml":                               nil,
 		"system/sepolicy/apex/myapex-file_contexts":         nil,
@@ -171,6 +178,7 @@ func testApex(t *testing.T, bp string) *android.TestContext {
 		"testkey2.pem":                         nil,
 		"myapex-arm64.apex":                    nil,
 		"myapex-arm.apex":                      nil,
+		"frameworks/base/api/current.txt":      nil,
 	})
 	_, errs := ctx.ParseFileList(".", []string{"Android.bp"})
 	android.FailIfErrored(t, errs)
@@ -190,6 +198,8 @@ func setup(t *testing.T) (config android.Config, buildDir string) {
 	config.TestProductVariables.DeviceVndkVersion = proptools.StringPtr("current")
 	config.TestProductVariables.DefaultAppCertificate = proptools.StringPtr("vendor/foo/devkeys/test")
 	config.TestProductVariables.CertificateOverrides = []string{"myapex_keytest:myapex.certificate.override"}
+	config.TestProductVariables.Platform_sdk_codename = proptools.StringPtr("Q")
+	config.TestProductVariables.Platform_sdk_final = proptools.BoolPtr(false)
 	return
 }
 
@@ -1254,5 +1264,22 @@ func TestPrebuilt(t *testing.T) {
 	expectedInput := "myapex-arm64.apex"
 	if prebuilt.inputApex.String() != expectedInput {
 		t.Errorf("inputApex invalid. expected: %q, actual: %q", expectedInput, prebuilt.inputApex.String())
+	}
+}
+
+func TestPrebuiltFilenameOverride(t *testing.T) {
+	ctx := testApex(t, `
+		prebuilt_apex {
+			name: "myapex",
+			src: "myapex-arm.apex",
+			filename: "notmyapex.apex",
+		}
+	`)
+
+	p := ctx.ModuleForTests("myapex", "android_common").Module().(*Prebuilt)
+
+	expected := "notmyapex.apex"
+	if p.installFilename != expected {
+		t.Errorf("installFilename invalid. expected: %q, actual: %q", expected, p.installFilename)
 	}
 }

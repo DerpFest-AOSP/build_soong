@@ -34,6 +34,8 @@ type toolchainLibraryProperties struct {
 type toolchainLibraryDecorator struct {
 	*libraryDecorator
 
+	stripper
+
 	Properties toolchainLibraryProperties
 }
 
@@ -45,9 +47,12 @@ func (*toolchainLibraryDecorator) linkerDeps(ctx DepsContext, deps Deps) Deps {
 func (library *toolchainLibraryDecorator) linkerProps() []interface{} {
 	var props []interface{}
 	props = append(props, library.libraryDecorator.linkerProps()...)
-	return append(props, &library.Properties)
+	return append(props, &library.Properties, &library.stripper.StripProperties)
 }
 
+// toolchain_library is used internally by the build tool to link the specified
+// static library in src property to the device libraries that are shipped with
+// gcc.
 func ToolchainLibraryFactory() android.Module {
 	module, library := NewLibrary(android.HostAndDeviceSupported)
 	library.BuildOnlyStatic()
@@ -75,7 +80,17 @@ func (library *toolchainLibraryDecorator) link(ctx ModuleContext,
 		return android.PathForSource(ctx, "")
 	}
 
-	return android.PathForSource(ctx, *library.Properties.Src)
+	srcPath := android.PathForSource(ctx, *library.Properties.Src)
+
+	if library.stripper.StripProperties.Strip.Keep_symbols_list != nil {
+		fileName := ctx.ModuleName() + staticLibraryExtension
+		outputFile := android.PathForModuleOut(ctx, fileName)
+		buildFlags := flagsToBuilderFlags(flags)
+		library.stripper.strip(ctx, srcPath, outputFile, buildFlags)
+		return outputFile
+	}
+
+	return srcPath
 }
 
 func (library *toolchainLibraryDecorator) nativeCoverage() bool {

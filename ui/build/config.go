@@ -53,8 +53,8 @@ type configImpl struct {
 
 	pdkBuild bool
 
-	brokenDupRules     bool
-	brokenPhonyTargets bool
+	brokenDupRules    bool
+	brokenUsesNetwork bool
 
 	pathReplaced bool
 }
@@ -614,12 +614,12 @@ func (c *configImpl) BuildBrokenDupRules() bool {
 	return c.brokenDupRules
 }
 
-func (c *configImpl) SetBuildBrokenPhonyTargets(val bool) {
-	c.brokenPhonyTargets = val
+func (c *configImpl) SetBuildBrokenUsesNetwork(val bool) {
+	c.brokenUsesNetwork = val
 }
 
-func (c *configImpl) BuildBrokenPhonyTargets() bool {
-	return c.brokenPhonyTargets
+func (c *configImpl) BuildBrokenUsesNetwork() bool {
+	return c.brokenUsesNetwork
 }
 
 func (c *configImpl) SetTargetDeviceDir(dir string) {

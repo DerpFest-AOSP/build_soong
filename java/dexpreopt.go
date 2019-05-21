@@ -22,11 +22,12 @@ import (
 type dexpreopter struct {
 	dexpreoptProperties DexpreoptProperties
 
-	installPath     android.OutputPath
-	uncompressedDex bool
-	isSDKLibrary    bool
-	isTest          bool
-	isInstallable   bool
+	installPath         android.OutputPath
+	uncompressedDex     bool
+	isSDKLibrary        bool
+	isTest              bool
+	isInstallable       bool
+	isPresignedPrebuilt bool
 
 	builtInstalled string
 }
@@ -51,7 +52,7 @@ type DexpreoptProperties struct {
 		// If set, provides the path to profile relative to the Android.bp file.  If not set,
 		// defaults to searching for a file that matches the name of this module in the default
 		// profile location set by PRODUCT_DEX_PREOPT_PROFILE_DIR, or empty if not found.
-		Profile *string
+		Profile *string `android:"path"`
 	}
 }
 
@@ -98,6 +99,10 @@ func (d *dexpreopter) dexpreopt(ctx android.ModuleContext, dexJarFile android.Mo
 
 	global := dexpreoptGlobalConfig(ctx)
 	bootImage := defaultBootImageConfig(ctx)
+	defaultBootImage := bootImage
+	if global.UseApexImage {
+		bootImage = apexBootImageConfig(ctx)
+	}
 
 	var archs []android.ArchType
 	for _, a := range ctx.MultiTargets() {
@@ -106,7 +111,9 @@ func (d *dexpreopter) dexpreopt(ctx android.ModuleContext, dexJarFile android.Mo
 	if len(archs) == 0 {
 		// assume this is a java library, dexpreopt for all arches for now
 		for _, target := range ctx.Config().Targets[android.Android] {
-			archs = append(archs, target.Arch.ArchType)
+			if target.NativeBridge == android.NativeBridgeDisabled {
+				archs = append(archs, target.Arch.ArchType)
+			}
 		}
 		if inList(ctx.ModuleName(), global.SystemServerJars) && !d.isSDKLibrary {
 			// If the module is not an SDK library and it's a system server jar, only preopt the primary arch.
@@ -162,13 +169,18 @@ func (d *dexpreopter) dexpreopt(ctx android.ModuleContext, dexJarFile android.Mo
 		Archs:           archs,
 		DexPreoptImages: images,
 
-		PreoptBootClassPathDexFiles:     bootImage.dexPaths.Paths(),
-		PreoptBootClassPathDexLocations: bootImage.dexLocations,
+		// We use the dex paths and dex locations of the default boot image, as it
+		// contains the full dexpreopt boot classpath. Other images may just contain a subset of
+		// the dexpreopt boot classpath.
+		PreoptBootClassPathDexFiles:     defaultBootImage.dexPaths.Paths(),
+		PreoptBootClassPathDexLocations: defaultBootImage.dexLocations,
 
 		PreoptExtractedApk: false,
 
 		NoCreateAppImage:    !BoolDefault(d.dexpreoptProperties.Dex_preopt.App_image, true),
 		ForceCreateAppImage: BoolDefault(d.dexpreoptProperties.Dex_preopt.App_image, false),
+
+		PresignedPrebuilt: d.isPresignedPrebuilt,
 
 		NoStripping:     Bool(d.dexpreoptProperties.Dex_preopt.No_stripping),
 		StripInputPath:  dexJarFile,

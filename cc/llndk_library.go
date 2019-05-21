@@ -182,6 +182,7 @@ func NewLLndkStubLibrary() *Module {
 	module.installer = nil
 
 	module.AddProperties(
+		&module.Properties,
 		&stub.Properties,
 		&library.MutatedProperties,
 		&library.flagExporter.Properties)
@@ -189,6 +190,14 @@ func NewLLndkStubLibrary() *Module {
 	return module
 }
 
+// llndk_library creates a stub llndk shared library based on the provided
+// version file. Example:
+//
+//    llndk_library {
+//        name: "libfoo",
+//        symbol_file: "libfoo.map.txt",
+//        export_include_dirs: ["include_vndk"],
+//    }
 func LlndkLibraryFactory() android.Module {
 	module := NewLLndkStubLibrary()
 	android.InitAndroidArchModule(module, android.DeviceSupported, android.MultilibBoth)
@@ -203,6 +212,8 @@ func (headers *llndkHeadersDecorator) Name(name string) string {
 	return name + llndkHeadersSuffix
 }
 
+// llndk_headers contains a set of c/c++ llndk headers files which are imported
+// by other soongs cc modules.
 func llndkHeadersFactory() android.Module {
 	module, library := NewLibrary(android.DeviceSupported)
 	library.HeaderOnly()
@@ -215,7 +226,10 @@ func llndkHeadersFactory() android.Module {
 	module.linker = decorator
 	module.installer = nil
 
-	module.AddProperties(&library.MutatedProperties, &library.flagExporter.Properties)
+	module.AddProperties(
+		&module.Properties,
+		&library.MutatedProperties,
+		&library.flagExporter.Properties)
 
 	android.InitAndroidArchModule(module, android.DeviceSupported, android.MultilibBoth)
 

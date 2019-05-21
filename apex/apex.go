@@ -521,6 +521,17 @@ func (a *apexBundle) DepsMutator(ctx android.BottomUpMutatorContext) {
 					a.properties.Multilib.Prefer32.Binaries, target.String(),
 					a.getImageVariation(config))
 			}
+
+			if strings.HasPrefix(ctx.ModuleName(), "com.android.runtime") && target.Os.Class == android.Device {
+				for _, sanitizer := range ctx.Config().SanitizeDevice() {
+					if sanitizer == "hwaddress" {
+						addDependenciesForNativeModules(ctx,
+							[]string{"libclang_rt.hwasan-aarch64-android"},
+							nil, target.String(), a.getImageVariation(config))
+						break
+					}
+				}
+			}
 		}
 
 	}
@@ -977,6 +988,17 @@ func (a *apexBundle) buildUnflattenedApex(ctx android.ModuleContext, apexType ap
 			optFlags = append(optFlags, "--android_manifest "+androidManifestFile.String())
 		}
 
+		targetSdkVersion := ctx.Config().DefaultAppTargetSdk()
+		if targetSdkVersion == ctx.Config().PlatformSdkCodename() &&
+			ctx.Config().UnbundledBuild() &&
+			!ctx.Config().UnbundledBuildUsePrebuiltSdks() &&
+			ctx.Config().IsEnvTrue("UNBUNDLED_BUILD_TARGET_SDK_WITH_API_FINGERPRINT") {
+			apiFingerprint := java.ApiFingerprintPath(ctx)
+			targetSdkVersion += fmt.Sprintf(".$$(cat %s)", apiFingerprint.String())
+			implicitInputs = append(implicitInputs, apiFingerprint)
+		}
+		optFlags = append(optFlags, "--target_sdk_version "+targetSdkVersion)
+
 		ctx.Build(pctx, android.BuildParams{
 			Rule:        apexRule,
 			Implicits:   implicitInputs,
@@ -1173,8 +1195,11 @@ func (a *apexBundle) androidMkForFiles(w io.Writer, name, moduleDir string, apex
 			fmt.Fprintln(w, "include $(BUILD_SYSTEM)/soong_java_prebuilt.mk")
 		} else if fi.class == nativeSharedLib || fi.class == nativeExecutable {
 			fmt.Fprintln(w, "LOCAL_MODULE_STEM :=", fi.builtFile.Base())
-			if cc, ok := fi.module.(*cc.Module); ok && cc.UnstrippedOutputFile() != nil {
-				fmt.Fprintln(w, "LOCAL_SOONG_UNSTRIPPED_BINARY :=", cc.UnstrippedOutputFile().String())
+			if cc, ok := fi.module.(*cc.Module); ok {
+				if cc.UnstrippedOutputFile() != nil {
+					fmt.Fprintln(w, "LOCAL_SOONG_UNSTRIPPED_BINARY :=", cc.UnstrippedOutputFile().String())
+				}
+				cc.AndroidMkWriteAdditionalDependenciesForSourceAbiDiff(w)
 			}
 			fmt.Fprintln(w, "include $(BUILD_SYSTEM)/soong_cc_prebuilt.mk")
 		} else {
@@ -1294,8 +1319,10 @@ type Prebuilt struct {
 
 	properties PrebuiltProperties
 
-	inputApex  android.Path
-	installDir android.OutputPath
+	inputApex       android.Path
+	installDir      android.OutputPath
+	installFilename string
+	outputApex      android.WritablePath
 }
 
 type PrebuiltProperties struct {
@@ -1317,6 +1344,15 @@ type PrebuiltProperties struct {
 			Src *string
 		}
 	}
+
+	Installable *bool
+	// Optional name for the installed apex. If unspecified, name of the
+	// module is used as the file name
+	Filename *string
+}
+
+func (p *Prebuilt) installable() bool {
+	return p.properties.Installable == nil || proptools.Bool(p.properties.Installable)
 }
 
 func (p *Prebuilt) DepsMutator(ctx android.BottomUpMutatorContext) {
@@ -1347,11 +1383,31 @@ func (p *Prebuilt) DepsMutator(ctx android.BottomUpMutatorContext) {
 	p.properties.Source = src
 }
 
+func (p *Prebuilt) Srcs() android.Paths {
+	return android.Paths{p.outputApex}
+}
+
+func (p *Prebuilt) InstallFilename() string {
+	return proptools.StringDefault(p.properties.Filename, p.BaseModuleName()+imageApexSuffix)
+}
+
 func (p *Prebuilt) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 	// TODO(jungjw): Check the key validity.
 	p.inputApex = p.Prebuilt().SingleSourcePath(ctx)
 	p.installDir = android.PathForModuleInstall(ctx, "apex")
-	ctx.InstallFile(p.installDir, ctx.ModuleName()+imageApexSuffix, p.inputApex)
+	p.installFilename = p.InstallFilename()
+	if !strings.HasSuffix(p.installFilename, imageApexSuffix) {
+		ctx.ModuleErrorf("filename should end in %s for prebuilt_apex", imageApexSuffix)
+	}
+	p.outputApex = android.PathForModuleOut(ctx, p.installFilename)
+	ctx.Build(pctx, android.BuildParams{
+		Rule:   android.Cp,
+		Input:  p.inputApex,
+		Output: p.outputApex,
+	})
+	if p.installable() {
+		ctx.InstallFile(p.installDir, p.installFilename, p.inputApex)
+	}
 }
 
 func (p *Prebuilt) Prebuilt() *android.Prebuilt {
@@ -1370,7 +1426,8 @@ func (p *Prebuilt) AndroidMk() android.AndroidMkData {
 		Extra: []android.AndroidMkExtraFunc{
 			func(w io.Writer, outputFile android.Path) {
 				fmt.Fprintln(w, "LOCAL_MODULE_PATH :=", filepath.Join("$(OUT_DIR)", p.installDir.RelPathString()))
-				fmt.Fprintln(w, "LOCAL_MODULE_STEM :=", p.BaseModuleName()+imageApexSuffix)
+				fmt.Fprintln(w, "LOCAL_MODULE_STEM :=", p.installFilename)
+				fmt.Fprintln(w, "LOCAL_UNINSTALLABLE_MODULE :=", !p.installable())
 			},
 		},
 	}
