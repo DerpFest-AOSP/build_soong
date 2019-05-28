@@ -534,6 +534,13 @@ func (c *Module) isVndk() bool {
 	return false
 }
 
+func (c *Module) vndkVersion() string {
+	if vndkdep := c.vndkdep; vndkdep != nil {
+		return vndkdep.Properties.Vndk.Version
+	}
+	return ""
+}
+
 func (c *Module) isPgoCompile() bool {
 	if pgo := c.pgo; pgo != nil {
 		return pgo.Properties.PgoCompile
@@ -919,7 +926,7 @@ func orderStaticModuleDeps(module *Module, staticDeps []*Module, sharedDeps []*M
 }
 
 func (c *Module) GenerateAndroidBuildActions(actx android.ModuleContext) {
-	c.makeLinkType = c.getMakeLinkType(actx.Config())
+	c.makeLinkType = c.getMakeLinkType(actx)
 
 	ctx := &moduleContext{
 		ModuleContext: actx,
@@ -1826,7 +1833,7 @@ func (c *Module) depsToPaths(ctx android.ModuleContext) PathDeps {
 			} else if ccDep.inRecovery() && !ccDep.onlyInRecovery() {
 				return libName + recoverySuffix
 			} else if ccDep.Target().NativeBridge == android.NativeBridgeEnabled {
-				return libName + android.NativeBridgeSuffix
+				return libName + nativeBridgeSuffix
 			} else {
 				return libName
 			}
@@ -1940,19 +1947,22 @@ func (c *Module) staticBinary() bool {
 	return false
 }
 
-func (c *Module) getMakeLinkType(config android.Config) string {
+func (c *Module) getMakeLinkType(actx android.ModuleContext) string {
+	name := actx.ModuleName()
 	if c.useVndk() {
-		if inList(c.Name(), *vndkCoreLibraries(config)) ||
-			inList(c.Name(), *vndkSpLibraries(config)) ||
-			inList(c.Name(), *llndkLibraries(config)) {
-			if inList(c.Name(), *vndkPrivateLibraries(config)) {
-				return "native:vndk_private"
-			} else {
+		if lib, ok := c.linker.(*llndkStubDecorator); ok {
+			if Bool(lib.Properties.Vendor_available) {
 				return "native:vndk"
 			}
-		} else {
-			return "native:vendor"
+			return "native:vndk_private"
 		}
+		if c.isVndk() && !c.isVndkExt() {
+			if Bool(c.VendorProperties.Vendor_available) {
+				return "native:vndk"
+			}
+			return "native:vndk_private"
+		}
+		return "native:vendor"
 	} else if c.inRecovery() {
 		return "native:recovery"
 	} else if c.Target().Os == android.Android && String(c.Properties.Sdk_version) != "" {
@@ -1960,7 +1970,7 @@ func (c *Module) getMakeLinkType(config android.Config) string {
 		// TODO(b/114741097): use the correct ndk stl once build errors have been fixed
 		//family, link := getNdkStlFamilyAndLinkType(c)
 		//return fmt.Sprintf("native:ndk:%s:%s", family, link)
-	} else if inList(c.Name(), *vndkUsingCoreVariantLibraries(config)) {
+	} else if inList(name, *vndkUsingCoreVariantLibraries(actx.Config())) {
 		return "native:platform_vndk"
 	} else {
 		return "native:platform"
