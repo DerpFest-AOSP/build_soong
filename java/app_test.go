@@ -24,8 +24,6 @@ import (
 	"sort"
 	"strings"
 	"testing"
-
-	"github.com/google/blueprint/proptools"
 )
 
 var (
@@ -968,88 +966,5 @@ func TestOverrideAndroidApp(t *testing.T) {
 		if !strings.Contains(aapt2Flags, expected.aaptFlag) {
 			t.Errorf("package renaming flag, %q is missing in aapt2 link flags, %q", expected.aaptFlag, aapt2Flags)
 		}
-	}
-}
-
-func TestUncompressDex(t *testing.T) {
-	testCases := []struct {
-		name string
-		bp   string
-
-		uncompressedPlatform  bool
-		uncompressedUnbundled bool
-	}{
-		{
-			name: "normal",
-			bp: `
-				android_app {
-					name: "foo",
-					srcs: ["a.java"],
-				}
-			`,
-			uncompressedPlatform:  true,
-			uncompressedUnbundled: false,
-		},
-		{
-			name: "use_embedded_dex",
-			bp: `
-				android_app {
-					name: "foo",
-					use_embedded_dex: true,
-					srcs: ["a.java"],
-				}
-			`,
-			uncompressedPlatform:  true,
-			uncompressedUnbundled: true,
-		},
-		{
-			name: "privileged",
-			bp: `
-				android_app {
-					name: "foo",
-					privileged: true,
-					srcs: ["a.java"],
-				}
-			`,
-			uncompressedPlatform:  true,
-			uncompressedUnbundled: true,
-		},
-	}
-
-	test := func(t *testing.T, bp string, want bool, unbundled bool) {
-		t.Helper()
-
-		config := testConfig(nil)
-		if unbundled {
-			config.TestProductVariables.Unbundled_build = proptools.BoolPtr(true)
-		}
-
-		ctx := testAppContext(config, bp, nil)
-
-		run(t, ctx, config)
-
-		foo := ctx.ModuleForTests("foo", "android_common")
-		dex := foo.Rule("r8")
-		uncompressedInDexJar := strings.Contains(dex.Args["zipFlags"], "-L 0")
-		aligned := foo.MaybeRule("zipalign").Rule != nil
-
-		if uncompressedInDexJar != want {
-			t.Errorf("want uncompressed in dex %v, got %v", want, uncompressedInDexJar)
-		}
-
-		if aligned != want {
-			t.Errorf("want aligned %v, got %v", want, aligned)
-		}
-	}
-
-	for _, tt := range testCases {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Run("platform", func(t *testing.T) {
-				test(t, tt.bp, tt.uncompressedPlatform, false)
-			})
-			t.Run("unbundled", func(t *testing.T) {
-				test(t, tt.bp, tt.uncompressedUnbundled, true)
-			})
-		})
 	}
 }
