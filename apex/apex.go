@@ -1320,6 +1320,13 @@ type PrebuiltProperties struct {
 	// Optional name for the installed apex. If unspecified, name of the
 	// module is used as the file name
 	Filename *string
+
+	// Names of modules to be overridden. Listed modules can only be other binaries
+	// (in Make or Soong).
+	// This does not completely prevent installation of the overridden binaries, but if both
+	// binaries would be installed by default (in PRODUCT_PACKAGES) the other binary will be removed
+	// from PRODUCT_PACKAGES.
+	Overrides []string
 }
 
 func (p *Prebuilt) installable() bool {
@@ -1411,6 +1418,7 @@ func (p *Prebuilt) AndroidMk() android.AndroidMkData {
 				fmt.Fprintln(w, "LOCAL_MODULE_PATH :=", filepath.Join("$(OUT_DIR)", p.installDir.RelPathString()))
 				fmt.Fprintln(w, "LOCAL_MODULE_STEM :=", p.installFilename)
 				fmt.Fprintln(w, "LOCAL_UNINSTALLABLE_MODULE :=", !p.installable())
+				fmt.Fprintln(w, "LOCAL_OVERRIDES_PACKAGES", strings.Join(p.properties.Overrides, " "))
 			},
 		},
 	}
