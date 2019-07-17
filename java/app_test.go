@@ -130,8 +130,12 @@ func TestAppSplits(t *testing.T) {
 		foo.Output(expectedOutput)
 	}
 
-	if g, w := foo.Module().(*AndroidApp).Srcs().Strings(), expectedOutputs; !reflect.DeepEqual(g, w) {
-		t.Errorf("want Srcs() = %q, got %q", w, g)
+	outputFiles, err := foo.Module().(*AndroidApp).OutputFiles("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if g, w := outputFiles.Strings(), expectedOutputs; !reflect.DeepEqual(g, w) {
+		t.Errorf(`want OutputFiles("") = %q, got %q`, w, g)
 	}
 }
 
@@ -552,34 +556,34 @@ func TestJNIABI(t *testing.T) {
 
 		android_test {
 			name: "test",
-			no_framework_libs: true,
+			sdk_version: "core_platform",
 			jni_libs: ["libjni"],
 		}
 
 		android_test {
 			name: "test_first",
-			no_framework_libs: true,
+			sdk_version: "core_platform",
 			compile_multilib: "first",
 			jni_libs: ["libjni"],
 		}
 
 		android_test {
 			name: "test_both",
-			no_framework_libs: true,
+			sdk_version: "core_platform",
 			compile_multilib: "both",
 			jni_libs: ["libjni"],
 		}
 
 		android_test {
 			name: "test_32",
-			no_framework_libs: true,
+			sdk_version: "core_platform",
 			compile_multilib: "32",
 			jni_libs: ["libjni"],
 		}
 
 		android_test {
 			name: "test_64",
-			no_framework_libs: true,
+			sdk_version: "core_platform",
 			compile_multilib: "64",
 			jni_libs: ["libjni"],
 		}
@@ -642,26 +646,26 @@ func TestJNIPackaging(t *testing.T) {
 
 		android_test {
 			name: "test",
-			no_framework_libs: true,
+			sdk_version: "core_platform",
 			jni_libs: ["libjni"],
 		}
 
 		android_test {
 			name: "test_noembed",
-			no_framework_libs: true,
+			sdk_version: "core_platform",
 			jni_libs: ["libjni"],
 			use_embedded_native_libs: false,
 		}
 
 		android_test_helper_app {
 			name: "test_helper",
-			no_framework_libs: true,
+			sdk_version: "core_platform",
 			jni_libs: ["libjni"],
 		}
 
 		android_test_helper_app {
 			name: "test_helper_noembed",
-			no_framework_libs: true,
+			sdk_version: "core_platform",
 			jni_libs: ["libjni"],
 			use_embedded_native_libs: false,
 		}
@@ -696,7 +700,6 @@ func TestJNIPackaging(t *testing.T) {
 			}
 		})
 	}
-
 }
 
 func TestCertificates(t *testing.T) {
@@ -1135,7 +1138,7 @@ func TestAndroidAppImport_DpiVariants(t *testing.T) {
 		{
 			name:                "AAPTPreferredConfig matches",
 			aaptPreferredConfig: proptools.StringPtr("xhdpi"),
-			aaptPrebuiltDPI:     []string{"xxhdpi", "lhdpi"},
+			aaptPrebuiltDPI:     []string{"xxhdpi", "ldpi"},
 			expected:            "prebuilts/apk/app_xhdpi.apk",
 		},
 		{
@@ -1199,6 +1202,10 @@ func TestStl(t *testing.T) {
 			compile_multilib: "both",
 			sdk_version: "current",
 		}
+
+		ndk_prebuilt_shared_stl {
+			name: "ndk_libc++_shared",
+		}
 		`)
 
 	testCases := []struct {
@@ -1208,7 +1215,7 @@ func TestStl(t *testing.T) {
 		{"stl",
 			[]string{
 				"libjni.so",
-				"libc++.so",
+				"libc++_shared.so",
 			},
 		},
 		{"system",
@@ -1236,6 +1243,338 @@ func TestStl(t *testing.T) {
 					t.Errorf("missing jni %q in %q", jni, jnis)
 				}
 			}
+		})
+	}
+}
+
+func TestUsesLibraries(t *testing.T) {
+	bp := `
+		java_sdk_library {
+			name: "foo",
+			srcs: ["a.java"],
+			api_packages: ["foo"],
+		}
+
+		java_sdk_library {
+			name: "bar",
+			srcs: ["a.java"],
+			api_packages: ["bar"],
+		}
+
+		android_app {
+			name: "app",
+			srcs: ["a.java"],
+			uses_libs: ["foo"],
+			optional_uses_libs: [
+				"bar",
+				"baz",
+			],
+		}
+
+		android_app_import {
+			name: "prebuilt",
+			apk: "prebuilts/apk/app.apk",
+			certificate: "platform",
+			uses_libs: ["foo"],
+			optional_uses_libs: [
+				"bar",
+				"baz",
+			],
+		}
+	`
+
+	config := testConfig(nil)
+	config.TestProductVariables.MissingUsesLibraries = []string{"baz"}
+
+	ctx := testAppContext(config, bp, nil)
+
+	run(t, ctx, config)
+
+	app := ctx.ModuleForTests("app", "android_common")
+	prebuilt := ctx.ModuleForTests("prebuilt", "android_common")
+
+	// Test that all libraries are verified
+	cmd := app.Rule("verify_uses_libraries").RuleParams.Command
+	if w := "--uses-library foo"; !strings.Contains(cmd, w) {
+		t.Errorf("wanted %q in %q", w, cmd)
+	}
+
+	if w := "--optional-uses-library bar --optional-uses-library baz"; !strings.Contains(cmd, w) {
+		t.Errorf("wanted %q in %q", w, cmd)
+	}
+
+	cmd = prebuilt.Rule("verify_uses_libraries").RuleParams.Command
+
+	if w := `uses_library_names="foo"`; !strings.Contains(cmd, w) {
+		t.Errorf("wanted %q in %q", w, cmd)
+	}
+
+	if w := `optional_uses_library_names="bar baz"`; !strings.Contains(cmd, w) {
+		t.Errorf("wanted %q in %q", w, cmd)
+	}
+
+	// Test that only present libraries are preopted
+	cmd = app.Rule("dexpreopt").RuleParams.Command
+
+	if w := `dex_preopt_target_libraries="/system/framework/foo.jar /system/framework/bar.jar"`; !strings.Contains(cmd, w) {
+		t.Errorf("wanted %q in %q", w, cmd)
+	}
+
+	cmd = prebuilt.Rule("dexpreopt").RuleParams.Command
+
+	if w := `dex_preopt_target_libraries="/system/framework/foo.jar /system/framework/bar.jar"`; !strings.Contains(cmd, w) {
+		t.Errorf("wanted %q in %q", w, cmd)
+	}
+}
+
+func TestCodelessApp(t *testing.T) {
+	testCases := []struct {
+		name   string
+		bp     string
+		noCode bool
+	}{
+		{
+			name: "normal",
+			bp: `
+				android_app {
+					name: "foo",
+					srcs: ["a.java"],
+				}
+			`,
+			noCode: false,
+		},
+		{
+			name: "app without sources",
+			bp: `
+				android_app {
+					name: "foo",
+				}
+			`,
+			noCode: true,
+		},
+		{
+			name: "app with libraries",
+			bp: `
+				android_app {
+					name: "foo",
+					static_libs: ["lib"],
+				}
+
+				java_library {
+					name: "lib",
+					srcs: ["a.java"],
+				}
+			`,
+			noCode: false,
+		},
+		{
+			name: "app with sourceless libraries",
+			bp: `
+				android_app {
+					name: "foo",
+					static_libs: ["lib"],
+				}
+
+				java_library {
+					name: "lib",
+				}
+			`,
+			// TODO(jungjw): this should probably be true
+			noCode: false,
+		},
+	}
+
+	for _, test := range testCases {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := testApp(t, test.bp)
+
+			foo := ctx.ModuleForTests("foo", "android_common")
+			manifestFixerArgs := foo.Output("manifest_fixer/AndroidManifest.xml").Args["args"]
+			if strings.Contains(manifestFixerArgs, "--has-no-code") != test.noCode {
+				t.Errorf("unexpected manifest_fixer args: %q", manifestFixerArgs)
+			}
+		})
+	}
+}
+
+func TestEmbedNotice(t *testing.T) {
+	ctx := testJava(t, cc.GatherRequiredDepsForTest(android.Android)+`
+		android_app {
+			name: "foo",
+			srcs: ["a.java"],
+			static_libs: ["javalib"],
+			jni_libs: ["libjni"],
+			notice: "APP_NOTICE",
+			embed_notices: true,
+		}
+
+		// No embed_notice flag
+		android_app {
+			name: "bar",
+			srcs: ["a.java"],
+			jni_libs: ["libjni"],
+			notice: "APP_NOTICE",
+		}
+
+		// No NOTICE files
+		android_app {
+			name: "baz",
+			srcs: ["a.java"],
+			embed_notices: true,
+		}
+
+		cc_library {
+			name: "libjni",
+			system_shared_libs: [],
+			stl: "none",
+			notice: "LIB_NOTICE",
+		}
+
+		java_library {
+			name: "javalib",
+			srcs: [
+				":gen",
+			],
+		}
+
+		genrule {
+			name: "gen",
+			tools: ["gentool"],
+			out: ["gen.java"],
+			notice: "GENRULE_NOTICE",
+		}
+
+		java_binary_host {
+			name: "gentool",
+			srcs: ["b.java"],
+			notice: "TOOL_NOTICE",
+		}
+	`)
+
+	// foo has NOTICE files to process, and embed_notices is true.
+	foo := ctx.ModuleForTests("foo", "android_common")
+	// verify merge notices rule.
+	mergeNotices := foo.Rule("mergeNoticesRule")
+	noticeInputs := mergeNotices.Inputs.Strings()
+	// TOOL_NOTICE should be excluded as it's a host module.
+	if len(mergeNotices.Inputs) != 3 {
+		t.Errorf("number of input notice files: expected = 3, actual = %q", noticeInputs)
+	}
+	if !inList("APP_NOTICE", noticeInputs) {
+		t.Errorf("APP_NOTICE is missing from notice files, %q", noticeInputs)
+	}
+	if !inList("LIB_NOTICE", noticeInputs) {
+		t.Errorf("LIB_NOTICE is missing from notice files, %q", noticeInputs)
+	}
+	if !inList("GENRULE_NOTICE", noticeInputs) {
+		t.Errorf("GENRULE_NOTICE is missing from notice files, %q", noticeInputs)
+	}
+	// aapt2 flags should include -A <NOTICE dir> so that its contents are put in the APK's /assets.
+	res := foo.Output("package-res.apk")
+	aapt2Flags := res.Args["flags"]
+	e := "-A " + buildDir + "/.intermediates/foo/android_common/NOTICE"
+	if !strings.Contains(aapt2Flags, e) {
+		t.Errorf("asset dir flag for NOTICE, %q is missing in aapt2 link flags, %q", e, aapt2Flags)
+	}
+
+	// bar has NOTICE files to process, but embed_notices is not set.
+	bar := ctx.ModuleForTests("bar", "android_common")
+	res = bar.Output("package-res.apk")
+	aapt2Flags = res.Args["flags"]
+	e = "-A " + buildDir + "/.intermediates/bar/android_common/NOTICE"
+	if strings.Contains(aapt2Flags, e) {
+		t.Errorf("bar shouldn't have the asset dir flag for NOTICE: %q", e)
+	}
+
+	// baz's embed_notice is true, but it doesn't have any NOTICE files.
+	baz := ctx.ModuleForTests("baz", "android_common")
+	res = baz.Output("package-res.apk")
+	aapt2Flags = res.Args["flags"]
+	e = "-A " + buildDir + "/.intermediates/baz/android_common/NOTICE"
+	if strings.Contains(aapt2Flags, e) {
+		t.Errorf("baz shouldn't have the asset dir flag for NOTICE: %q", e)
+	}
+}
+
+func TestUncompressDex(t *testing.T) {
+	testCases := []struct {
+		name string
+		bp   string
+
+		uncompressedPlatform  bool
+		uncompressedUnbundled bool
+	}{
+		{
+			name: "normal",
+			bp: `
+				android_app {
+					name: "foo",
+					srcs: ["a.java"],
+				}
+			`,
+			uncompressedPlatform:  true,
+			uncompressedUnbundled: false,
+		},
+		{
+			name: "use_embedded_dex",
+			bp: `
+				android_app {
+					name: "foo",
+					use_embedded_dex: true,
+					srcs: ["a.java"],
+				}
+			`,
+			uncompressedPlatform:  true,
+			uncompressedUnbundled: true,
+		},
+		{
+			name: "privileged",
+			bp: `
+				android_app {
+					name: "foo",
+					privileged: true,
+					srcs: ["a.java"],
+				}
+			`,
+			uncompressedPlatform:  true,
+			uncompressedUnbundled: true,
+		},
+	}
+
+	test := func(t *testing.T, bp string, want bool, unbundled bool) {
+		t.Helper()
+
+		config := testConfig(nil)
+		if unbundled {
+			config.TestProductVariables.Unbundled_build = proptools.BoolPtr(true)
+		}
+
+		ctx := testAppContext(config, bp, nil)
+
+		run(t, ctx, config)
+
+		foo := ctx.ModuleForTests("foo", "android_common")
+		dex := foo.Rule("r8")
+		uncompressedInDexJar := strings.Contains(dex.Args["zipFlags"], "-L 0")
+		aligned := foo.MaybeRule("zipalign").Rule != nil
+
+		if uncompressedInDexJar != want {
+			t.Errorf("want uncompressed in dex %v, got %v", want, uncompressedInDexJar)
+		}
+
+		if aligned != want {
+			t.Errorf("want aligned %v, got %v", want, aligned)
+		}
+	}
+
+	for _, tt := range testCases {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Run("platform", func(t *testing.T) {
+				test(t, tt.bp, tt.uncompressedPlatform, false)
+			})
+			t.Run("unbundled", func(t *testing.T) {
+				test(t, tt.bp, tt.uncompressedUnbundled, true)
+			})
 		})
 	}
 }

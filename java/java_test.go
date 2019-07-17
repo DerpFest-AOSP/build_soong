@@ -105,6 +105,7 @@ func testContext(config android.Config, bp string,
 	ctx.RegisterModuleType("cc_object", android.ModuleFactoryAdaptor(cc.ObjectFactory))
 	ctx.RegisterModuleType("toolchain_library", android.ModuleFactoryAdaptor(cc.ToolchainLibraryFactory))
 	ctx.RegisterModuleType("llndk_library", android.ModuleFactoryAdaptor(cc.LlndkLibraryFactory))
+	ctx.RegisterModuleType("ndk_prebuilt_shared_stl", android.ModuleFactoryAdaptor(cc.NdkPrebuiltSharedStlFactory))
 	ctx.PreDepsMutators(func(ctx android.RegisterMutatorsContext) {
 		ctx.BottomUp("link", cc.LinkageMutator).Parallel()
 		ctx.BottomUp("begin", cc.BeginMutator).Parallel()
@@ -120,6 +121,10 @@ func testContext(config android.Config, bp string,
 		"b.kt":                   nil,
 		"a.jar":                  nil,
 		"b.jar":                  nil,
+		"APP_NOTICE":             nil,
+		"GENRULE_NOTICE":         nil,
+		"LIB_NOTICE":             nil,
+		"TOOL_NOTICE":            nil,
 		"java-res/a/a":           nil,
 		"java-res/b/b":           nil,
 		"java-res2/a":            nil,
@@ -133,6 +138,8 @@ func testContext(config android.Config, bp string,
 		"api/test-current.txt":   nil,
 		"api/test-removed.txt":   nil,
 		"framework/aidl/a.aidl":  nil,
+
+		"prebuilts/ndk/current/sources/cxx-stl/llvm-libc++/libs/arm64-v8a/libc++_shared.so": nil,
 
 		"prebuilts/sdk/14/public/android.jar":         nil,
 		"prebuilts/sdk/14/public/framework.aidl":      nil,
@@ -174,6 +181,8 @@ func testContext(config android.Config, bp string,
 
 		"build/soong/scripts/jar-wrapper.sh": nil,
 
+		"build/make/core/verify_uses_libraries.sh": nil,
+
 		"build/make/core/proguard.flags":             nil,
 		"build/make/core/proguard_basic_keeps.flags": nil,
 
@@ -207,7 +216,7 @@ func run(t *testing.T, ctx *android.TestContext, config android.Config) {
 	setDexpreoptTestGlobalConfig(config, dexpreopt.GlobalConfigForTests(pathCtx))
 
 	ctx.Register()
-	_, errs := ctx.ParseFileList(".", []string{"Android.bp", "prebuilts/sdk/Android.bp"})
+	_, errs := ctx.ParseBlueprintsFiles("Android.bp")
 	android.FailIfErrored(t, errs)
 	_, errs = ctx.PrepareBuildActions(config)
 	android.FailIfErrored(t, errs)
@@ -274,6 +283,32 @@ func TestSimple(t *testing.T) {
 
 	if len(combineJar.Inputs) != 2 || combineJar.Inputs[1].String() != baz {
 		t.Errorf("foo combineJar inputs %v does not contain %q", combineJar.Inputs, baz)
+	}
+}
+
+func TestSdkVersion(t *testing.T) {
+	ctx := testJava(t, `
+		java_library {
+			name: "foo",
+			srcs: ["a.java"],
+			vendor: true,
+		}
+
+		java_library {
+			name: "bar",
+			srcs: ["b.java"],
+		}
+	`)
+
+	foo := ctx.ModuleForTests("foo", "android_common").Module().(*Library)
+	bar := ctx.ModuleForTests("bar", "android_common").Module().(*Library)
+
+	if foo.sdkVersion() != "system_current" {
+		t.Errorf("If sdk version of vendor module is empty, it must change to system_current.")
+	}
+
+	if bar.sdkVersion() != "" {
+		t.Errorf("If sdk version of non-vendor module is empty, it keeps empty.")
 	}
 }
 
@@ -837,6 +872,19 @@ func TestExcludeFileGroupInSrcs(t *testing.T) {
 	}
 }
 
+func TestJavaLibrary(t *testing.T) {
+	config := testConfig(nil)
+	ctx := testContext(config, "", map[string][]byte{
+		"libcore/Android.bp": []byte(`
+				java_library {
+						name: "core",
+						sdk_version: "none",
+						system_modules: "none",
+				}`),
+	})
+	run(t, ctx, config)
+}
+
 func TestJavaSdkLibrary(t *testing.T) {
 	ctx := testJava(t, `
 		droiddoc_template {
@@ -995,7 +1043,7 @@ func TestPatchModule(t *testing.T) {
 		java_library {
 			name: "bar",
 			srcs: ["b.java"],
-			no_standard_libs: true,
+			sdk_version: "none",
 			system_modules: "none",
 			patch_module: "java.base",
 		}

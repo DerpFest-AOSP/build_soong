@@ -17,6 +17,7 @@ package java
 import (
 	"android/soong/android"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/google/blueprint"
@@ -80,11 +81,13 @@ type aapt struct {
 	rTxt                    android.Path
 	extraAaptPackagesFile   android.Path
 	mergedManifestFile      android.Path
+	noticeFile              android.OptionalPath
 	isLibrary               bool
 	useEmbeddedNativeLibs   bool
 	useEmbeddedDex          bool
 	usesNonSdkApis          bool
 	sdkLibraries            []string
+	hasNoCode               bool
 
 	splitNames []string
 	splits     []split
@@ -110,8 +113,9 @@ func (a *aapt) ExportedManifests() android.Paths {
 	return a.transitiveManifestPaths
 }
 
-func (a *aapt) aapt2Flags(ctx android.ModuleContext, sdkContext sdkContext, manifestPath android.Path) (flags []string,
-	deps android.Paths, resDirs, overlayDirs []globbedResourceDir, rroDirs []rroDir, resZips android.Paths) {
+func (a *aapt) aapt2Flags(ctx android.ModuleContext, sdkContext sdkContext,
+	manifestPath android.Path) (compileFlags, linkFlags []string, linkDeps android.Paths,
+	resDirs, overlayDirs []globbedResourceDir, rroDirs []rroDir, resZips android.Paths) {
 
 	hasVersionCode := false
 	hasVersionName := false
@@ -123,8 +127,6 @@ func (a *aapt) aapt2Flags(ctx android.ModuleContext, sdkContext sdkContext, mani
 		}
 	}
 
-	var linkFlags []string
-
 	// Flags specified in Android.bp
 	linkFlags = append(linkFlags, a.aaptProperties.Aaptflags...)
 
@@ -134,8 +136,6 @@ func (a *aapt) aapt2Flags(ctx android.ModuleContext, sdkContext sdkContext, mani
 	assetDirs := android.PathsWithOptionalDefaultForModuleSrc(ctx, a.aaptProperties.Asset_dirs, "assets")
 	resourceDirs := android.PathsWithOptionalDefaultForModuleSrc(ctx, a.aaptProperties.Resource_dirs, "res")
 	resourceZips := android.PathsForModuleSrc(ctx, a.aaptProperties.Resource_zips)
-
-	var linkDeps android.Paths
 
 	// Glob directories into lists of paths
 	for _, dir := range resourceDirs {
@@ -153,10 +153,16 @@ func (a *aapt) aapt2Flags(ctx android.ModuleContext, sdkContext sdkContext, mani
 		assetFiles = append(assetFiles, androidResourceGlob(ctx, dir)...)
 	}
 
+	assetDirStrings := assetDirs.Strings()
+	if a.noticeFile.Valid() {
+		assetDirStrings = append(assetDirStrings, filepath.Dir(a.noticeFile.Path().String()))
+		assetFiles = append(assetFiles, a.noticeFile.Path())
+	}
+
 	linkFlags = append(linkFlags, "--manifest "+manifestPath.String())
 	linkDeps = append(linkDeps, manifestPath)
 
-	linkFlags = append(linkFlags, android.JoinWithPrefix(assetDirs.Strings(), "-A "))
+	linkFlags = append(linkFlags, android.JoinWithPrefix(assetDirStrings, "-A "))
 	linkDeps = append(linkDeps, assetFiles...)
 
 	// SDK version flags
@@ -184,11 +190,16 @@ func (a *aapt) aapt2Flags(ctx android.ModuleContext, sdkContext sdkContext, mani
 		linkFlags = append(linkFlags, "--version-name ", versionName)
 	}
 
-	return linkFlags, linkDeps, resDirs, overlayDirs, rroDirs, resourceZips
+	linkFlags, compileFlags = android.FilterList(linkFlags, []string{"--legacy"})
+
+	// Always set --pseudo-localize, it will be stripped out later for release
+	// builds that don't want it.
+	compileFlags = append(compileFlags, "--pseudo-localize")
+
+	return compileFlags, linkFlags, linkDeps, resDirs, overlayDirs, rroDirs, resourceZips
 }
 
-func (a *aapt) deps(ctx android.BottomUpMutatorContext, sdkContext sdkContext) {
-	sdkDep := decodeSdkDep(ctx, sdkContext)
+func (a *aapt) deps(ctx android.BottomUpMutatorContext, sdkDep sdkDep) {
 	if sdkDep.frameworkResModule != "" {
 		ctx.AddVariationDependencies(nil, frameworkResTag, sdkDep.frameworkResModule)
 	}
@@ -204,7 +215,7 @@ func (a *aapt) buildActions(ctx android.ModuleContext, sdkContext sdkContext, ex
 	manifestSrcPath := android.PathForModuleSrc(ctx, manifestFile)
 
 	manifestPath := manifestFixer(ctx, manifestSrcPath, sdkContext, sdkLibraries,
-		a.isLibrary, a.useEmbeddedNativeLibs, a.usesNonSdkApis, a.useEmbeddedDex)
+		a.isLibrary, a.useEmbeddedNativeLibs, a.usesNonSdkApis, a.useEmbeddedDex, a.hasNoCode)
 
 	a.transitiveManifestPaths = append(android.Paths{manifestPath}, transitiveStaticLibManifests...)
 
@@ -220,7 +231,7 @@ func (a *aapt) buildActions(ctx android.ModuleContext, sdkContext sdkContext, ex
 		a.mergedManifestFile = manifestPath
 	}
 
-	linkFlags, linkDeps, resDirs, overlayDirs, rroDirs, resZips := a.aapt2Flags(ctx, sdkContext, manifestPath)
+	compileFlags, linkFlags, linkDeps, resDirs, overlayDirs, rroDirs, resZips := a.aapt2Flags(ctx, sdkContext, manifestPath)
 
 	rroDirs = append(rroDirs, staticRRODirs...)
 	linkFlags = append(linkFlags, libFlags...)
@@ -239,12 +250,12 @@ func (a *aapt) buildActions(ctx android.ModuleContext, sdkContext sdkContext, ex
 
 	var compiledResDirs []android.Paths
 	for _, dir := range resDirs {
-		compiledResDirs = append(compiledResDirs, aapt2Compile(ctx, dir.dir, dir.files).Paths())
+		compiledResDirs = append(compiledResDirs, aapt2Compile(ctx, dir.dir, dir.files, compileFlags).Paths())
 	}
 
 	for i, zip := range resZips {
 		flata := android.PathForModuleOut(ctx, fmt.Sprintf("reszip.%d.flata", i))
-		aapt2CompileZip(ctx, flata, zip)
+		aapt2CompileZip(ctx, flata, zip, "", compileFlags)
 		compiledResDirs = append(compiledResDirs, android.Paths{flata})
 	}
 
@@ -273,7 +284,7 @@ func (a *aapt) buildActions(ctx android.ModuleContext, sdkContext sdkContext, ex
 	}
 
 	for _, dir := range overlayDirs {
-		compiledOverlay = append(compiledOverlay, aapt2Compile(ctx, dir.dir, dir.files).Paths()...)
+		compiledOverlay = append(compiledOverlay, aapt2Compile(ctx, dir.dir, dir.files, compileFlags).Paths()...)
 	}
 
 	var splitPackages android.WritablePaths
@@ -400,8 +411,9 @@ var _ AndroidLibraryDependency = (*AndroidLibrary)(nil)
 
 func (a *AndroidLibrary) DepsMutator(ctx android.BottomUpMutatorContext) {
 	a.Module.deps(ctx)
-	if !Bool(a.properties.No_framework_libs) && !Bool(a.properties.No_standard_libs) {
-		a.aapt.deps(ctx, sdkContext(a))
+	sdkDep := decodeSdkDep(ctx, sdkContext(a))
+	if sdkDep.hasFrameworkLibs() {
+		a.aapt.deps(ctx, sdkDep)
 	}
 }
 
@@ -498,7 +510,7 @@ type AARImport struct {
 }
 
 func (a *AARImport) sdkVersion() string {
-	return String(a.properties.Sdk_version)
+	return proptools.StringDefault(a.properties.Sdk_version, defaultSdkVersion(a))
 }
 
 func (a *AARImport) minSdkVersion() string {
@@ -555,13 +567,13 @@ func (a *AARImport) DepsMutator(ctx android.BottomUpMutatorContext) {
 }
 
 // Unzip an AAR into its constituent files and directories.  Any files in Outputs that don't exist in the AAR will be
-// touched to create an empty file, and any directories in $expectedDirs will be created.
+// touched to create an empty file. The res directory is not extracted, as it will be extracted in its own rule.
 var unzipAAR = pctx.AndroidStaticRule("unzipAAR",
 	blueprint.RuleParams{
-		Command: `rm -rf $outDir && mkdir -p $outDir $expectedDirs && ` +
-			`unzip -qo -d $outDir $in && touch $out`,
+		Command: `rm -rf $outDir && mkdir -p $outDir && ` +
+			`unzip -qo -d $outDir $in && rm -rf $outDir/res && touch $out`,
 	},
-	"expectedDirs", "outDir")
+	"outDir")
 
 func (a *AARImport) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 	if len(a.properties.Aars) != 1 {
@@ -579,7 +591,6 @@ func (a *AARImport) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 	}
 
 	extractedAARDir := android.PathForModuleOut(ctx, "aar")
-	extractedResDir := extractedAARDir.Join(ctx, "res")
 	a.classpathFile = extractedAARDir.Join(ctx, "classes.jar")
 	a.proguardFlags = extractedAARDir.Join(ctx, "proguard.txt")
 	a.manifest = extractedAARDir.Join(ctx, "AndroidManifest.xml")
@@ -590,16 +601,16 @@ func (a *AARImport) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 		Outputs:     android.WritablePaths{a.classpathFile, a.proguardFlags, a.manifest},
 		Description: "unzip AAR",
 		Args: map[string]string{
-			"expectedDirs": extractedResDir.String(),
-			"outDir":       extractedAARDir.String(),
+			"outDir": extractedAARDir.String(),
 		},
 	})
 
+	// Always set --pseudo-localize, it will be stripped out later for release
+	// builds that don't want it.
+	compileFlags := []string{"--pseudo-localize"}
 	compiledResDir := android.PathForModuleOut(ctx, "flat-res")
-	aaptCompileDeps := android.Paths{a.classpathFile}
-	aaptCompileDirs := android.Paths{extractedResDir}
 	flata := compiledResDir.Join(ctx, "gen_res.flata")
-	aapt2CompileDirs(ctx, flata, aaptCompileDirs, aaptCompileDeps)
+	aapt2CompileZip(ctx, flata, aar, "res", compileFlags)
 
 	a.exportPackage = android.PathForModuleOut(ctx, "package-res.apk")
 	srcJar := android.PathForModuleGen(ctx, "R.jar")

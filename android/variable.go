@@ -165,15 +165,17 @@ type productVariables struct {
 	DeviceSecondaryCpuVariant  *string  `json:",omitempty"`
 	DeviceSecondaryAbi         []string `json:",omitempty"`
 
-	NativeBridgeArch        *string  `json:",omitempty"`
-	NativeBridgeArchVariant *string  `json:",omitempty"`
-	NativeBridgeCpuVariant  *string  `json:",omitempty"`
-	NativeBridgeAbi         []string `json:",omitempty"`
+	NativeBridgeArch         *string  `json:",omitempty"`
+	NativeBridgeArchVariant  *string  `json:",omitempty"`
+	NativeBridgeCpuVariant   *string  `json:",omitempty"`
+	NativeBridgeAbi          []string `json:",omitempty"`
+	NativeBridgeRelativePath *string  `json:",omitempty"`
 
-	NativeBridgeSecondaryArch        *string  `json:",omitempty"`
-	NativeBridgeSecondaryArchVariant *string  `json:",omitempty"`
-	NativeBridgeSecondaryCpuVariant  *string  `json:",omitempty"`
-	NativeBridgeSecondaryAbi         []string `json:",omitempty"`
+	NativeBridgeSecondaryArch         *string  `json:",omitempty"`
+	NativeBridgeSecondaryArchVariant  *string  `json:",omitempty"`
+	NativeBridgeSecondaryCpuVariant   *string  `json:",omitempty"`
+	NativeBridgeSecondaryAbi          []string `json:",omitempty"`
+	NativeBridgeSecondaryRelativePath *string  `json:",omitempty"`
 
 	HostArch          *string `json:",omitempty"`
 	HostSecondaryArch *string `json:",omitempty"`
@@ -232,10 +234,10 @@ type productVariables struct {
 	EnableXOM       *bool    `json:",omitempty"`
 	XOMExcludePaths []string `json:",omitempty"`
 
-	VendorPath          *string `json:",omitempty"`
-	OdmPath             *string `json:",omitempty"`
-	ProductPath         *string `json:",omitempty"`
-	ProductServicesPath *string `json:",omitempty"`
+	VendorPath    *string `json:",omitempty"`
+	OdmPath       *string `json:",omitempty"`
+	ProductPath   *string `json:",omitempty"`
+	SystemExtPath *string `json:",omitempty"`
 
 	ClangTidy  *bool   `json:",omitempty"`
 	TidyChecks *string `json:",omitempty"`
@@ -306,6 +308,8 @@ type productVariables struct {
 	ProductCompatibleProperty  *bool    `json:",omitempty"`
 
 	TargetFSConfigGen []string `json:",omitempty"`
+
+	MissingUsesLibraries []string `json:",omitempty"`
 }
 
 func boolPtr(v bool) *bool {
@@ -400,12 +404,12 @@ func variableMutator(mctx BottomUpMutatorContext) {
 	}
 }
 
-func (a *ModuleBase) setVariableProperties(ctx BottomUpMutatorContext,
+func (m *ModuleBase) setVariableProperties(ctx BottomUpMutatorContext,
 	prefix string, productVariablePropertyValue reflect.Value, variableValue interface{}) {
 
 	printfIntoProperties(ctx, prefix, productVariablePropertyValue, variableValue)
 
-	err := proptools.AppendMatchingProperties(a.generalProperties,
+	err := proptools.AppendMatchingProperties(m.generalProperties,
 		productVariablePropertyValue.Addr().Interface(), nil)
 	if err != nil {
 		if propertyErr, ok := err.(*proptools.ExtendPropertyError); ok {

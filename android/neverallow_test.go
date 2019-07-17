@@ -15,8 +15,6 @@
 package android
 
 import (
-	"io/ioutil"
-	"os"
 	"testing"
 )
 
@@ -148,15 +146,41 @@ var neverallowTests = []struct {
 		},
 		expectedError: "java_device_for_host can only be used in whitelisted projects",
 	},
+	// Libcore rule tests
+	{
+		name: "sdk_version: \"none\" inside core libraries",
+		fs: map[string][]byte{
+			"libcore/Blueprints": []byte(`
+				java_library {
+					name: "inside_core_libraries",
+					sdk_version: "none",
+				}`),
+		},
+	},
+	{
+		name: "sdk_version: \"none\" outside core libraries",
+		fs: map[string][]byte{
+			"Blueprints": []byte(`
+				java_library {
+					name: "outside_core_libraries",
+					sdk_version: "none",
+				}`),
+		},
+		expectedError: "module \"outside_core_libraries\": violates neverallow",
+	},
+	{
+		name: "sdk_version: \"current\"",
+		fs: map[string][]byte{
+			"Blueprints": []byte(`
+				java_library {
+					name: "outside_core_libraries",
+					sdk_version: "current",
+				}`),
+		},
+	},
 }
 
 func TestNeverallow(t *testing.T) {
-	buildDir, err := ioutil.TempDir("", "soong_neverallow_test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(buildDir)
-
 	config := TestConfig(buildDir, nil)
 
 	for _, test := range neverallowTests {
@@ -176,6 +200,7 @@ func testNeverallow(t *testing.T, config Config, fs map[string][]byte) (*TestCon
 	ctx := NewTestContext()
 	ctx.RegisterModuleType("cc_library", ModuleFactoryAdaptor(newMockCcLibraryModule))
 	ctx.RegisterModuleType("java_library", ModuleFactoryAdaptor(newMockJavaLibraryModule))
+	ctx.RegisterModuleType("java_library_host", ModuleFactoryAdaptor(newMockJavaLibraryModule))
 	ctx.RegisterModuleType("java_device_for_host", ModuleFactoryAdaptor(newMockJavaLibraryModule))
 	ctx.PostDepsMutators(registerNeverallowMutator)
 	ctx.Register()
@@ -227,7 +252,8 @@ func (p *mockCcLibraryModule) GenerateAndroidBuildActions(ModuleContext) {
 }
 
 type mockJavaLibraryProperties struct {
-	Libs []string
+	Libs        []string
+	Sdk_version *string
 }
 
 type mockJavaLibraryModule struct {

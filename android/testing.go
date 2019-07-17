@@ -179,7 +179,7 @@ func buildParamsFromRule(provider testBuildProvider, rule string) TestingBuildPa
 
 func maybeBuildParamsFromDescription(provider testBuildProvider, desc string) TestingBuildParams {
 	for _, p := range provider.BuildParamsForTests() {
-		if p.Description == desc {
+		if strings.Contains(p.Description, desc) {
 			return newTestingBuildParams(provider, p)
 		}
 	}
@@ -381,4 +381,15 @@ func AndroidMkEntriesForTest(t *testing.T, config Config, bpPath string, mod blu
 	entries := p.AndroidMkEntries()
 	entries.fillInEntries(config, bpPath, mod)
 	return entries
+}
+
+func AndroidMkDataForTest(t *testing.T, config Config, bpPath string, mod blueprint.Module) AndroidMkData {
+	var p AndroidMkDataProvider
+	var ok bool
+	if p, ok = mod.(AndroidMkDataProvider); !ok {
+		t.Errorf("module does not implmement AndroidMkDataProvider: " + mod.Name())
+	}
+	data := p.AndroidMk()
+	data.fillInData(config, bpPath, mod)
+	return data
 }

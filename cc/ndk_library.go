@@ -121,7 +121,7 @@ func intMax(a int, b int) int {
 	}
 }
 
-func normalizeNdkApiLevel(ctx android.BaseContext, apiLevel string,
+func normalizeNdkApiLevel(ctx android.BaseModuleContext, apiLevel string,
 	arch android.Arch) (string, error) {
 
 	if apiLevel == "current" {
@@ -167,7 +167,7 @@ func getFirstGeneratedVersion(firstSupportedVersion string, platformVersion int)
 	return strconv.Atoi(firstSupportedVersion)
 }
 
-func shouldUseVersionScript(ctx android.BaseContext, stub *stubDecorator) (bool, error) {
+func shouldUseVersionScript(ctx android.BaseModuleContext, stub *stubDecorator) (bool, error) {
 	// unversioned_until is normally empty, in which case we should use the version script.
 	if String(stub.properties.Unversioned_until) == "" {
 		return true, nil
@@ -337,6 +337,7 @@ func (stub *stubDecorator) link(ctx ModuleContext, flags Flags, deps PathDeps,
 	if useVersionScript {
 		linkerScriptFlag := "-Wl,--version-script," + stub.versionScriptPath.String()
 		flags.LdFlags = append(flags.LdFlags, linkerScriptFlag)
+		flags.LdFlagsDeps = append(flags.LdFlagsDeps, stub.versionScriptPath)
 	}
 
 	return stub.libraryDecorator.link(ctx, flags, deps, objs)

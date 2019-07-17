@@ -58,7 +58,30 @@ type bootImageConfig struct {
 	symbolsDir   android.OutputPath
 	targets      []android.Target
 	images       map[android.ArchType]android.OutputPath
+	imagesDeps   map[android.ArchType]android.Paths
 	zip          android.WritablePath
+}
+
+func (image bootImageConfig) moduleFiles(ctx android.PathContext, dir android.OutputPath, exts ...string) []android.OutputPath {
+	ret := make([]android.OutputPath, 0, len(image.modules)*len(exts))
+
+	// dex preopt on the bootclasspath produces multiple files.  The first dex file
+	// is converted into to 'name'.art (to match the legacy assumption that 'name'.art
+	// exists), and the rest are converted to 'name'-<jar>.art.
+	// In addition, each .art file has an associated .oat and .vdex file, and an
+	// unstripped .oat file
+	for i, m := range image.modules {
+		name := image.name
+		if i != 0 {
+			name += "-" + m
+		}
+
+		for _, ext := range exts {
+			ret = append(ret, dir.Join(ctx, name+ext))
+		}
+	}
+
+	return ret
 }
 
 type bootImage struct {
@@ -206,7 +229,7 @@ func buildBootImage(ctx android.SingletonContext, config bootImageConfig) *bootI
 	if image.zip != nil {
 		rule := android.NewRuleBuilder()
 		rule.Command().
-			Tool(ctx.Config().HostToolPath(ctx, "soong_zip")).
+			BuiltTool(ctx, "soong_zip").
 			FlagWithOutput("-o ", image.zip).
 			FlagWithArg("-C ", image.dir.String()).
 			FlagWithInputList("-f ", allFiles, " -f ")
@@ -263,8 +286,6 @@ func buildBootImageRuleForArch(ctx android.SingletonContext, image *bootImage,
 	if profile != nil {
 		cmd.FlagWithArg("--compiler-filter=", "speed-profile")
 		cmd.FlagWithInput("--profile-file=", profile)
-	} else if global.PreloadedClasses.Valid() {
-		cmd.FlagWithInput("--image-classes=", global.PreloadedClasses.Path())
 	}
 
 	if global.DirtyImageObjects.Valid() {
@@ -302,48 +323,37 @@ func buildBootImageRuleForArch(ctx android.SingletonContext, image *bootImage,
 	installDir := filepath.Join("/system/framework", arch.String())
 	vdexInstallDir := filepath.Join("/system/framework")
 
-	var extraFiles android.WritablePaths
 	var vdexInstalls android.RuleBuilderInstalls
 	var unstrippedInstalls android.RuleBuilderInstalls
 
 	var zipFiles android.WritablePaths
 
-	// dex preopt on the bootclasspath produces multiple files.  The first dex file
-	// is converted into to 'name'.art (to match the legacy assumption that 'name'.art
-	// exists), and the rest are converted to 'name'-<jar>.art.
-	// In addition, each .art file has an associated .oat and .vdex file, and an
-	// unstripped .oat file
-	for i, m := range image.modules {
-		name := image.name
-		if i != 0 {
-			name += "-" + m
-		}
+	for _, artOrOat := range image.moduleFiles(ctx, outputDir, ".art", ".oat") {
+		cmd.ImplicitOutput(artOrOat)
+		zipFiles = append(zipFiles, artOrOat)
 
-		art := outputDir.Join(ctx, name+".art")
-		oat := outputDir.Join(ctx, name+".oat")
-		vdex := outputDir.Join(ctx, name+".vdex")
-		unstrippedOat := symbolsDir.Join(ctx, name+".oat")
+		// Install the .oat and .art files
+		rule.Install(artOrOat, filepath.Join(installDir, artOrOat.Base()))
+	}
 
-		extraFiles = append(extraFiles, art, oat, vdex, unstrippedOat)
-
-		zipFiles = append(zipFiles, art, oat, vdex)
-
-		// Install the .oat and .art files.
-		rule.Install(art, filepath.Join(installDir, art.Base()))
-		rule.Install(oat, filepath.Join(installDir, oat.Base()))
+	for _, vdex := range image.moduleFiles(ctx, outputDir, ".vdex") {
+		cmd.ImplicitOutput(vdex)
+		zipFiles = append(zipFiles, vdex)
 
 		// The vdex files are identical between architectures, install them to a shared location.  The Make rules will
 		// only use the install rules for one architecture, and will create symlinks into the architecture-specific
 		// directories.
 		vdexInstalls = append(vdexInstalls,
 			android.RuleBuilderInstall{vdex, filepath.Join(vdexInstallDir, vdex.Base())})
+	}
+
+	for _, unstrippedOat := range image.moduleFiles(ctx, symbolsDir, ".oat") {
+		cmd.ImplicitOutput(unstrippedOat)
 
 		// Install the unstripped oat files.  The Make rules will put these in $(TARGET_OUT_UNSTRIPPED)
 		unstrippedInstalls = append(unstrippedInstalls,
 			android.RuleBuilderInstall{unstrippedOat, filepath.Join(installDir, unstrippedOat.Base())})
 	}
-
-	cmd.ImplicitOutputs(extraFiles)
 
 	rule.Build(pctx, ctx, image.name+"JarsDexpreopt_"+arch.String(), "dexpreopt "+image.name+" jars "+arch.String())
 
@@ -362,7 +372,7 @@ Rebuild with ART_BOOT_IMAGE_EXTRA_ARGS="--runtime-arg -verbose:verifier" to see 
 func bootImageProfileRule(ctx android.SingletonContext, image *bootImage, missingDeps []string) android.WritablePath {
 	global := dexpreoptGlobalConfig(ctx)
 
-	if !global.UseProfileForBootImage || ctx.Config().IsPdkBuild() || ctx.Config().UnbundledBuild() {
+	if global.DisableGenerateProfile || ctx.Config().IsPdkBuild() || ctx.Config().UnbundledBuild() {
 		return nil
 	}
 	return ctx.Config().Once(bootImageProfileRuleKey, func() interface{} {
@@ -428,7 +438,7 @@ func dumpOatRules(ctx android.SingletonContext, image *bootImage) {
 		rule := android.NewRuleBuilder()
 		rule.Command().
 			// TODO: for now, use the debug version for better error reporting
-			Tool(ctx.Config().HostToolPath(ctx, "oatdumpd")).
+			BuiltTool(ctx, "oatdumpd").
 			FlagWithInputList("--runtime-arg -Xbootclasspath:", image.dexPaths.Paths(), ":").
 			FlagWithList("--runtime-arg -Xbootclasspath-locations:", image.dexLocations, ":").
 			FlagWithArg("--image=", dexpreopt.PathToLocation(image.images[arch], arch)).Implicit(image.images[arch]).
@@ -496,6 +506,7 @@ func (d *dexpreoptBootJars) MakeVars(ctx android.MakeVarsContext) {
 			for _, arch := range arches {
 				ctx.Strict("DEXPREOPT_IMAGE_VDEX_BUILT_INSTALLED_"+current.name+"_"+arch.String(), current.vdexInstalls[arch].String())
 				ctx.Strict("DEXPREOPT_IMAGE_"+current.name+"_"+arch.String(), current.images[arch].String())
+				ctx.Strict("DEXPREOPT_IMAGE_DEPS_"+current.name+"_"+arch.String(), strings.Join(current.imagesDeps[arch].Strings(), " "))
 				ctx.Strict("DEXPREOPT_IMAGE_BUILT_INSTALLED_"+current.name+"_"+arch.String(), current.installs[arch].String())
 				ctx.Strict("DEXPREOPT_IMAGE_UNSTRIPPED_BUILT_INSTALLED_"+current.name+"_"+arch.String(), current.unstrippedInstalls[arch].String())
 				if current.zip != nil {

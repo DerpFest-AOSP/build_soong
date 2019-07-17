@@ -23,6 +23,7 @@ import (
 	"strings"
 
 	"github.com/google/blueprint"
+	"github.com/google/blueprint/proptools"
 )
 
 var (
@@ -73,7 +74,7 @@ var (
 			Command: `rm -rf "$outDir" "$srcJarDir" "$stubsDir" && ` +
 				`mkdir -p "$outDir" "$srcJarDir" "$stubsDir" && ` +
 				`${config.ZipSyncCmd} -d $srcJarDir -l $srcJarDir/list -f "*.java" $srcJars && ` +
-				`${config.JavaCmd} -jar ${config.MetalavaJar} -encoding UTF-8 -source $javaVersion @$out.rsp @$srcJarDir/list ` +
+				`${config.JavaCmd}  ${config.JavaVmFlags} -jar ${config.MetalavaJar} -encoding UTF-8 -source $javaVersion @$out.rsp @$srcJarDir/list ` +
 				`$bootclasspathArgs $classpathArgs $sourcepathArgs --no-banner --color --quiet --format=v2 ` +
 				`$opts && ` +
 				`${config.SoongZipCmd} -write_if_changed -jar -o $out -C $stubsDir -D $stubsDir && ` +
@@ -95,7 +96,7 @@ var (
 		blueprint.RuleParams{
 			Command: `( rm -rf "$srcJarDir" && mkdir -p "$srcJarDir" && ` +
 				`${config.ZipSyncCmd} -d $srcJarDir -l $srcJarDir/list -f "*.java" $srcJars && ` +
-				`${config.JavaCmd} -jar ${config.MetalavaJar} -encoding UTF-8 -source $javaVersion @$out.rsp @$srcJarDir/list ` +
+				`${config.JavaCmd}  ${config.JavaVmFlags} -jar ${config.MetalavaJar} -encoding UTF-8 -source $javaVersion @$out.rsp @$srcJarDir/list ` +
 				`$bootclasspathArgs $classpathArgs $sourcepathArgs --no-banner --color --quiet --format=v2 ` +
 				`$opts && touch $out && rm -rf "$srcJarDir") || ` +
 				`( echo -e "$msg" ; exit 38 )`,
@@ -120,7 +121,7 @@ var (
 			Command: `rm -rf "$outDir" "$srcJarDir" "$stubsDir" && ` +
 				`mkdir -p "$outDir" "$srcJarDir" "$stubsDir" && ` +
 				`${config.ZipSyncCmd} -d $srcJarDir -l $srcJarDir/list -f "*.java" $srcJars && ` +
-				`${config.JavaCmd} -jar ${config.DokkaJar} $srcJarDir ` +
+				`${config.JavaCmd} ${config.JavaVmFlags} -jar ${config.DokkaJar} $srcJarDir ` +
 				`$classpathArgs -format dac -dacRoot /reference/kotlin -output $outDir $opts && ` +
 				`${config.SoongZipCmd} -write_if_changed -d -o $docZip -C $outDir -D $outDir && ` +
 				`${config.SoongZipCmd} -write_if_changed -jar -o $out -C $stubsDir -D $stubsDir && ` +
@@ -171,13 +172,6 @@ type JavadocProperties struct {
 	// list of java libraries that will be in the classpath.
 	Libs []string `android:"arch_variant"`
 
-	// don't build against the default libraries (bootclasspath, ext, and framework for device
-	// targets)
-	No_standard_libs *bool
-
-	// don't build against the framework libraries (ext, and framework for device targets)
-	No_framework_libs *bool
-
 	// the java library (in classpath) for documentation that provides java srcs and srcjars.
 	Srcs_lib *string
 
@@ -211,6 +205,7 @@ type JavadocProperties struct {
 	// Available variables for substitution:
 	//
 	//  $(location <label>): the path to the arg_files with name <label>
+	//  $$: a literal $
 	Args *string
 
 	// names of the output files used in args that will be generated
@@ -496,10 +491,16 @@ type Javadoc struct {
 	stubsSrcJar android.WritablePath
 }
 
-func (j *Javadoc) Srcs() android.Paths {
-	return android.Paths{j.stubsSrcJar}
+func (j *Javadoc) OutputFiles(tag string) (android.Paths, error) {
+	switch tag {
+	case "":
+		return android.Paths{j.stubsSrcJar}, nil
+	default:
+		return nil, fmt.Errorf("unsupported module reference tag %q", tag)
+	}
 }
 
+// javadoc converts .java source files to documentation using javadoc.
 func JavadocFactory() android.Module {
 	module := &Javadoc{}
 
@@ -509,6 +510,7 @@ func JavadocFactory() android.Module {
 	return module
 }
 
+// javadoc_host converts .java source files to documentation using javadoc.
 func JavadocHostFactory() android.Module {
 	module := &Javadoc{}
 
@@ -518,10 +520,10 @@ func JavadocHostFactory() android.Module {
 	return module
 }
 
-var _ android.SourceFileProducer = (*Javadoc)(nil)
+var _ android.OutputFileProducer = (*Javadoc)(nil)
 
 func (j *Javadoc) sdkVersion() string {
-	return String(j.properties.Sdk_version)
+	return proptools.StringDefault(j.properties.Sdk_version, defaultSdkVersion(j))
 }
 
 func (j *Javadoc) minSdkVersion() string {
@@ -534,14 +536,14 @@ func (j *Javadoc) targetSdkVersion() string {
 
 func (j *Javadoc) addDeps(ctx android.BottomUpMutatorContext) {
 	if ctx.Device() {
-		if !Bool(j.properties.No_standard_libs) {
-			sdkDep := decodeSdkDep(ctx, sdkContext(j))
+		sdkDep := decodeSdkDep(ctx, sdkContext(j))
+		if sdkDep.hasStandardLibs() {
 			if sdkDep.useDefaultLibs {
 				ctx.AddVariationDependencies(nil, bootClasspathTag, config.DefaultBootclasspathLibraries...)
 				if ctx.Config().TargetOpenJDK9() {
 					ctx.AddVariationDependencies(nil, systemModulesTag, config.DefaultSystemModules)
 				}
-				if !Bool(j.properties.No_framework_libs) {
+				if sdkDep.hasFrameworkLibs() {
 					ctx.AddVariationDependencies(nil, libTag, config.DefaultLibraries...)
 				}
 			} else if sdkDep.useModule {
@@ -686,10 +688,11 @@ func (j *Javadoc) collectDeps(ctx android.ModuleContext) deps {
 				panic("Found two system module dependencies")
 			}
 			sm := module.(*SystemModules)
-			if sm.outputFile == nil {
+			if sm.outputDir == nil && len(sm.outputDeps) == 0 {
 				panic("Missing directory for system module dependency")
 			}
-			deps.systemModules = sm.outputFile
+			deps.systemModules = sm.outputDir
+			deps.systemModulesDeps = sm.outputDeps
 		}
 	})
 	// do not pass exclude_srcs directly when expanding srcFiles since exclude_srcs
@@ -770,6 +773,7 @@ func (j *Javadoc) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 		if deps.systemModules != nil {
 			systemModules = append(systemModules, deps.systemModules)
 		}
+		implicits = append(implicits, deps.systemModulesDeps...)
 		bootClasspathArgs = systemModules.FormJavaSystemModulesPath("--system ", ctx.Device())
 		bootClasspathArgs = bootClasspathArgs + " --patch-module java.base=."
 	}
@@ -796,7 +800,7 @@ func (j *Javadoc) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 			"srcJarDir":         android.PathForModuleOut(ctx, "srcjars").String(),
 			"stubsDir":          android.PathForModuleOut(ctx, "stubsDir").String(),
 			"srcJars":           strings.Join(j.srcJars.Strings(), " "),
-			"opts":              opts,
+			"opts":              proptools.NinjaEscape(opts),
 			"bootclasspathArgs": bootClasspathArgs,
 			"classpathArgs":     classpathArgs,
 			"sourcepathArgs":    sourcepathArgs,
@@ -829,6 +833,7 @@ type Droiddoc struct {
 	apiFilePath android.Path
 }
 
+// droiddoc converts .java source files to documentation using doclava or dokka.
 func DroiddocFactory() android.Module {
 	module := &Droiddoc{}
 
@@ -839,6 +844,7 @@ func DroiddocFactory() android.Module {
 	return module
 }
 
+// droiddoc_host converts .java source files to documentation using doclava or dokka.
 func DroiddocHostFactory() android.Module {
 	module := &Droiddoc{}
 
@@ -916,7 +922,7 @@ func (d *Droiddoc) collectDoclavaDocsFlags(ctx android.ModuleContext, implicits 
 	args := " -source 1.8 -J-Xmx1600m -J-XX:-OmitStackTraceInFastThrow -XDignore.symbol.file " +
 		"-doclet com.google.doclava.Doclava -docletpath " + jsilver.String() + ":" + doclava.String() + " " +
 		"-hdf page.build " + ctx.Config().BuildId() + "-" + ctx.Config().BuildNumberFromFile() + " " +
-		`-hdf page.now "$$(` + date + ` @$$(cat ` + ctx.Config().Getenv("BUILD_DATETIME_FILE") + `) "+%d %b %Y %k:%M")" `
+		`-hdf page.now "$(` + date + ` @$(cat ` + ctx.Config().Getenv("BUILD_DATETIME_FILE") + `) "+%d %b %Y %k:%M")" `
 
 	if String(d.properties.Custom_template) == "" {
 		// TODO: This is almost always droiddoc-templates-sdk
@@ -1093,7 +1099,7 @@ func (d *Droiddoc) transformDoclava(ctx android.ModuleContext, implicits android
 			"srcJarDir":         android.PathForModuleOut(ctx, "srcjars").String(),
 			"stubsDir":          android.PathForModuleOut(ctx, "stubsDir").String(),
 			"srcJars":           strings.Join(d.Javadoc.srcJars.Strings(), " "),
-			"opts":              opts,
+			"opts":              proptools.NinjaEscape(opts),
 			"bootclasspathArgs": bootclasspathArgs,
 			"classpathArgs":     classpathArgs,
 			"sourcepathArgs":    sourcepathArgs,
@@ -1115,7 +1121,7 @@ func (d *Droiddoc) transformCheckApi(ctx android.ModuleContext, apiFile, removed
 		Args: map[string]string{
 			"msg":                   msg,
 			"classpath":             checkApiClasspath.FormJavaClassPath(""),
-			"opts":                  opts,
+			"opts":                  proptools.NinjaEscape(opts),
 			"apiFile":               apiFile.String(),
 			"apiFileToCheck":        d.apiFile.String(),
 			"removedApiFile":        removedApiFile.String(),
@@ -1138,7 +1144,7 @@ func (d *Droiddoc) transformDokka(ctx android.ModuleContext, implicits android.P
 			"stubsDir":      android.PathForModuleOut(ctx, "dokka-stubsDir").String(),
 			"srcJars":       strings.Join(d.Javadoc.srcJars.Strings(), " "),
 			"classpathArgs": classpathArgs,
-			"opts":          opts,
+			"opts":          proptools.NinjaEscape(opts),
 			"docZip":        d.Javadoc.docZip.String(),
 		},
 	})
@@ -1256,6 +1262,9 @@ type Droidstubs struct {
 	jdiffStubsSrcJar android.WritablePath
 }
 
+// droidstubs passes sources files through Metalava to generate stub .java files that only contain the API to be
+// documented, filtering out hidden classes and methods.  The resulting .java files are intended to be passed to
+// a droiddoc module to generate documentation.
 func DroidstubsFactory() android.Module {
 	module := &Droidstubs{}
 
@@ -1266,6 +1275,10 @@ func DroidstubsFactory() android.Module {
 	return module
 }
 
+// droidstubs_host passes sources files through Metalava to generate stub .java files that only contain the API
+// to be documented, filtering out hidden classes and methods.  The resulting .java files are intended to be
+// passed to a droiddoc_host module to generate documentation.  Use a droidstubs_host instead of a droidstubs
+// module when symbols needed by the source files are provided by java_library_host modules.
 func DroidstubsHostFactory() android.Module {
 	module := &Droidstubs{}
 
@@ -1556,7 +1569,7 @@ func (d *Droidstubs) transformMetalava(ctx android.ModuleContext, implicits andr
 			"bootclasspathArgs": bootclasspathArgs,
 			"classpathArgs":     classpathArgs,
 			"sourcepathArgs":    sourcepathArgs,
-			"opts":              opts,
+			"opts":              proptools.NinjaEscape(opts),
 		},
 	})
 }
@@ -1579,7 +1592,7 @@ func (d *Droidstubs) transformCheckApi(ctx android.ModuleContext,
 			"bootclasspathArgs": bootclasspathArgs,
 			"classpathArgs":     classpathArgs,
 			"sourcepathArgs":    sourcepathArgs,
-			"opts":              opts,
+			"opts":              proptools.NinjaEscape(opts),
 			"msg":               msg,
 		},
 	})
@@ -1600,7 +1613,7 @@ func (d *Droidstubs) transformJdiff(ctx android.ModuleContext, implicits android
 			"srcJarDir":         android.PathForModuleOut(ctx, "jdiff-srcjars").String(),
 			"stubsDir":          android.PathForModuleOut(ctx, "jdiff-stubsDir").String(),
 			"srcJars":           strings.Join(d.Javadoc.srcJars.Strings(), " "),
-			"opts":              opts,
+			"opts":              proptools.NinjaEscape(opts),
 			"bootclasspathArgs": bootclasspathArgs,
 			"classpathArgs":     classpathArgs,
 			"sourcepathArgs":    sourcepathArgs,
@@ -1745,7 +1758,7 @@ func (d *Droidstubs) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 		jdiff := android.PathForOutput(ctx, "host", ctx.Config().PrebuiltOS(), "framework", "jdiff.jar")
 		jdiffImplicits = append(jdiffImplicits, android.Paths{jdiff, d.apiXmlFile, d.lastReleasedApiXmlFile}...)
 
-		opts := " -encoding UTF-8 -source 1.8 -J-Xmx1600m -XDignore.symbol.file " +
+		opts := " -source 1.8 -J-Xmx1600m -XDignore.symbol.file " +
 			"-doclet jdiff.JDiff -docletpath " + jdiff.String() + " -quiet " +
 			"-newapi " + strings.TrimSuffix(d.apiXmlFile.Base(), d.apiXmlFile.Ext()) +
 			" -newapidir " + filepath.Dir(d.apiXmlFile.String()) +
@@ -1779,6 +1792,7 @@ type ExportedDroiddocDir struct {
 	dir  android.Path
 }
 
+// droiddoc_exported_dir exports a directory of html templates or nullability annotations for use by doclava.
 func ExportedDroiddocDirFactory() android.Module {
 	module := &ExportedDroiddocDir{}
 	module.AddProperties(&module.properties)
@@ -1800,9 +1814,6 @@ func (d *ExportedDroiddocDir) GenerateAndroidBuildActions(ctx android.ModuleCont
 type DocDefaults struct {
 	android.ModuleBase
 	android.DefaultsModuleBase
-}
-
-func (*DocDefaults) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 }
 
 func DocDefaultsFactory() android.Module {
