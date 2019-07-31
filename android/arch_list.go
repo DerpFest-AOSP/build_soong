@@ -90,6 +90,7 @@ var archVariants = map[ArchType][]string{
 
 var archFeatures = map[ArchType][]string{
 	Arm: {
+		"aarch32",
 		"neon",
 	},
 	Arm64: {
@@ -126,9 +127,11 @@ var archFeatureMap = map[ArchType]map[string][]string{
 			"neon",
 		},
 		"armv8-a": {
+			"aarch32",
 			"neon",
 		},
 		"armv8-2a": {
+			"aarch32",
 			"neon",
 		},
 	},
