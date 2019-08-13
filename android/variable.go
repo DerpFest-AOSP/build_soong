@@ -59,17 +59,6 @@ type variableProperties struct {
 			Cflags []string
 		}
 
-		// Product_is_iot is true for Android Things devices.
-		Product_is_iot struct {
-			Cflags       []string
-			Enabled      bool
-			Exclude_srcs []string
-			Init_rc      []string
-			Shared_libs  []string
-			Srcs         []string
-			Static_libs  []string
-		}
-
 		// treble_linker_namespaces is true when the system/vendor linker namespace separation is
 		// enabled.
 		Treble_linker_namespaces struct {
@@ -206,6 +195,7 @@ type productVariables struct {
 	HostStaticBinaries               *bool `json:",omitempty"`
 	Binder32bit                      *bool `json:",omitempty"`
 	UseGoma                          *bool `json:",omitempty"`
+	UseRBE                           *bool `json:",omitempty"`
 	Debuggable                       *bool `json:",omitempty"`
 	Eng                              *bool `json:",omitempty"`
 	Treble_linker_namespaces         *bool `json:",omitempty"`
@@ -261,8 +251,6 @@ type productVariables struct {
 
 	Override_rs_driver *string `json:",omitempty"`
 
-	Product_is_iot *bool `json:",omitempty"`
-
 	Fuchsia *bool `json:",omitempty"`
 
 	DeviceKernelHeaders []string `json:",omitempty"`
@@ -273,7 +261,8 @@ type productVariables struct {
 
 	PgoAdditionalProfileDirs []string `json:",omitempty"`
 
-	VndkUseCoreVariant *bool `json:",omitempty"`
+	VndkUseCoreVariant         *bool `json:",omitempty"`
+	VndkSnapshotBuildArtifacts *bool `json:",omitempty"`
 
 	BoardVendorSepolicyDirs      []string `json:",omitempty"`
 	BoardOdmSepolicyDirs         []string `json:",omitempty"`

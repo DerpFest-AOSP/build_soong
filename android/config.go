@@ -689,10 +689,6 @@ func (c *config) DevicePrimaryArchType() ArchType {
 	return c.Targets[Android][0].Arch.ArchType
 }
 
-func (c *config) SkipDeviceInstall() bool {
-	return c.EmbeddedInMake()
-}
-
 func (c *config) SkipMegaDeviceInstall(path string) bool {
 	return Bool(c.Mega_device) &&
 		strings.HasPrefix(path, filepath.Join(c.buildDir, "target", "product"))
@@ -748,8 +744,20 @@ func (c *config) UseGoma() bool {
 	return Bool(c.productVariables.UseGoma)
 }
 
+func (c *config) UseRBE() bool {
+	return Bool(c.productVariables.UseRBE)
+}
+
 func (c *config) RunErrorProne() bool {
 	return c.IsEnvTrue("RUN_ERROR_PRONE")
+}
+
+func (c *config) XrefCorpusName() string {
+	return c.Getenv("XREF_CORPUS")
+}
+
+func (c *config) EmitXrefRules() bool {
+	return c.XrefCorpusName() != ""
 }
 
 // Returns true if -source 1.9 -target 1.9 is being passed to javac
@@ -838,6 +846,10 @@ func (c *config) DexpreoptGlobalConfig() string {
 
 func (c *config) FrameworksBaseDirExists(ctx PathContext) bool {
 	return ExistentPathForSource(ctx, "frameworks", "base").Valid()
+}
+
+func (c *config) VndkSnapshotBuildArtifacts() bool {
+	return Bool(c.productVariables.VndkSnapshotBuildArtifacts)
 }
 
 func (c *deviceConfig) Arches() []Arch {

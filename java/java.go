@@ -50,6 +50,21 @@ func init() {
 	android.RegisterModuleType("dex_import", DexImportFactory)
 
 	android.RegisterSingletonType("logtags", LogtagsSingleton)
+	android.RegisterSingletonType("kythe_java_extract", kytheExtractJavaFactory)
+}
+
+func (j *Module) checkPlatformAPI(ctx android.ModuleContext) {
+	if sc, ok := ctx.Module().(sdkContext); ok {
+		usePlatformAPI := proptools.Bool(j.deviceProperties.Platform_apis)
+		if usePlatformAPI != (sc.sdkVersion() == "") {
+			if usePlatformAPI {
+				ctx.PropertyErrorf("platform_apis", "platform_apis must be false when sdk_version is not empty.")
+			} else {
+				ctx.PropertyErrorf("platform_apis", "platform_apis must be true when sdk_version is empty.")
+			}
+		}
+
+	}
 }
 
 // TODO:
@@ -178,8 +193,8 @@ type CompilerDeviceProperties struct {
 	// list of module-specific flags that will be used for dex compiles
 	Dxflags []string `android:"arch_variant"`
 
-	// if not blank, set to the version of the sdk to compile against.  Defaults to compiling against the current
-	// sdk if platform_apis is not set.
+	// if not blank, set to the version of the sdk to compile against.
+	// Defaults to compiling against the current platform.
 	Sdk_version *string
 
 	// if not blank, set the minimum version of the sdk that the compiled artifacts will run against.
@@ -190,7 +205,8 @@ type CompilerDeviceProperties struct {
 	// Defaults to sdk_version if not set.
 	Target_sdk_version *string
 
-	// if true, compile against the platform APIs instead of an SDK.
+	// It must be true only if sdk_version is empty.
+	// This field works in only android_app, otherwise nothing happens.
 	Platform_apis *bool
 
 	Aidl struct {
@@ -267,6 +283,7 @@ func (me *CompilerDeviceProperties) EffectiveOptimizeEnabled() bool {
 type Module struct {
 	android.ModuleBase
 	android.DefaultableModuleBase
+	android.ApexModuleBase
 
 	properties       CompilerProperties
 	protoProperties  android.ProtoProperties
@@ -342,6 +359,9 @@ type Module struct {
 
 	hiddenAPI
 	dexpreopter
+
+	// list of the xref extraction files
+	kytheFiles android.Paths
 }
 
 func (j *Module) OutputFiles(tag string) (android.Paths, error) {
@@ -350,6 +370,8 @@ func (j *Module) OutputFiles(tag string) (android.Paths, error) {
 		return append(android.Paths{j.outputFile}, j.extraOutputFiles...), nil
 	case ".jar":
 		return android.Paths{j.implementationAndResourcesJar}, nil
+	case ".proguard_map":
+		return android.Paths{j.proguardDictionary}, nil
 	default:
 		return nil, fmt.Errorf("unsupported module reference tag %q", tag)
 	}
@@ -382,12 +404,20 @@ type SrcDependency interface {
 	CompiledSrcJars() android.Paths
 }
 
+type xref interface {
+	XrefJavaFiles() android.Paths
+}
+
 func (j *Module) CompiledSrcs() android.Paths {
 	return j.compiledJavaSrcs
 }
 
 func (j *Module) CompiledSrcJars() android.Paths {
 	return j.compiledSrcJars
+}
+
+func (j *Module) XrefJavaFiles() android.Paths {
+	return j.kytheFiles
 }
 
 var _ SrcDependency = (*Module)(nil)
@@ -632,8 +662,7 @@ type deps struct {
 	aidlIncludeDirs    android.Paths
 	srcs               android.Paths
 	srcJars            android.Paths
-	systemModules      android.Path
-	systemModulesDeps  android.Paths
+	systemModules      *systemModules
 	aidlPreprocess     android.OptionalPath
 	kotlinStdlib       android.Paths
 	kotlinAnnotations  android.Paths
@@ -844,8 +873,7 @@ func (j *Module) collectDeps(ctx android.ModuleContext) deps {
 				if sm.outputDir == nil || len(sm.outputDeps) == 0 {
 					panic("Missing directory for system module dependency")
 				}
-				deps.systemModules = sm.outputDir
-				deps.systemModulesDeps = sm.outputDeps
+				deps.systemModules = &systemModules{sm.outputDir, sm.outputDeps}
 			}
 		}
 	})
@@ -973,10 +1001,7 @@ func (j *Module) collectBuilderFlags(ctx android.ModuleContext, deps deps) javaB
 	}
 
 	// systemModules
-	if deps.systemModules != nil {
-		flags.systemModules = append(flags.systemModules, deps.systemModules)
-		flags.systemModulesDeps = append(flags.systemModulesDeps, deps.systemModulesDeps...)
-	}
+	flags.systemModules = deps.systemModules
 
 	// aidl flags.
 	flags.aidlFlags, flags.aidlDeps = j.aidlFlags(ctx, deps.aidlPreprocess, deps.aidlIncludeDirs)
@@ -1142,6 +1167,12 @@ func (j *Module) compile(ctx android.ModuleContext, aaptSrcJar android.Path) {
 			classes := android.PathForModuleOut(ctx, "javac", jarName)
 			TransformJavaToClasses(ctx, classes, -1, uniqueSrcFiles, srcJars, flags, extraJarDeps)
 			jars = append(jars, classes)
+		}
+		if ctx.Config().EmitXrefRules() {
+			extractionFile := android.PathForModuleOut(ctx, ctx.ModuleName()+".kzip")
+			emitXrefRule(ctx, extractionFile, uniqueSrcFiles, srcJars, flags, extraJarDeps, "xref")
+			j.kytheFiles = append(j.kytheFiles, extractionFile)
+
 		}
 		if ctx.Failed() {
 			return
@@ -1555,7 +1586,8 @@ func (j *Library) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 	j.deviceProperties.UncompressDex = j.dexpreopter.uncompressedDex
 	j.compile(ctx, nil)
 
-	if (Bool(j.properties.Installable) || ctx.Host()) && !android.DirectlyInAnyApex(ctx, ctx.ModuleName()) {
+	exclusivelyForApex := android.InAnyApex(ctx.ModuleName()) && !j.IsForPlatform()
+	if (Bool(j.properties.Installable) || ctx.Host()) && !exclusivelyForApex {
 		j.installFile = ctx.InstallFile(android.PathForModuleInstall(ctx, "framework"),
 			ctx.ModuleName()+".jar", j.outputFile)
 	}
@@ -1586,6 +1618,7 @@ func LibraryFactory() android.Module {
 		&module.Module.protoProperties)
 
 	InitJavaModule(module, android.HostAndDeviceSupported)
+	android.InitApexModule(module)
 	return module
 }
 
@@ -1608,6 +1641,7 @@ func LibraryHostFactory() android.Module {
 	module.Module.properties.Installable = proptools.BoolPtr(true)
 
 	InitJavaModule(module, android.HostSupported)
+	android.InitApexModule(module)
 	return module
 }
 
@@ -1863,6 +1897,7 @@ type ImportProperties struct {
 type Import struct {
 	android.ModuleBase
 	android.DefaultableModuleBase
+	android.ApexModuleBase
 	prebuilt android.Prebuilt
 
 	properties ImportProperties
@@ -2019,6 +2054,7 @@ func ImportFactory() android.Module {
 
 	android.InitPrebuiltModule(module, &module.properties.Jars)
 	InitJavaModule(module, android.HostAndDeviceSupported)
+	android.InitApexModule(module)
 	return module
 }
 
@@ -2034,6 +2070,7 @@ func ImportFactoryHost() android.Module {
 
 	android.InitPrebuiltModule(module, &module.properties.Jars)
 	InitJavaModule(module, android.HostSupported)
+	android.InitApexModule(module)
 	return module
 }
 
@@ -2046,6 +2083,7 @@ type DexImportProperties struct {
 type DexImport struct {
 	android.ModuleBase
 	android.DefaultableModuleBase
+	android.ApexModuleBase
 	prebuilt android.Prebuilt
 
 	properties DexImportProperties
@@ -2137,6 +2175,7 @@ func DexImportFactory() android.Module {
 
 	android.InitPrebuiltModule(module, &module.properties.Jars)
 	InitJavaModule(module, android.DeviceSupported)
+	android.InitApexModule(module)
 	return module
 }
 
@@ -2146,6 +2185,7 @@ func DexImportFactory() android.Module {
 type Defaults struct {
 	android.ModuleBase
 	android.DefaultsModuleBase
+	android.ApexModuleBase
 }
 
 // java_defaults provides a set of properties that can be inherited by other java or android modules.
@@ -2204,8 +2244,32 @@ func DefaultsFactory(props ...interface{}) android.Module {
 	)
 
 	android.InitDefaultsModule(module)
-
+	android.InitApexModule(module)
 	return module
+}
+
+func kytheExtractJavaFactory() android.Singleton {
+	return &kytheExtractJavaSingleton{}
+}
+
+type kytheExtractJavaSingleton struct {
+}
+
+func (ks *kytheExtractJavaSingleton) GenerateBuildActions(ctx android.SingletonContext) {
+	var xrefTargets android.Paths
+	ctx.VisitAllModules(func(module android.Module) {
+		if javaModule, ok := module.(xref); ok {
+			xrefTargets = append(xrefTargets, javaModule.XrefJavaFiles()...)
+		}
+	})
+	// TODO(asmundak): perhaps emit a rule to output a warning if there were no xrefTargets
+	if len(xrefTargets) > 0 {
+		ctx.Build(pctx, android.BuildParams{
+			Rule:   blueprint.Phony,
+			Output: android.PathForPhony(ctx, "xref_java"),
+			Inputs: xrefTargets,
+		})
+	}
 }
 
 var Bool = proptools.Bool

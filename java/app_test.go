@@ -43,7 +43,7 @@ var (
 	}
 )
 
-func testAppContext(config android.Config, bp string, fs map[string][]byte) *android.TestContext {
+func testAppContext(bp string, fs map[string][]byte) *android.TestContext {
 	appFS := map[string][]byte{}
 	for k, v := range fs {
 		appFS[k] = v
@@ -53,13 +53,13 @@ func testAppContext(config android.Config, bp string, fs map[string][]byte) *and
 		appFS[file] = nil
 	}
 
-	return testContext(config, bp, appFS)
+	return testContext(bp, appFS)
 }
 
 func testApp(t *testing.T, bp string) *android.TestContext {
 	config := testConfig(nil)
 
-	ctx := testAppContext(config, bp, nil)
+	ctx := testAppContext(bp, nil)
 
 	run(t, ctx, config)
 
@@ -72,6 +72,7 @@ func TestApp(t *testing.T) {
 			ctx := testApp(t, moduleType+` {
 					name: "foo",
 					srcs: ["a.java"],
+					sdk_version: "current"
 				}
 			`)
 
@@ -117,6 +118,7 @@ func TestAppSplits(t *testing.T) {
 					name: "foo",
 					srcs: ["a.java"],
 					package_splits: ["v4", "v7,hdpi"],
+					sdk_version: "current"
 				}`)
 
 	foo := ctx.ModuleForTests("foo", "android_common")
@@ -137,6 +139,40 @@ func TestAppSplits(t *testing.T) {
 	if g, w := outputFiles.Strings(), expectedOutputs; !reflect.DeepEqual(g, w) {
 		t.Errorf(`want OutputFiles("") = %q, got %q`, w, g)
 	}
+}
+
+func TestPlatformAPIs(t *testing.T) {
+	testJava(t, `
+		android_app {
+			name: "foo",
+			srcs: ["a.java"],
+			platform_apis: true,
+		}
+	`)
+
+	testJava(t, `
+		android_app {
+			name: "foo",
+			srcs: ["a.java"],
+			sdk_version: "current",
+		}
+	`)
+
+	testJavaError(t, "platform_apis must be true when sdk_version is empty.", `
+		android_app {
+			name: "bar",
+			srcs: ["b.java"],
+		}
+	`)
+
+	testJavaError(t, "platform_apis must be false when sdk_version is not empty.", `
+		android_app {
+			name: "bar",
+			srcs: ["b.java"],
+			sdk_version: "system_current",
+			platform_apis: true,
+		}
+	`)
 }
 
 func TestResourceDirs(t *testing.T) {
@@ -169,6 +205,7 @@ func TestResourceDirs(t *testing.T) {
 	bp := `
 			android_app {
 				name: "foo",
+				sdk_version: "current",
 				%s
 			}
 		`
@@ -176,7 +213,7 @@ func TestResourceDirs(t *testing.T) {
 	for _, testCase := range testCases {
 		t.Run(testCase.name, func(t *testing.T) {
 			config := testConfig(nil)
-			ctx := testContext(config, fmt.Sprintf(bp, testCase.prop), fs)
+			ctx := testContext(fmt.Sprintf(bp, testCase.prop), fs)
 			run(t, ctx, config)
 
 			module := ctx.ModuleForTests("foo", "android_common")
@@ -349,12 +386,14 @@ func TestAndroidResources(t *testing.T) {
 	bp := `
 			android_app {
 				name: "foo",
+				sdk_version: "current",
 				resource_dirs: ["foo/res"],
 				static_libs: ["lib", "lib3"],
 			}
 
 			android_app {
 				name: "bar",
+				sdk_version: "current",
 				resource_dirs: ["bar/res"],
 			}
 
@@ -388,7 +427,7 @@ func TestAndroidResources(t *testing.T) {
 				config.TestProductVariables.EnforceRROExcludedOverlays = testCase.enforceRROExcludedOverlays
 			}
 
-			ctx := testAppContext(config, bp, fs)
+			ctx := testAppContext(bp, fs)
 			run(t, ctx, config)
 
 			resourceListToFiles := func(module android.TestingModule, list []string) (files []string) {
@@ -461,6 +500,7 @@ func TestAppSdkVersion(t *testing.T) {
 		platformSdkCodename   string
 		platformSdkFinal      bool
 		expectedMinSdkVersion string
+		platformApis          bool
 	}{
 		{
 			name:                  "current final SDK",
@@ -481,6 +521,7 @@ func TestAppSdkVersion(t *testing.T) {
 		{
 			name:                  "default final SDK",
 			sdkVersion:            "",
+			platformApis:          true,
 			platformSdkInt:        27,
 			platformSdkCodename:   "REL",
 			platformSdkFinal:      true,
@@ -489,6 +530,7 @@ func TestAppSdkVersion(t *testing.T) {
 		{
 			name:                  "default non-final SDK",
 			sdkVersion:            "",
+			platformApis:          true,
 			platformSdkInt:        27,
 			platformSdkCodename:   "OMR1",
 			platformSdkFinal:      false,
@@ -504,18 +546,23 @@ func TestAppSdkVersion(t *testing.T) {
 	for _, moduleType := range []string{"android_app", "android_library"} {
 		for _, test := range testCases {
 			t.Run(moduleType+" "+test.name, func(t *testing.T) {
+				platformApiProp := ""
+				if test.platformApis {
+					platformApiProp = "platform_apis: true,"
+				}
 				bp := fmt.Sprintf(`%s {
 					name: "foo",
 					srcs: ["a.java"],
 					sdk_version: "%s",
-				}`, moduleType, test.sdkVersion)
+					%s
+				}`, moduleType, test.sdkVersion, platformApiProp)
 
 				config := testConfig(nil)
 				config.TestProductVariables.Platform_sdk_version = &test.platformSdkInt
 				config.TestProductVariables.Platform_sdk_codename = &test.platformSdkCodename
 				config.TestProductVariables.Platform_sdk_final = &test.platformSdkFinal
 
-				ctx := testAppContext(config, bp, nil)
+				ctx := testAppContext(bp, nil)
 
 				run(t, ctx, config)
 
@@ -547,7 +594,7 @@ func TestAppSdkVersion(t *testing.T) {
 }
 
 func TestJNIABI(t *testing.T) {
-	ctx := testJava(t, cc.GatherRequiredDepsForTest(android.Android)+`
+	ctx, _ := testJava(t, cc.GatherRequiredDepsForTest(android.Android)+`
 		cc_library {
 			name: "libjni",
 			system_shared_libs: [],
@@ -620,7 +667,7 @@ func TestJNIABI(t *testing.T) {
 }
 
 func TestJNIPackaging(t *testing.T) {
-	ctx := testJava(t, cc.GatherRequiredDepsForTest(android.Android)+`
+	ctx, _ := testJava(t, cc.GatherRequiredDepsForTest(android.Android)+`
 		cc_library {
 			name: "libjni",
 			system_shared_libs: [],
@@ -630,18 +677,21 @@ func TestJNIPackaging(t *testing.T) {
 		android_app {
 			name: "app",
 			jni_libs: ["libjni"],
+			sdk_version: "current",
 		}
 
 		android_app {
 			name: "app_noembed",
 			jni_libs: ["libjni"],
 			use_embedded_native_libs: false,
+			sdk_version: "current",
 		}
 
 		android_app {
 			name: "app_embed",
 			jni_libs: ["libjni"],
 			use_embedded_native_libs: true,
+			sdk_version: "current",
 		}
 
 		android_test {
@@ -715,6 +765,7 @@ func TestCertificates(t *testing.T) {
 				android_app {
 					name: "foo",
 					srcs: ["a.java"],
+					sdk_version: "current",
 				}
 			`,
 			certificateOverride: "",
@@ -726,7 +777,8 @@ func TestCertificates(t *testing.T) {
 				android_app {
 					name: "foo",
 					srcs: ["a.java"],
-					certificate: ":new_certificate"
+					certificate: ":new_certificate",
+					sdk_version: "current",
 				}
 
 				android_app_certificate {
@@ -743,7 +795,8 @@ func TestCertificates(t *testing.T) {
 				android_app {
 					name: "foo",
 					srcs: ["a.java"],
-					certificate: "expiredkey"
+					certificate: "expiredkey",
+					sdk_version: "current",
 				}
 			`,
 			certificateOverride: "",
@@ -755,7 +808,8 @@ func TestCertificates(t *testing.T) {
 				android_app {
 					name: "foo",
 					srcs: ["a.java"],
-					certificate: "expiredkey"
+					certificate: "expiredkey",
+					sdk_version: "current",
 				}
 
 				android_app_certificate {
@@ -774,7 +828,7 @@ func TestCertificates(t *testing.T) {
 			if test.certificateOverride != "" {
 				config.TestProductVariables.CertificateOverrides = []string{test.certificateOverride}
 			}
-			ctx := testAppContext(config, test.bp, nil)
+			ctx := testAppContext(test.bp, nil)
 
 			run(t, ctx, config)
 			foo := ctx.ModuleForTests("foo", "android_common")
@@ -801,6 +855,7 @@ func TestPackageNameOverride(t *testing.T) {
 				android_app {
 					name: "foo",
 					srcs: ["a.java"],
+					sdk_version: "current",
 				}
 			`,
 			packageNameOverride: "",
@@ -815,6 +870,7 @@ func TestPackageNameOverride(t *testing.T) {
 				android_app {
 					name: "foo",
 					srcs: ["a.java"],
+					sdk_version: "current",
 				}
 			`,
 			packageNameOverride: "foo:bar",
@@ -832,7 +888,7 @@ func TestPackageNameOverride(t *testing.T) {
 			if test.packageNameOverride != "" {
 				config.TestProductVariables.PackageNameOverrides = []string{test.packageNameOverride}
 			}
-			ctx := testAppContext(config, test.bp, nil)
+			ctx := testAppContext(test.bp, nil)
 
 			run(t, ctx, config)
 			foo := ctx.ModuleForTests("foo", "android_common")
@@ -856,16 +912,18 @@ func TestInstrumentationTargetOverridden(t *testing.T) {
 		android_app {
 			name: "foo",
 			srcs: ["a.java"],
+			sdk_version: "current",
 		}
 
 		android_test {
 			name: "bar",
 			instrumentation_for: "foo",
+			sdk_version: "current",
 		}
 		`
 	config := testConfig(nil)
 	config.TestProductVariables.ManifestPackageNameOverrides = []string{"foo:org.dandroid.bp"}
-	ctx := testAppContext(config, bp, nil)
+	ctx := testAppContext(bp, nil)
 
 	run(t, ctx, config)
 
@@ -879,12 +937,13 @@ func TestInstrumentationTargetOverridden(t *testing.T) {
 }
 
 func TestOverrideAndroidApp(t *testing.T) {
-	ctx := testJava(t, `
+	ctx, _ := testJava(t, `
 		android_app {
 			name: "foo",
 			srcs: ["a.java"],
 			certificate: "expiredkey",
 			overrides: ["qux"],
+			sdk_version: "current",
 		}
 
 		override_android_app {
@@ -980,10 +1039,11 @@ func TestOverrideAndroidApp(t *testing.T) {
 }
 
 func TestOverrideAndroidAppDependency(t *testing.T) {
-	ctx := testJava(t, `
+	ctx, _ := testJava(t, `
 		android_app {
 			name: "foo",
 			srcs: ["a.java"],
+			sdk_version: "current",
 		}
 
 		override_android_app {
@@ -1021,7 +1081,7 @@ func TestOverrideAndroidAppDependency(t *testing.T) {
 }
 
 func TestAndroidAppImport(t *testing.T) {
-	ctx := testJava(t, `
+	ctx, _ := testJava(t, `
 		android_app_import {
 			name: "foo",
 			apk: "prebuilts/apk/app.apk",
@@ -1050,7 +1110,7 @@ func TestAndroidAppImport(t *testing.T) {
 }
 
 func TestAndroidAppImport_NoDexPreopt(t *testing.T) {
-	ctx := testJava(t, `
+	ctx, _ := testJava(t, `
 		android_app_import {
 			name: "foo",
 			apk: "prebuilts/apk/app.apk",
@@ -1071,7 +1131,7 @@ func TestAndroidAppImport_NoDexPreopt(t *testing.T) {
 }
 
 func TestAndroidAppImport_Presigned(t *testing.T) {
-	ctx := testJava(t, `
+	ctx, _ := testJava(t, `
 		android_app_import {
 			name: "foo",
 			apk: "prebuilts/apk/app.apk",
@@ -1166,7 +1226,7 @@ func TestAndroidAppImport_DpiVariants(t *testing.T) {
 		config := testConfig(nil)
 		config.TestProductVariables.AAPTPreferredConfig = test.aaptPreferredConfig
 		config.TestProductVariables.AAPTPrebuiltDPI = test.aaptPrebuiltDPI
-		ctx := testAppContext(config, bp, nil)
+		ctx := testAppContext(bp, nil)
 
 		run(t, ctx, config)
 
@@ -1183,7 +1243,7 @@ func TestAndroidAppImport_DpiVariants(t *testing.T) {
 }
 
 func TestStl(t *testing.T) {
-	ctx := testJava(t, cc.GatherRequiredDepsForTest(android.Android)+`
+	ctx, _ := testJava(t, cc.GatherRequiredDepsForTest(android.Android)+`
 		cc_library {
 			name: "libjni",
 		}
@@ -1253,18 +1313,21 @@ func TestUsesLibraries(t *testing.T) {
 			name: "foo",
 			srcs: ["a.java"],
 			api_packages: ["foo"],
+			sdk_version: "current",
 		}
 
 		java_sdk_library {
 			name: "bar",
 			srcs: ["a.java"],
 			api_packages: ["bar"],
+			sdk_version: "current",
 		}
 
 		android_app {
 			name: "app",
 			srcs: ["a.java"],
 			uses_libs: ["foo"],
+			sdk_version: "current",
 			optional_uses_libs: [
 				"bar",
 				"baz",
@@ -1286,7 +1349,7 @@ func TestUsesLibraries(t *testing.T) {
 	config := testConfig(nil)
 	config.TestProductVariables.MissingUsesLibraries = []string{"baz"}
 
-	ctx := testAppContext(config, bp, nil)
+	ctx := testAppContext(bp, nil)
 
 	run(t, ctx, config)
 
@@ -1339,6 +1402,7 @@ func TestCodelessApp(t *testing.T) {
 				android_app {
 					name: "foo",
 					srcs: ["a.java"],
+					sdk_version: "current",
 				}
 			`,
 			noCode: false,
@@ -1348,6 +1412,7 @@ func TestCodelessApp(t *testing.T) {
 			bp: `
 				android_app {
 					name: "foo",
+					sdk_version: "current",
 				}
 			`,
 			noCode: true,
@@ -1358,11 +1423,13 @@ func TestCodelessApp(t *testing.T) {
 				android_app {
 					name: "foo",
 					static_libs: ["lib"],
+					sdk_version: "current",
 				}
 
 				java_library {
 					name: "lib",
 					srcs: ["a.java"],
+					sdk_version: "current",
 				}
 			`,
 			noCode: false,
@@ -1373,10 +1440,12 @@ func TestCodelessApp(t *testing.T) {
 				android_app {
 					name: "foo",
 					static_libs: ["lib"],
+					sdk_version: "current",
 				}
 
 				java_library {
 					name: "lib",
+					sdk_version: "current",
 				}
 			`,
 			// TODO(jungjw): this should probably be true
@@ -1398,7 +1467,7 @@ func TestCodelessApp(t *testing.T) {
 }
 
 func TestEmbedNotice(t *testing.T) {
-	ctx := testJava(t, cc.GatherRequiredDepsForTest(android.Android)+`
+	ctx, _ := testJava(t, cc.GatherRequiredDepsForTest(android.Android)+`
 		android_app {
 			name: "foo",
 			srcs: ["a.java"],
@@ -1406,6 +1475,7 @@ func TestEmbedNotice(t *testing.T) {
 			jni_libs: ["libjni"],
 			notice: "APP_NOTICE",
 			embed_notices: true,
+			sdk_version: "current",
 		}
 
 		// No embed_notice flag
@@ -1414,6 +1484,7 @@ func TestEmbedNotice(t *testing.T) {
 			srcs: ["a.java"],
 			jni_libs: ["libjni"],
 			notice: "APP_NOTICE",
+			sdk_version: "current",
 		}
 
 		// No NOTICE files
@@ -1421,6 +1492,7 @@ func TestEmbedNotice(t *testing.T) {
 			name: "baz",
 			srcs: ["a.java"],
 			embed_notices: true,
+			sdk_version: "current",
 		}
 
 		cc_library {
@@ -1435,6 +1507,7 @@ func TestEmbedNotice(t *testing.T) {
 			srcs: [
 				":gen",
 			],
+			sdk_version: "current",
 		}
 
 		genrule {
@@ -1510,6 +1583,7 @@ func TestUncompressDex(t *testing.T) {
 				android_app {
 					name: "foo",
 					srcs: ["a.java"],
+					sdk_version: "current",
 				}
 			`,
 			uncompressedPlatform:  true,
@@ -1522,6 +1596,7 @@ func TestUncompressDex(t *testing.T) {
 					name: "foo",
 					use_embedded_dex: true,
 					srcs: ["a.java"],
+					sdk_version: "current",
 				}
 			`,
 			uncompressedPlatform:  true,
@@ -1534,6 +1609,7 @@ func TestUncompressDex(t *testing.T) {
 					name: "foo",
 					privileged: true,
 					srcs: ["a.java"],
+					sdk_version: "current",
 				}
 			`,
 			uncompressedPlatform:  true,
@@ -1549,7 +1625,7 @@ func TestUncompressDex(t *testing.T) {
 			config.TestProductVariables.Unbundled_build = proptools.BoolPtr(true)
 		}
 
-		ctx := testAppContext(config, bp, nil)
+		ctx := testAppContext(bp, nil)
 
 		run(t, ctx, config)
 

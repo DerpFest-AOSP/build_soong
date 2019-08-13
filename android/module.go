@@ -155,6 +155,7 @@ type ModuleContext interface {
 	InstallInData() bool
 	InstallInSanitizerDir() bool
 	InstallInRecovery() bool
+	InstallBypassMake() bool
 
 	RequiredModuleNames() []string
 	HostRequiredModuleNames() []string
@@ -192,6 +193,7 @@ type Module interface {
 	InstallInData() bool
 	InstallInSanitizerDir() bool
 	InstallInRecovery() bool
+	InstallBypassMake() bool
 	SkipInstall()
 	ExportedToMake() bool
 	NoticeFile() OptionalPath
@@ -211,6 +213,9 @@ type Module interface {
 
 	// Get information about the properties that can contain visibility rules.
 	visibilityProperties() []visibilityProperty
+
+	// Get the visibility rules that control the visibility of this module.
+	visibility() []string
 }
 
 // Qualified id for a module
@@ -301,6 +306,11 @@ type commonProperties struct {
 	//
 	// If no `default_visibility` property can be found then the module uses the
 	// global default of `//visibility:legacy_public`.
+	//
+	// The `visibility` property has no effect on a defaults module although it does
+	// apply to any non-defaults module that uses it. To set the visibility of a
+	// defaults module, use the `defaults_visibility` property on the defaults module;
+	// not to be confused with the `default_visibility` property on the package module.
 	//
 	// See https://android.googlesource.com/platform/build/soong/+/master/README.md#visibility for
 	// more details.
@@ -503,6 +513,12 @@ func InitAndroidModule(m Module) {
 		&base.variableProperties)
 	base.generalProperties = m.GetProperties()
 	base.customizableProperties = m.GetProperties()
+
+	// The default_visibility property needs to be checked and parsed by the visibility module during
+	// its checking and parsing phases.
+	base.primaryVisibilityProperty =
+		newVisibilityProperty("visibility", &base.commonProperties.Visibility)
+	base.visibilityPropertyInfo = []visibilityProperty{base.primaryVisibilityProperty}
 }
 
 func InitAndroidArchModule(m Module, hod HostOrDeviceSupported, defaultMultilib Multilib) {
@@ -581,6 +597,13 @@ type ModuleBase struct {
 	generalProperties       []interface{}
 	archProperties          [][]interface{}
 	customizableProperties  []interface{}
+
+	// Information about all the properties on the module that contains visibility rules that need
+	// checking.
+	visibilityPropertyInfo []visibilityProperty
+
+	// The primary visibility property, may be nil, that controls access to the module.
+	primaryVisibilityProperty visibilityProperty
 
 	noAddressSanitizer bool
 	installFiles       Paths
@@ -668,10 +691,15 @@ func (m *ModuleBase) qualifiedModuleId(ctx BaseModuleContext) qualifiedModuleNam
 }
 
 func (m *ModuleBase) visibilityProperties() []visibilityProperty {
-	return []visibilityProperty{
-		newVisibilityProperty("visibility", func() []string {
-			return m.base().commonProperties.Visibility
-		}),
+	return m.visibilityPropertyInfo
+}
+
+func (m *ModuleBase) visibility() []string {
+	// The soong_namespace module does not initialize the primaryVisibilityProperty.
+	if m.primaryVisibilityProperty != nil {
+		return m.primaryVisibilityProperty.getStrings()
+	} else {
+		return nil
 	}
 }
 
@@ -809,6 +837,10 @@ func (m *ModuleBase) InstallInSanitizerDir() bool {
 
 func (m *ModuleBase) InstallInRecovery() bool {
 	return Bool(m.commonProperties.Recovery)
+}
+
+func (m *ModuleBase) InstallBypassMake() bool {
+	return false
 }
 
 func (m *ModuleBase) Owner() string {
@@ -1467,6 +1499,10 @@ func (m *moduleContext) InstallInRecovery() bool {
 	return m.module.InstallInRecovery()
 }
 
+func (m *moduleContext) InstallBypassMake() bool {
+	return m.module.InstallBypassMake()
+}
+
 func (m *moduleContext) skipInstall(fullInstallPath OutputPath) bool {
 	if m.module.base().commonProperties.SkipInstall {
 		return true
@@ -1480,7 +1516,7 @@ func (m *moduleContext) skipInstall(fullInstallPath OutputPath) bool {
 	}
 
 	if m.Device() {
-		if m.Config().SkipDeviceInstall() {
+		if m.Config().EmbeddedInMake() && !m.InstallBypassMake() {
 			return true
 		}
 

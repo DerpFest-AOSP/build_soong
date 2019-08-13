@@ -236,6 +236,11 @@ a `default_visibility` property is specified.
 If no `default_visibility` property can be found then the module uses the
 global default of `//visibility:legacy_public`.
 
+The `visibility` property has no effect on a defaults module although it does
+apply to any non-defaults module that uses it. To set the visibility of a
+defaults module, use the `defaults_visibility` property on the defaults module;
+not to be confused with the `default_visibility` property on the package module.
+
 Once the build has been completely switched over to soong it is possible that a
 global refactoring will be done to change this to `//visibility:private` at
 which point all packages that do not currently specify a `default_visibility`
@@ -348,6 +353,18 @@ SOONG_DELVE=:1234 m nothing
 and then in another terminal:
 ```
 dlv connect :1234
+```
+
+If you see an error:
+```
+Could not attach to pid 593: this could be caused by a kernel
+security setting, try writing "0" to /proc/sys/kernel/yama/ptrace_scope
+```
+you can temporarily disable
+[Yama's ptrace protection](https://www.kernel.org/doc/Documentation/security/Yama.txt)
+using:
+```bash
+sudo sysctl -w kernel.yama.ptrace_scope=0
 ```
 
 ## Contact

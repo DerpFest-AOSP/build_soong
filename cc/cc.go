@@ -40,7 +40,7 @@ func init() {
 		ctx.BottomUp("link", LinkageMutator).Parallel()
 		ctx.BottomUp("vndk", VndkMutator).Parallel()
 		ctx.BottomUp("ndk_api", ndkApiMutator).Parallel()
-		ctx.BottomUp("test_per_src", testPerSrcMutator).Parallel()
+		ctx.BottomUp("test_per_src", TestPerSrcMutator).Parallel()
 		ctx.BottomUp("version", VersionMutator).Parallel()
 		ctx.BottomUp("begin", BeginMutator).Parallel()
 		ctx.BottomUp("sysprop", SyspropMutator).Parallel()
@@ -56,6 +56,8 @@ func init() {
 		ctx.TopDown("fuzzer_deps", sanitizerDepsMutator(fuzzer))
 		ctx.BottomUp("fuzzer", sanitizerMutator(fuzzer)).Parallel()
 
+		// cfi mutator shouldn't run before sanitizers that return true for
+		// incompatibleWithCfi()
 		ctx.TopDown("cfi_deps", sanitizerDepsMutator(cfi))
 		ctx.BottomUp("cfi", sanitizerMutator(cfi)).Parallel()
 
@@ -77,6 +79,7 @@ func init() {
 		ctx.TopDown("double_loadable", checkDoubleLoadableLibraries).Parallel()
 	})
 
+	android.RegisterSingletonType("kythe_extract_all", kytheExtractAllFactory)
 	pctx.Import("android/soong/cc/config")
 }
 
@@ -162,6 +165,7 @@ type Flags struct {
 	Tidy      bool
 	Coverage  bool
 	SAbiDump  bool
+	EmitXrefs bool // If true, generate Ninja rules to generate emitXrefs input files for Kythe
 
 	RequiredInstructionSet string
 	DynamicLinker          string
@@ -179,6 +183,9 @@ type Flags struct {
 }
 
 type ObjectLinkerProperties struct {
+	// list of modules that should only provide headers for this module.
+	Header_libs []string `android:"arch_variant,variant_prepend"`
+
 	// names of other cc_object modules to link into this module using partial linking
 	Objs []string `android:"arch_variant"`
 
@@ -250,6 +257,7 @@ type VendorProperties struct {
 type ModuleContextIntf interface {
 	static() bool
 	staticBinary() bool
+	header() bool
 	toolchain() config.Toolchain
 	useSdk() bool
 	sdkVersion() string
@@ -262,7 +270,7 @@ type ModuleContextIntf interface {
 	isVndkSp() bool
 	isVndkExt() bool
 	inRecovery() bool
-	shouldCreateVndkSourceAbiDump(config android.Config) bool
+	shouldCreateSourceAbiDump() bool
 	selectedStl() string
 	baseModuleName() string
 	getVndkExtendsModuleName() string
@@ -337,17 +345,22 @@ type dependencyTag struct {
 	blueprint.BaseDependencyTag
 	name    string
 	library bool
+	shared  bool
 
 	reexportFlags bool
 
 	explicitlyVersioned bool
 }
 
+type xref interface {
+	XrefCcFiles() android.Paths
+}
+
 var (
-	sharedDepTag          = dependencyTag{name: "shared", library: true}
-	sharedExportDepTag    = dependencyTag{name: "shared", library: true, reexportFlags: true}
-	earlySharedDepTag     = dependencyTag{name: "early_shared", library: true}
-	lateSharedDepTag      = dependencyTag{name: "late shared", library: true}
+	sharedDepTag          = dependencyTag{name: "shared", library: true, shared: true}
+	sharedExportDepTag    = dependencyTag{name: "shared", library: true, shared: true, reexportFlags: true}
+	earlySharedDepTag     = dependencyTag{name: "early_shared", library: true, shared: true}
+	lateSharedDepTag      = dependencyTag{name: "late shared", library: true, shared: true}
 	staticDepTag          = dependencyTag{name: "static", library: true}
 	staticExportDepTag    = dependencyTag{name: "static", library: true, reexportFlags: true}
 	lateStaticDepTag      = dependencyTag{name: "late static", library: true}
@@ -369,7 +382,23 @@ var (
 	vndkExtDepTag         = dependencyTag{name: "vndk extends", library: true}
 	runtimeDepTag         = dependencyTag{name: "runtime lib"}
 	coverageDepTag        = dependencyTag{name: "coverage"}
+	testPerSrcDepTag      = dependencyTag{name: "test_per_src"}
 )
+
+func IsSharedDepTag(depTag blueprint.DependencyTag) bool {
+	ccDepTag, ok := depTag.(dependencyTag)
+	return ok && ccDepTag.shared
+}
+
+func IsRuntimeDepTag(depTag blueprint.DependencyTag) bool {
+	ccDepTag, ok := depTag.(dependencyTag)
+	return ok && ccDepTag == runtimeDepTag
+}
+
+func IsTestPerSrcDepTag(depTag blueprint.DependencyTag) bool {
+	ccDepTag, ok := depTag.(dependencyTag)
+	return ok && ccDepTag == testPerSrcDepTag
+}
 
 // Module contains the properties and members used by all C/C++ module types, and implements
 // the blueprint.Module interface.  It delegates to compiler, linker, and installer interfaces
@@ -420,6 +449,8 @@ type Module struct {
 	staticVariant *Module
 
 	makeLinkType string
+	// Kythe (source file indexer) paths for this compilation module
+	kytheFiles android.Paths
 }
 
 func (c *Module) OutputFile() android.OptionalPath {
@@ -646,6 +677,10 @@ func installToBootstrap(name string, config android.Config) bool {
 	return isBionic(name)
 }
 
+func (c *Module) XrefCcFiles() android.Paths {
+	return c.kytheFiles
+}
+
 type baseModuleContext struct {
 	android.BaseModuleContext
 	moduleContextImpl
@@ -681,6 +716,10 @@ func (ctx *moduleContextImpl) static() bool {
 
 func (ctx *moduleContextImpl) staticBinary() bool {
 	return ctx.mod.staticBinary()
+}
+
+func (ctx *moduleContextImpl) header() bool {
+	return ctx.mod.header()
 }
 
 func (ctx *moduleContextImpl) useSdk() bool {
@@ -757,7 +796,7 @@ func (ctx *moduleContextImpl) inRecovery() bool {
 }
 
 // Check whether ABI dumps should be created for this module.
-func (ctx *moduleContextImpl) shouldCreateVndkSourceAbiDump(config android.Config) bool {
+func (ctx *moduleContextImpl) shouldCreateSourceAbiDump() bool {
 	if ctx.ctx.Config().IsEnvTrue("SKIP_ABI_CHECKS") {
 		return false
 	}
@@ -783,18 +822,7 @@ func (ctx *moduleContextImpl) shouldCreateVndkSourceAbiDump(config android.Confi
 		// Stubs do not need ABI dumps.
 		return false
 	}
-	if ctx.isNdk() {
-		return true
-	}
-	if ctx.isLlndkPublic(config) {
-		return true
-	}
-	if ctx.useVndk() && ctx.isVndk() && !ctx.isVndkPrivate(config) {
-		// Return true if this is VNDK-core, VNDK-SP, or VNDK-Ext and this is not
-		// VNDK-private.
-		return true
-	}
-	return false
+	return true
 }
 
 func (ctx *moduleContextImpl) selectedStl() string {
@@ -939,7 +967,22 @@ func orderStaticModuleDeps(module *Module, staticDeps []*Module, sharedDeps []*M
 	return results
 }
 
+func (c *Module) IsTestPerSrcAllTestsVariation() bool {
+	test, ok := c.linker.(testPerSrc)
+	return ok && test.isAllTestsVariation()
+}
+
 func (c *Module) GenerateAndroidBuildActions(actx android.ModuleContext) {
+	// Handle the case of a test module split by `test_per_src` mutator.
+	//
+	// The `test_per_src` mutator adds an extra variation named "", depending on all the other
+	// `test_per_src` variations of the test module. Set `outputFile` to an empty path for this
+	// module and return early, as this module does not produce an output file per se.
+	if c.IsTestPerSrcAllTestsVariation() {
+		c.outputFile = android.OptionalPath{}
+		return
+	}
+
 	c.makeLinkType = c.getMakeLinkType(actx)
 
 	ctx := &moduleContext{
@@ -961,6 +1004,7 @@ func (c *Module) GenerateAndroidBuildActions(actx android.ModuleContext) {
 
 	flags := Flags{
 		Toolchain: c.toolchain(ctx),
+		EmitXrefs: ctx.Config().EmitXrefRules(),
 	}
 	if c.compiler != nil {
 		flags = c.compiler.compilerFlags(ctx, flags, deps)
@@ -1026,6 +1070,7 @@ func (c *Module) GenerateAndroidBuildActions(actx android.ModuleContext) {
 		if ctx.Failed() {
 			return
 		}
+		c.kytheFiles = objs.kytheFiles
 	}
 
 	if c.linker != nil {
@@ -1849,7 +1894,7 @@ func (c *Module) depsToPaths(ctx android.ModuleContext) PathDeps {
 			isVendorPublicLib := inList(libName, *vendorPublicLibraries)
 			bothVendorAndCoreVariantsExist := ccDep.hasVendorVariant() || isLLndk
 
-			if ctx.DeviceConfig().VndkUseCoreVariant() && ccDep.isVndk() && !ccDep.mustUseVendorVariant() {
+			if ctx.DeviceConfig().VndkUseCoreVariant() && ccDep.isVndk() && !ccDep.mustUseVendorVariant() && !c.inRecovery() {
 				// The vendor module is a no-vendor-variant VNDK library.  Depend on the
 				// core module instead.
 				return libName
@@ -1985,6 +2030,15 @@ func (c *Module) staticBinary() bool {
 	return false
 }
 
+func (c *Module) header() bool {
+	if h, ok := c.linker.(interface {
+		header() bool
+	}); ok {
+		return h.header()
+	}
+	return false
+}
+
 func (c *Module) getMakeLinkType(actx android.ModuleContext) string {
 	name := actx.ModuleName()
 	if c.useVndk() {
@@ -2016,12 +2070,14 @@ func (c *Module) getMakeLinkType(actx android.ModuleContext) string {
 }
 
 // Overrides ApexModule.IsInstallabeToApex()
-// Only shared libraries are installable to APEX.
+// Only shared/runtime libraries and "test_per_src" tests are installable to APEX.
 func (c *Module) IsInstallableToApex() bool {
 	if shared, ok := c.linker.(interface {
 		shared() bool
 	}); ok {
 		return shared.shared()
+	} else if _, ok := c.linker.(testPerSrc); ok {
+		return true
 	}
 	return false
 }
@@ -2083,6 +2139,7 @@ func DefaultsFactory(props ...interface{}) android.Module {
 		&VendorProperties{},
 		&BaseCompilerProperties{},
 		&BaseLinkerProperties{},
+		&ObjectLinkerProperties{},
 		&LibraryProperties{},
 		&FlagExporterProperties{},
 		&BinaryLinkerProperties{},
@@ -2329,6 +2386,31 @@ func getCurrentNdkPrebuiltVersion(ctx DepsContext) string {
 		return strconv.Itoa(config.NdkMaxPrebuiltVersionInt)
 	}
 	return ctx.Config().PlatformSdkVersion()
+}
+
+func kytheExtractAllFactory() android.Singleton {
+	return &kytheExtractAllSingleton{}
+}
+
+type kytheExtractAllSingleton struct {
+}
+
+func (ks *kytheExtractAllSingleton) GenerateBuildActions(ctx android.SingletonContext) {
+	var xrefTargets android.Paths
+	ctx.VisitAllModules(func(module android.Module) {
+		if ccModule, ok := module.(xref); ok {
+			xrefTargets = append(xrefTargets, ccModule.XrefCcFiles()...)
+		}
+	})
+	// TODO(asmundak): Perhaps emit a rule to output a warning if there were no xrefTargets
+	if len(xrefTargets) > 0 {
+		ctx.Build(pctx, android.BuildParams{
+			Rule:   blueprint.Phony,
+			Output: android.PathForPhony(ctx, "xref_cxx"),
+			Inputs: xrefTargets,
+			//Default: true,
+		})
+	}
 }
 
 var Bool = proptools.Bool

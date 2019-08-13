@@ -33,7 +33,7 @@ import (
 
 type StaticSharedLibraryProperties struct {
 	Srcs   []string `android:"path,arch_variant"`
-	Cflags []string `android:"path,arch_variant"`
+	Cflags []string `android:"arch_variant"`
 
 	Enabled            *bool    `android:"arch_variant"`
 	Whole_static_libs  []string `android:"arch_variant"`
@@ -110,6 +110,9 @@ type LibraryProperties struct {
 		// Symbol tags that should be ignored from the symbol file
 		Exclude_symbol_tags []string
 	}
+
+	// Order symbols in .bss section by their sizes.  Only useful for shared libraries.
+	Sort_bss_symbols_by_size *bool
 }
 
 type LibraryMutatedProperties struct {
@@ -429,11 +432,25 @@ func (library *libraryDecorator) compilerFlags(ctx ModuleContext, flags Flags, d
 	return flags
 }
 
-func (library *libraryDecorator) shouldCreateVndkSourceAbiDump(ctx ModuleContext) bool {
+func (library *libraryDecorator) shouldCreateSourceAbiDump(ctx ModuleContext) bool {
+	if !ctx.shouldCreateSourceAbiDump() {
+		return false
+	}
 	if library.Properties.Header_abi_checker.Enabled != nil {
 		return Bool(library.Properties.Header_abi_checker.Enabled)
 	}
-	return ctx.shouldCreateVndkSourceAbiDump(ctx.Config())
+	if ctx.isNdk() {
+		return true
+	}
+	if ctx.isLlndkPublic(ctx.Config()) {
+		return true
+	}
+	if ctx.useVndk() && ctx.isVndk() && !ctx.isVndkPrivate(ctx.Config()) {
+		// Return true if this is VNDK-core, VNDK-SP, or VNDK-Ext, and not
+		// VNDK-private.
+		return true
+	}
+	return false
 }
 
 func (library *libraryDecorator) compile(ctx ModuleContext, flags Flags, deps PathDeps) Objects {
@@ -455,7 +472,7 @@ func (library *libraryDecorator) compile(ctx ModuleContext, flags Flags, deps Pa
 		}
 		return Objects{}
 	}
-	if library.shouldCreateVndkSourceAbiDump(ctx) || library.sabi.Properties.CreateSAbiDumps {
+	if library.shouldCreateSourceAbiDump(ctx) || library.sabi.Properties.CreateSAbiDumps {
 		exportIncludeDirs := library.flagExporter.exportedIncludes(ctx)
 		var SourceAbiFlags []string
 		for _, dir := range exportIncludeDirs.Strings() {
@@ -491,6 +508,7 @@ func (library *libraryDecorator) compile(ctx ModuleContext, flags Flags, deps Pa
 type libraryInterface interface {
 	getWholeStaticMissingDeps() []string
 	static() bool
+	shared() bool
 	objs() Objects
 	reuseObjs() (Objects, exportedFlagsProducer)
 	toc() android.OptionalPath
@@ -758,6 +776,18 @@ func (library *libraryDecorator) linkShared(ctx ModuleContext,
 	linkerDeps = append(linkerDeps, deps.LateSharedLibsDeps...)
 	linkerDeps = append(linkerDeps, objs.tidyFiles...)
 
+	if Bool(library.Properties.Sort_bss_symbols_by_size) {
+		unsortedOutputFile := android.PathForModuleOut(ctx, "unsorted", fileName)
+		TransformObjToDynamicBinary(ctx, objs.objFiles, sharedLibs,
+			deps.StaticLibs, deps.LateStaticLibs, deps.WholeStaticLibs,
+			linkerDeps, deps.CrtBegin, deps.CrtEnd, false, builderFlags, unsortedOutputFile, implicitOutputs)
+
+		symbolOrderingFile := android.PathForModuleOut(ctx, "unsorted", fileName+".symbol_order")
+		symbolOrderingFlag := library.baseLinker.sortBssSymbolsBySize(ctx, unsortedOutputFile, symbolOrderingFile, builderFlags)
+		builderFlags.ldFlags += " " + symbolOrderingFlag
+		linkerDeps = append(linkerDeps, symbolOrderingFile)
+	}
+
 	TransformObjToDynamicBinary(ctx, objs.objFiles, sharedLibs,
 		deps.StaticLibs, deps.LateStaticLibs, deps.WholeStaticLibs,
 		linkerDeps, deps.CrtBegin, deps.CrtEnd, false, builderFlags, outputFile, implicitOutputs)
@@ -807,7 +837,7 @@ func getRefAbiDumpFile(ctx ModuleContext, vndkVersion, fileName string) android.
 }
 
 func (library *libraryDecorator) linkSAbiDumpFiles(ctx ModuleContext, objs Objects, fileName string, soFile android.Path) {
-	if library.shouldCreateVndkSourceAbiDump(ctx) {
+	if library.shouldCreateSourceAbiDump(ctx) {
 		vndkVersion := ctx.DeviceConfig().PlatformVndkVersion()
 		if ver := ctx.DeviceConfig().VndkVersion(); ver != "" && ver != "current" {
 			vndkVersion = ver
@@ -959,7 +989,11 @@ func (library *libraryDecorator) install(ctx ModuleContext, file android.Path) {
 				}
 				library.baseInstaller.subDir = "bootstrap"
 			}
+		} else if android.DirectlyInAnyApex(ctx, ctx.ModuleName()) && ctx.isLlndk(ctx.Config()) && !isBionic(ctx.baseModuleName()) {
+			// Skip installing LLNDK (non-bionic) libraries moved to APEX.
+			ctx.Module().SkipInstall()
 		}
+
 		library.baseInstaller.install(ctx, file)
 	}
 

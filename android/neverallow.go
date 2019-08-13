@@ -48,6 +48,7 @@ func registerNeverallowMutator(ctx RegisterMutatorsContext) {
 var neverallows = []Rule{}
 
 func init() {
+	AddNeverAllowRules(createIncludeDirsRules()...)
 	AddNeverAllowRules(createTrebleRules()...)
 	AddNeverAllowRules(createLibcoreRules()...)
 	AddNeverAllowRules(createJavaDeviceForHostRules()...)
@@ -56,6 +57,42 @@ func init() {
 // Add a NeverAllow rule to the set of rules to apply.
 func AddNeverAllowRules(rules ...Rule) {
 	neverallows = append(neverallows, rules...)
+}
+
+func createIncludeDirsRules() []Rule {
+	// The list of paths that cannot be referenced using include_dirs
+	paths := []string{
+		"art",
+		"libcore",
+		"libnativehelper",
+		"external/apache-harmony",
+		"external/apache-xml",
+		"external/boringssl",
+		"external/bouncycastle",
+		"external/conscrypt",
+		"external/icu",
+		"external/okhttp",
+		"external/vixl",
+		"external/wycheproof",
+		"system/core/libnativebridge",
+		"system/core/libnativehelper",
+	}
+
+	// Create a composite matcher that will match if the value starts with any of the restricted
+	// paths. A / is appended to the prefix to ensure that restricting path X does not affect paths
+	// XY.
+	rules := make([]Rule, 0, len(paths))
+	for _, path := range paths {
+		rule :=
+			NeverAllow().
+				WithMatcher("include_dirs", StartsWith(path+"/")).
+				Because("include_dirs is deprecated, all usages of '" + path + "' have been migrated" +
+					" to use alternate mechanisms and so can no longer be used.")
+
+		rules = append(rules, rule)
+	}
+
+	return rules
 }
 
 func createTrebleRules() []Rule {
@@ -138,6 +175,8 @@ func neverallowMutator(ctx BottomUpMutatorContext) {
 	dir := ctx.ModuleDir() + "/"
 	properties := m.GetProperties()
 
+	osClass := ctx.Module().Target().Os.Class
+
 	for _, r := range neverallows {
 		n := r.(*rule)
 		if !n.appliesToPath(dir) {
@@ -152,13 +191,63 @@ func neverallowMutator(ctx BottomUpMutatorContext) {
 			continue
 		}
 
+		if !n.appliesToOsClass(osClass) {
+			continue
+		}
+
+		if !n.appliesToDirectDeps(ctx) {
+			continue
+		}
+
 		ctx.ModuleErrorf("violates " + n.String())
 	}
 }
 
+type ValueMatcher interface {
+	test(string) bool
+	String() string
+}
+
+type equalMatcher struct {
+	expected string
+}
+
+func (m *equalMatcher) test(value string) bool {
+	return m.expected == value
+}
+
+func (m *equalMatcher) String() string {
+	return "=" + m.expected
+}
+
+type anyMatcher struct {
+}
+
+func (m *anyMatcher) test(value string) bool {
+	return true
+}
+
+func (m *anyMatcher) String() string {
+	return "=*"
+}
+
+var anyMatcherInstance = &anyMatcher{}
+
+type startsWithMatcher struct {
+	prefix string
+}
+
+func (m *startsWithMatcher) test(value string) bool {
+	return strings.HasPrefix(value, m.prefix)
+}
+
+func (m *startsWithMatcher) String() string {
+	return ".starts-with(" + m.prefix + ")"
+}
+
 type ruleProperty struct {
-	fields []string // e.x.: Vndk.Enabled
-	value  string   // e.x.: true
+	fields  []string // e.x.: Vndk.Enabled
+	matcher ValueMatcher
 }
 
 // A NeverAllow rule.
@@ -167,13 +256,21 @@ type Rule interface {
 
 	NotIn(path ...string) Rule
 
+	InDirectDeps(deps ...string) Rule
+
+	WithOsClass(osClasses ...OsClass) Rule
+
 	ModuleType(types ...string) Rule
 
 	NotModuleType(types ...string) Rule
 
 	With(properties, value string) Rule
 
+	WithMatcher(properties string, matcher ValueMatcher) Rule
+
 	Without(properties, value string) Rule
+
+	WithoutMatcher(properties string, matcher ValueMatcher) Rule
 
 	Because(reason string) Rule
 }
@@ -185,6 +282,10 @@ type rule struct {
 	paths       []string
 	unlessPaths []string
 
+	directDeps map[string]bool
+
+	osClasses []OsClass
+
 	moduleTypes       []string
 	unlessModuleTypes []string
 
@@ -194,7 +295,7 @@ type rule struct {
 
 // Create a new NeverAllow rule.
 func NeverAllow() Rule {
-	return &rule{}
+	return &rule{directDeps: make(map[string]bool)}
 }
 
 func (r *rule) In(path ...string) Rule {
@@ -204,6 +305,18 @@ func (r *rule) In(path ...string) Rule {
 
 func (r *rule) NotIn(path ...string) Rule {
 	r.unlessPaths = append(r.unlessPaths, cleanPaths(path)...)
+	return r
+}
+
+func (r *rule) InDirectDeps(deps ...string) Rule {
+	for _, d := range deps {
+		r.directDeps[d] = true
+	}
+	return r
+}
+
+func (r *rule) WithOsClass(osClasses ...OsClass) Rule {
+	r.osClasses = append(r.osClasses, osClasses...)
 	return r
 }
 
@@ -218,19 +331,34 @@ func (r *rule) NotModuleType(types ...string) Rule {
 }
 
 func (r *rule) With(properties, value string) Rule {
+	return r.WithMatcher(properties, selectMatcher(value))
+}
+
+func (r *rule) WithMatcher(properties string, matcher ValueMatcher) Rule {
 	r.props = append(r.props, ruleProperty{
-		fields: fieldNamesForProperties(properties),
-		value:  value,
+		fields:  fieldNamesForProperties(properties),
+		matcher: matcher,
 	})
 	return r
 }
 
 func (r *rule) Without(properties, value string) Rule {
+	return r.WithoutMatcher(properties, selectMatcher(value))
+}
+
+func (r *rule) WithoutMatcher(properties string, matcher ValueMatcher) Rule {
 	r.unlessProps = append(r.unlessProps, ruleProperty{
-		fields: fieldNamesForProperties(properties),
-		value:  value,
+		fields:  fieldNamesForProperties(properties),
+		matcher: matcher,
 	})
 	return r
+}
+
+func selectMatcher(expected string) ValueMatcher {
+	if expected == "*" {
+		return anyMatcherInstance
+	}
+	return &equalMatcher{expected: expected}
 }
 
 func (r *rule) Because(reason string) Rule {
@@ -253,10 +381,16 @@ func (r *rule) String() string {
 		s += " -type:" + v
 	}
 	for _, v := range r.props {
-		s += " " + strings.Join(v.fields, ".") + "=" + v.value
+		s += " " + strings.Join(v.fields, ".") + v.matcher.String()
 	}
 	for _, v := range r.unlessProps {
-		s += " -" + strings.Join(v.fields, ".") + "=" + v.value
+		s += " -" + strings.Join(v.fields, ".") + v.matcher.String()
+	}
+	for k := range r.directDeps {
+		s += " deps:" + k
+	}
+	for _, v := range r.osClasses {
+		s += " os:" + v.String()
 	}
 	if len(r.reason) != 0 {
 		s += " which is restricted because " + r.reason
@@ -270,6 +404,36 @@ func (r *rule) appliesToPath(dir string) bool {
 	return includePath && !excludePath
 }
 
+func (r *rule) appliesToDirectDeps(ctx BottomUpMutatorContext) bool {
+	if len(r.directDeps) == 0 {
+		return true
+	}
+
+	matches := false
+	ctx.VisitDirectDeps(func(m Module) {
+		if !matches {
+			name := ctx.OtherModuleName(m)
+			matches = r.directDeps[name]
+		}
+	})
+
+	return matches
+}
+
+func (r *rule) appliesToOsClass(osClass OsClass) bool {
+	if len(r.osClasses) == 0 {
+		return true
+	}
+
+	for _, c := range r.osClasses {
+		if c == osClass {
+			return true
+		}
+	}
+
+	return false
+}
+
 func (r *rule) appliesToModuleType(moduleType string) bool {
 	return (len(r.moduleTypes) == 0 || InList(moduleType, r.moduleTypes)) && !InList(moduleType, r.unlessModuleTypes)
 }
@@ -278,6 +442,10 @@ func (r *rule) appliesToProperties(properties []interface{}) bool {
 	includeProps := hasAllProperties(properties, r.props)
 	excludeProps := hasAnyProperty(properties, r.unlessProps)
 	return includeProps && !excludeProps
+}
+
+func StartsWith(prefix string) ValueMatcher {
+	return &startsWithMatcher{prefix}
 }
 
 // assorted utils
@@ -338,8 +506,8 @@ func hasProperty(properties []interface{}, prop ruleProperty) bool {
 			continue
 		}
 
-		check := func(v string) bool {
-			return prop.value == "*" || prop.value == v
+		check := func(value string) bool {
+			return prop.matcher.test(value)
 		}
 
 		if matchValue(propertiesValue, check) {

@@ -120,6 +120,11 @@ func genAidl(ctx android.ModuleContext, rule *android.RuleBuilder, aidlFile andr
 	headerBn := outDir.Join(ctx, aidlPackage, "Bn"+shortName+".h")
 	headerBp := outDir.Join(ctx, aidlPackage, "Bp"+shortName+".h")
 
+	baseDir := strings.TrimSuffix(aidlFile.String(), aidlFile.Rel())
+	if baseDir != "" {
+		aidlFlags += " -I" + baseDir
+	}
+
 	cmd := rule.Command()
 	cmd.BuiltTool(ctx, "aidl-cpp").
 		FlagWithDepFile("-d", depFile).
@@ -238,7 +243,7 @@ func genSources(ctx android.ModuleContext, srcFiles android.Paths,
 			depFile := android.GenPathWithExt(ctx, "aidl", srcFile, "cpp.d")
 			srcFiles[i] = cppFile
 			deps = append(deps, genAidl(ctx, aidlRule, srcFile, cppFile, depFile, buildFlags.aidlFlags)...)
-		case ".rs", ".fs":
+		case ".rscript", ".fs":
 			cppFile := rsGeneratedCppFile(ctx, srcFile)
 			rsFiles = append(rsFiles, srcFiles[i])
 			srcFiles[i] = cppFile

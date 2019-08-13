@@ -46,6 +46,7 @@ type ModuleInstallPathContext interface {
 	InstallInData() bool
 	InstallInSanitizerDir() bool
 	InstallInRecovery() bool
+	InstallBypassMake() bool
 }
 
 var _ ModuleInstallPathContext = ModuleContext(nil)
@@ -230,7 +231,7 @@ func PathsForModuleSrc(ctx ModuleContext, paths []string) Paths {
 // references to OutputFileProducer modules using the ":name{.tag}" syntax.  Properties passed as the paths or excludes
 // argument must have been annotated with struct tag `android:"path"` so that dependencies on SourceFileProducer modules
 // will have already been handled by the path_properties mutator.  If ctx.Config().AllowMissingDependencies() is
-// truethen any missing SourceFileProducer or OutputFileProducer dependencies will cause the module to be marked as
+// true then any missing SourceFileProducer or OutputFileProducer dependencies will cause the module to be marked as
 // having missing dependencies.
 func PathsForModuleSrcExcludes(ctx ModuleContext, paths, excludes []string) Paths {
 	ret, missingDeps := PathsAndMissingDepsForModuleSrcExcludes(ctx, paths, excludes)
@@ -818,6 +819,17 @@ func PathForOutput(ctx PathContext, pathComponents ...string) OutputPath {
 	return OutputPath{basePath{path, ctx.Config(), ""}}
 }
 
+// pathForInstallInMakeDir is used by PathForModuleInstall when the module returns true
+// for InstallBypassMake to produce an OutputPath that installs to $OUT_DIR instead of
+// $OUT_DIR/soong.
+func pathForInstallInMakeDir(ctx PathContext, pathComponents ...string) OutputPath {
+	path, err := validatePath(pathComponents...)
+	if err != nil {
+		reportPathError(ctx, err)
+	}
+	return OutputPath{basePath{"../" + path, ctx.Config(), ""}}
+}
+
 // PathsForOutput returns Paths rooted from buildDir
 func PathsForOutput(ctx PathContext, paths []string) WritablePaths {
 	ret := make(WritablePaths, len(paths))
@@ -1123,6 +1135,9 @@ func PathForModuleInstall(ctx ModuleInstallPathContext, pathComponents ...string
 		outPaths = append([]string{"debug"}, outPaths...)
 	}
 	outPaths = append(outPaths, pathComponents...)
+	if ctx.InstallBypassMake() && ctx.Config().EmbeddedInMake() {
+		return pathForInstallInMakeDir(ctx, outPaths...)
+	}
 	return PathForOutput(ctx, outPaths...)
 }
 
