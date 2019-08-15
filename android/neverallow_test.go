@@ -15,16 +15,67 @@
 package android
 
 import (
-	"io/ioutil"
-	"os"
 	"testing"
+
+	"github.com/google/blueprint"
 )
+
+func init() {
+	// Add extra rules needed for testing.
+	AddNeverAllowRules(
+		NeverAllow().InDirectDeps("not_allowed_in_direct_deps"),
+	)
+}
 
 var neverallowTests = []struct {
 	name          string
 	fs            map[string][]byte
 	expectedError string
 }{
+	// Test General Functionality
+
+	// in direct deps tests
+	{
+		name: "not_allowed_in_direct_deps",
+		fs: map[string][]byte{
+			"top/Blueprints": []byte(`
+				cc_library {
+					name: "not_allowed_in_direct_deps",
+				}`),
+			"other/Blueprints": []byte(`
+				cc_library {
+					name: "libother",
+					static_libs: ["not_allowed_in_direct_deps"],
+				}`),
+		},
+		expectedError: `module "libother": violates neverallow deps:not_allowed_in_direct_deps`,
+	},
+
+	// Test specific rules
+
+	// include_dir rule tests
+	{
+		name: "include_dir not allowed to reference art",
+		fs: map[string][]byte{
+			"other/Blueprints": []byte(`
+				cc_library {
+					name: "libother",
+					include_dirs: ["art/libdexfile/include"],
+				}`),
+		},
+		expectedError: "all usages of 'art' have been migrated",
+	},
+	{
+		name: "include_dir can reference another location",
+		fs: map[string][]byte{
+			"other/Blueprints": []byte(`
+				cc_library {
+					name: "libother",
+					include_dirs: ["another/include"],
+				}`),
+		},
+	},
+	// Treble rule tests
 	{
 		name: "no vndk.enabled under vendor directory",
 		fs: map[string][]byte{
@@ -148,15 +199,41 @@ var neverallowTests = []struct {
 		},
 		expectedError: "java_device_for_host can only be used in whitelisted projects",
 	},
+	// Libcore rule tests
+	{
+		name: "sdk_version: \"none\" inside core libraries",
+		fs: map[string][]byte{
+			"libcore/Blueprints": []byte(`
+				java_library {
+					name: "inside_core_libraries",
+					sdk_version: "none",
+				}`),
+		},
+	},
+	{
+		name: "sdk_version: \"none\" outside core libraries",
+		fs: map[string][]byte{
+			"Blueprints": []byte(`
+				java_library {
+					name: "outside_core_libraries",
+					sdk_version: "none",
+				}`),
+		},
+		expectedError: "module \"outside_core_libraries\": violates neverallow",
+	},
+	{
+		name: "sdk_version: \"current\"",
+		fs: map[string][]byte{
+			"Blueprints": []byte(`
+				java_library {
+					name: "outside_core_libraries",
+					sdk_version: "current",
+				}`),
+		},
+	},
 }
 
 func TestNeverallow(t *testing.T) {
-	buildDir, err := ioutil.TempDir("", "soong_neverallow_test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(buildDir)
-
 	config := TestConfig(buildDir, nil)
 
 	for _, test := range neverallowTests {
@@ -176,6 +253,7 @@ func testNeverallow(t *testing.T, config Config, fs map[string][]byte) (*TestCon
 	ctx := NewTestContext()
 	ctx.RegisterModuleType("cc_library", ModuleFactoryAdaptor(newMockCcLibraryModule))
 	ctx.RegisterModuleType("java_library", ModuleFactoryAdaptor(newMockJavaLibraryModule))
+	ctx.RegisterModuleType("java_library_host", ModuleFactoryAdaptor(newMockJavaLibraryModule))
 	ctx.RegisterModuleType("java_device_for_host", ModuleFactoryAdaptor(newMockJavaLibraryModule))
 	ctx.PostDepsMutators(registerNeverallowMutator)
 	ctx.Register()
@@ -192,7 +270,9 @@ func testNeverallow(t *testing.T, config Config, fs map[string][]byte) (*TestCon
 }
 
 type mockCcLibraryProperties struct {
+	Include_dirs     []string
 	Vendor_available *bool
+	Static_libs      []string
 
 	Vndk struct {
 		Enabled                *bool
@@ -223,11 +303,25 @@ func newMockCcLibraryModule() Module {
 	return m
 }
 
+type neverallowTestDependencyTag struct {
+	blueprint.BaseDependencyTag
+	name string
+}
+
+var staticDepTag = neverallowTestDependencyTag{name: "static"}
+
+func (c *mockCcLibraryModule) DepsMutator(ctx BottomUpMutatorContext) {
+	for _, lib := range c.properties.Static_libs {
+		ctx.AddDependency(ctx.Module(), staticDepTag, lib)
+	}
+}
+
 func (p *mockCcLibraryModule) GenerateAndroidBuildActions(ModuleContext) {
 }
 
 type mockJavaLibraryProperties struct {
-	Libs []string
+	Libs        []string
+	Sdk_version *string
 }
 
 type mockJavaLibraryModule struct {
