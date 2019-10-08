@@ -118,72 +118,18 @@ var Configuration = map[string]PathConfig{
 	"ld.gold":    Forbidden,
 	"pkg-config": Forbidden,
 
-	// On Linux we'll use the toybox versions of these instead.
-	"basename":  LinuxOnlyPrebuilt,
-	"cat":       LinuxOnlyPrebuilt,
-	"chmod":     LinuxOnlyPrebuilt,
-	"cmp":       LinuxOnlyPrebuilt,
-	"cp":        LinuxOnlyPrebuilt,
-	"comm":      LinuxOnlyPrebuilt,
-	"cut":       LinuxOnlyPrebuilt,
-	"date":      LinuxOnlyPrebuilt,
-	"dirname":   LinuxOnlyPrebuilt,
-	"du":        LinuxOnlyPrebuilt,
-	"echo":      LinuxOnlyPrebuilt,
-	"egrep":     LinuxOnlyPrebuilt,
-	"env":       LinuxOnlyPrebuilt,
-	"getconf":   LinuxOnlyPrebuilt,
-	"grep":      LinuxOnlyPrebuilt,
-	"head":      LinuxOnlyPrebuilt,
-	"hostname":  LinuxOnlyPrebuilt,
-	"id":        LinuxOnlyPrebuilt,
-	"ln":        LinuxOnlyPrebuilt,
-	"ls":        LinuxOnlyPrebuilt,
-	"md5sum":    LinuxOnlyPrebuilt,
-	"mkdir":     LinuxOnlyPrebuilt,
-	"mktemp":    LinuxOnlyPrebuilt,
-	"mv":        LinuxOnlyPrebuilt,
-	"od":        LinuxOnlyPrebuilt,
-	"paste":     LinuxOnlyPrebuilt,
-	"pgrep":     LinuxOnlyPrebuilt,
-	"pkill":     LinuxOnlyPrebuilt,
-	"ps":        LinuxOnlyPrebuilt,
-	"pwd":       LinuxOnlyPrebuilt,
-	"readlink":  LinuxOnlyPrebuilt,
-	"rm":        LinuxOnlyPrebuilt,
-	"rmdir":     LinuxOnlyPrebuilt,
-	"sed":       LinuxOnlyPrebuilt,
-	"seq":       LinuxOnlyPrebuilt,
-	"setsid":    LinuxOnlyPrebuilt,
-	"sha1sum":   LinuxOnlyPrebuilt,
-	"sha256sum": LinuxOnlyPrebuilt,
-	"sha512sum": LinuxOnlyPrebuilt,
-	"sleep":     LinuxOnlyPrebuilt,
-	"sort":      LinuxOnlyPrebuilt,
-	"stat":      LinuxOnlyPrebuilt,
-	"tail":      LinuxOnlyPrebuilt,
-	"tar":       LinuxOnlyPrebuilt,
-	"tee":       LinuxOnlyPrebuilt,
-	"timeout":   LinuxOnlyPrebuilt,
-	"touch":     LinuxOnlyPrebuilt,
-	"true":      LinuxOnlyPrebuilt,
-	"uname":     LinuxOnlyPrebuilt,
-	"uniq":      LinuxOnlyPrebuilt,
-	"unix2dos":  LinuxOnlyPrebuilt,
-	"wc":        LinuxOnlyPrebuilt,
-	"whoami":    LinuxOnlyPrebuilt,
-	"which":     LinuxOnlyPrebuilt,
-	"xargs":     LinuxOnlyPrebuilt,
-	"xxd":       LinuxOnlyPrebuilt,
+	// These are toybox tools that only work on Linux.
+	"pgrep": LinuxOnlyPrebuilt,
+	"pkill": LinuxOnlyPrebuilt,
+	"ps":    LinuxOnlyPrebuilt,
 }
 
 func init() {
 	if runtime.GOOS == "darwin" {
-		Configuration["md5"] = Allowed
 		Configuration["sw_vers"] = Allowed
 		Configuration["xcrun"] = Allowed
 
-		// We don't have darwin prebuilts for some tools (like toybox),
+		// We don't have darwin prebuilts for some tools,
 		// so allow the host versions.
 		for name, config := range Configuration {
 			if config.LinuxOnlyPrebuilt {

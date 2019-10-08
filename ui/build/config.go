@@ -16,7 +16,6 @@ package build
 
 import (
 	"io/ioutil"
-	"log"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -180,31 +179,36 @@ func NewConfig(ctx Context, args ...string) Config {
 
 	ret.environ.Set("TMPDIR", absPath(ctx, ret.TempDir()))
 
+	// Always set ASAN_SYMBOLIZER_PATH so that ASAN-based tools can symbolize any crashes
+	symbolizerPath := filepath.Join("prebuilts/clang/host", ret.HostPrebuiltTag(),
+		"llvm-binutils-stable/llvm-symbolizer")
+	ret.environ.Set("ASAN_SYMBOLIZER_PATH", absPath(ctx, symbolizerPath))
+
 	// Precondition: the current directory is the top of the source tree
 	checkTopDir(ctx)
 
 	if srcDir := absPath(ctx, "."); strings.ContainsRune(srcDir, ' ') {
-		log.Println("You are building in a directory whose absolute path contains a space character:")
-		log.Println()
-		log.Printf("%q\n", srcDir)
-		log.Println()
-		log.Fatalln("Directory names containing spaces are not supported")
+		ctx.Println("You are building in a directory whose absolute path contains a space character:")
+		ctx.Println()
+		ctx.Printf("%q\n", srcDir)
+		ctx.Println()
+		ctx.Fatalln("Directory names containing spaces are not supported")
 	}
 
 	if outDir := ret.OutDir(); strings.ContainsRune(outDir, ' ') {
-		log.Println("The absolute path of your output directory ($OUT_DIR) contains a space character:")
-		log.Println()
-		log.Printf("%q\n", outDir)
-		log.Println()
-		log.Fatalln("Directory names containing spaces are not supported")
+		ctx.Println("The absolute path of your output directory ($OUT_DIR) contains a space character:")
+		ctx.Println()
+		ctx.Printf("%q\n", outDir)
+		ctx.Println()
+		ctx.Fatalln("Directory names containing spaces are not supported")
 	}
 
 	if distDir := ret.DistDir(); strings.ContainsRune(distDir, ' ') {
-		log.Println("The absolute path of your dist directory ($DIST_DIR) contains a space character:")
-		log.Println()
-		log.Printf("%q\n", distDir)
-		log.Println()
-		log.Fatalln("Directory names containing spaces are not supported")
+		ctx.Println("The absolute path of your dist directory ($DIST_DIR) contains a space character:")
+		ctx.Println()
+		ctx.Printf("%q\n", distDir)
+		ctx.Println()
+		ctx.Fatalln("Directory names containing spaces are not supported")
 	}
 
 	// Configure Java-related variables, including adding it to $PATH

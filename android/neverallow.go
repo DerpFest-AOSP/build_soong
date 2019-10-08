@@ -51,6 +51,7 @@ func init() {
 	AddNeverAllowRules(createIncludeDirsRules()...)
 	AddNeverAllowRules(createTrebleRules()...)
 	AddNeverAllowRules(createLibcoreRules()...)
+	AddNeverAllowRules(createMediaRules()...)
 	AddNeverAllowRules(createJavaDeviceForHostRules()...)
 }
 
@@ -110,7 +111,7 @@ func createTrebleRules() []Rule {
 
 		// TODO(b/67974785): always enforce the manifest
 		NeverAllow().
-			Without("name", "libhidltransport").
+			Without("name", "libhidltransport-impl-internal").
 			With("product_variables.enforce_vintf_manifest.cflags", "*").
 			Because("manifest enforcement should be independent of ."),
 
@@ -151,6 +152,14 @@ func createLibcoreRules() []Rule {
 	return rules
 }
 
+func createMediaRules() []Rule {
+	return []Rule{
+		NeverAllow().
+			With("libs", "updatable-media").
+			Because("updatable-media includes private APIs. Use updatable_media_stubs instead."),
+	}
+}
+
 func createJavaDeviceForHostRules() []Rule {
 	javaDeviceForHostProjectsWhitelist := []string{
 		"external/guava",
@@ -177,7 +186,7 @@ func neverallowMutator(ctx BottomUpMutatorContext) {
 
 	osClass := ctx.Module().Target().Os.Class
 
-	for _, r := range neverallows {
+	for _, r := range neverallowRules(ctx.Config()) {
 		n := r.(*rule)
 		if !n.appliesToPath(dir) {
 			continue
@@ -550,4 +559,20 @@ func matchValue(value reflect.Value, check func(string) bool) bool {
 	}
 
 	panic("Can't handle type: " + value.Kind().String())
+}
+
+var neverallowRulesKey = NewOnceKey("neverallowRules")
+
+func neverallowRules(config Config) []Rule {
+	return config.Once(neverallowRulesKey, func() interface{} {
+		// No test rules were set by setTestNeverallowRules, use the global rules
+		return neverallows
+	}).([]Rule)
+}
+
+// Overrides the default neverallow rules for the supplied config.
+//
+// For testing only.
+func setTestNeverallowRules(config Config, testRules []Rule) {
+	config.Once(neverallowRulesKey, func() interface{} { return testRules })
 }

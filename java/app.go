@@ -39,6 +39,9 @@ func init() {
 	android.RegisterModuleType("android_app_certificate", AndroidAppCertificateFactory)
 	android.RegisterModuleType("override_android_app", OverrideAndroidAppModuleFactory)
 	android.RegisterModuleType("android_app_import", AndroidAppImportFactory)
+	android.RegisterModuleType("android_test_import", AndroidTestImportFactory)
+
+	initAndroidAppImportVariantGroupTypes()
 }
 
 // AndroidManifest.xml merging
@@ -123,6 +126,10 @@ type AndroidApp struct {
 	// the install APK name is normally the same as the module name, but can be overridden with PRODUCT_PACKAGE_NAME_OVERRIDES.
 	installApkName string
 
+	installDir android.InstallPath
+
+	onDeviceDir string
+
 	additionalAaptFlags []string
 
 	noticeOutputs android.NoticeOutputs
@@ -134,6 +141,10 @@ func (a *AndroidApp) ExportedProguardFlagFiles() android.Paths {
 
 func (a *AndroidApp) ExportedStaticPackages() android.Paths {
 	return nil
+}
+
+func (a *AndroidApp) OutputFile() android.Path {
+	return a.outputFile
 }
 
 var _ AndroidLibraryDependency = (*AndroidApp)(nil)
@@ -312,7 +323,6 @@ func (a *AndroidApp) dexBuildActions(ctx android.ModuleContext) android.Path {
 	} else {
 		installDir = filepath.Join("app", a.installApkName)
 	}
-
 	a.dexpreopter.installPath = android.PathForModuleInstall(ctx, installDir, a.installApkName+".apk")
 	a.dexpreopter.isInstallable = Bool(a.properties.Installable)
 	a.dexpreopter.uncompressedDex = a.shouldUncompressDex(ctx)
@@ -345,7 +355,7 @@ func (a *AndroidApp) jniBuildActions(jniLibs []jniLib, ctx android.ModuleContext
 	return jniJarFile
 }
 
-func (a *AndroidApp) noticeBuildActions(ctx android.ModuleContext, installDir android.OutputPath) {
+func (a *AndroidApp) noticeBuildActions(ctx android.ModuleContext) {
 	// Collect NOTICE files from all dependencies.
 	seenModules := make(map[android.Module]bool)
 	noticePathSet := make(map[android.Path]bool)
@@ -385,7 +395,7 @@ func (a *AndroidApp) noticeBuildActions(ctx android.ModuleContext, installDir an
 		return noticePaths[i].String() < noticePaths[j].String()
 	})
 
-	a.noticeOutputs = android.BuildNoticeOutput(ctx, installDir, a.installApkName+".apk", noticePaths)
+	a.noticeOutputs = android.BuildNoticeOutput(ctx, a.installDir, a.installApkName+".apk", noticePaths)
 }
 
 // Reads and prepends a main cert from the default cert dir if it hasn't been set already, i.e. it
@@ -431,17 +441,19 @@ func (a *AndroidApp) generateAndroidBuildActions(ctx android.ModuleContext) {
 	// Check if the install APK name needs to be overridden.
 	a.installApkName = ctx.DeviceConfig().OverridePackageNameFor(a.Name())
 
-	var installDir android.OutputPath
 	if ctx.ModuleName() == "framework-res" {
 		// framework-res.apk is installed as system/framework/framework-res.apk
-		installDir = android.PathForModuleInstall(ctx, "framework")
+		a.installDir = android.PathForModuleInstall(ctx, "framework")
 	} else if Bool(a.appProperties.Privileged) {
-		installDir = android.PathForModuleInstall(ctx, "priv-app", a.installApkName)
+		a.installDir = android.PathForModuleInstall(ctx, "priv-app", a.installApkName)
+	} else if ctx.InstallInTestcases() {
+		a.installDir = android.PathForModuleInstall(ctx, a.installApkName)
 	} else {
-		installDir = android.PathForModuleInstall(ctx, "app", a.installApkName)
+		a.installDir = android.PathForModuleInstall(ctx, "app", a.installApkName)
 	}
+	a.onDeviceDir = android.InstallPathToOnDevicePath(ctx, a.installDir)
 
-	a.noticeBuildActions(ctx, installDir)
+	a.noticeBuildActions(ctx)
 	if Bool(a.appProperties.Embed_notices) || ctx.Config().IsEnvTrue("ALWAYS_EMBED_NOTICES") {
 		a.aapt.noticeFile = a.noticeOutputs.HtmlGzOutput
 	}
@@ -487,9 +499,9 @@ func (a *AndroidApp) generateAndroidBuildActions(ctx android.ModuleContext) {
 	a.bundleFile = bundleFile
 
 	// Install the app package.
-	ctx.InstallFile(installDir, a.installApkName+".apk", a.outputFile)
+	ctx.InstallFile(a.installDir, a.installApkName+".apk", a.outputFile)
 	for _, split := range a.aapt.splits {
-		ctx.InstallFile(installDir, a.installApkName+"_"+split.suffix+".apk", split.path)
+		ctx.InstallFile(a.installDir, a.installApkName+"_"+split.suffix+".apk", split.path)
 	}
 }
 
@@ -534,6 +546,15 @@ func (a *AndroidApp) getCertString(ctx android.BaseModuleContext) string {
 		return ":" + certificate
 	}
 	return String(a.overridableAppProperties.Certificate)
+}
+
+// For OutputFileProducer interface
+func (a *AndroidApp) OutputFiles(tag string) (android.Paths, error) {
+	switch tag {
+	case ".aapt.srcjar":
+		return []android.Path{a.aaptSrcJar}, nil
+	}
+	return a.Library.OutputFiles(tag)
 }
 
 // android_app compiles sources and Android resources into an Android application package `.apk` file.
@@ -582,6 +603,10 @@ type AndroidTest struct {
 	data       android.Paths
 }
 
+func (a *AndroidTest) InstallInTestcases() bool {
+	return true
+}
+
 func (a *AndroidTest) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 	// Check if the instrumentation target package is overridden before generating build actions.
 	if a.appTestProperties.Instrumentation_for != nil {
@@ -592,7 +617,8 @@ func (a *AndroidTest) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 	}
 	a.generateAndroidBuildActions(ctx)
 
-	a.testConfig = tradefed.AutoGenInstrumentationTestConfig(ctx, a.testProperties.Test_config, a.testProperties.Test_config_template, a.manifestPath, a.testProperties.Test_suites)
+	a.testConfig = tradefed.AutoGenInstrumentationTestConfig(ctx, a.testProperties.Test_config,
+		a.testProperties.Test_config_template, a.manifestPath, a.testProperties.Test_suites, a.testProperties.Auto_gen_config)
 	a.data = android.PathsForModuleSrc(ctx, a.testProperties.Data)
 }
 
@@ -640,6 +666,11 @@ type appTestHelperAppProperties struct {
 	// list of compatibility suites (for example "cts", "vts") that the module should be
 	// installed into.
 	Test_suites []string `android:"arch_variant"`
+
+	// Flag to indicate whether or not to create test config automatically. If AndroidTest.xml
+	// doesn't exist next to the Android.bp, this attribute doesn't need to be set to true
+	// explicitly.
+	Auto_gen_config *bool
 }
 
 type AndroidTestHelperApp struct {
@@ -731,8 +762,9 @@ type AndroidAppImport struct {
 	android.DefaultableModuleBase
 	prebuilt android.Prebuilt
 
-	properties  AndroidAppImportProperties
-	dpiVariants interface{}
+	properties   AndroidAppImportProperties
+	dpiVariants  interface{}
+	archVariants interface{}
 
 	outputFile  android.Path
 	certificate *Certificate
@@ -740,19 +772,25 @@ type AndroidAppImport struct {
 	dexpreopter
 
 	usesLibrary usesLibrary
+
+	installPath android.InstallPath
 }
 
 type AndroidAppImportProperties struct {
 	// A prebuilt apk to import
 	Apk *string
 
-	// The name of a certificate in the default certificate directory, blank to use the default
-	// product certificate, or an android_app_certificate module name in the form ":module".
+	// The name of a certificate in the default certificate directory or an android_app_certificate
+	// module name in the form ":module". Should be empty if presigned or default_dev_cert is set.
 	Certificate *string
 
 	// Set this flag to true if the prebuilt apk is already signed. The certificate property must not
 	// be set for presigned modules.
 	Presigned *bool
+
+	// Sign with the default system dev certificate. Must be used judiciously. Most imported apps
+	// need to either specify a specific certificate or be presigned.
+	Default_dev_cert *bool
 
 	// Specifies that this app should be installed to the priv-app directory,
 	// where the system will grant it additional privileges not available to
@@ -765,10 +803,13 @@ type AndroidAppImportProperties struct {
 	// binaries would be installed by default (in PRODUCT_PACKAGES) the other binary will be removed
 	// from PRODUCT_PACKAGES.
 	Overrides []string
+
+	// Optional name for the installed app. If unspecified, it is derived from the module name.
+	Filename *string
 }
 
-// Chooses a source APK path to use based on the module and product specs.
-func (a *AndroidAppImport) updateSrcApkPath(ctx android.LoadHookContext) {
+// Updates properties with variant-specific values.
+func (a *AndroidAppImport) processVariants(ctx android.LoadHookContext) {
 	config := ctx.Config()
 
 	dpiProps := reflect.ValueOf(a.dpiVariants).Elem().FieldByName("Dpi_variants")
@@ -776,24 +817,22 @@ func (a *AndroidAppImport) updateSrcApkPath(ctx android.LoadHookContext) {
 	// overwrites everything else.
 	// TODO(jungjw): Can we optimize this by making it priority order?
 	for i := len(config.ProductAAPTPrebuiltDPI()) - 1; i >= 0; i-- {
-		dpi := config.ProductAAPTPrebuiltDPI()[i]
-		if inList(dpi, supportedDpis) {
-			MergePropertiesFromVariant(ctx, &a.properties, dpiProps, dpi, "dpi_variants")
-		}
+		MergePropertiesFromVariant(ctx, &a.properties, dpiProps, config.ProductAAPTPrebuiltDPI()[i])
 	}
 	if config.ProductAAPTPreferredConfig() != "" {
-		dpi := config.ProductAAPTPreferredConfig()
-		if inList(dpi, supportedDpis) {
-			MergePropertiesFromVariant(ctx, &a.properties, dpiProps, dpi, "dpi_variants")
-		}
+		MergePropertiesFromVariant(ctx, &a.properties, dpiProps, config.ProductAAPTPreferredConfig())
 	}
+
+	archProps := reflect.ValueOf(a.archVariants).Elem().FieldByName("Arch")
+	archType := ctx.Config().Targets[android.Android][0].Arch.ArchType
+	MergePropertiesFromVariant(ctx, &a.properties, archProps, archType.Name)
 }
 
 func MergePropertiesFromVariant(ctx android.BaseModuleContext,
-	dst interface{}, variantGroup reflect.Value, variant, variantGroupPath string) {
+	dst interface{}, variantGroup reflect.Value, variant string) {
 	src := variantGroup.FieldByName(proptools.FieldNameForProperty(variant))
 	if !src.IsValid() {
-		ctx.ModuleErrorf("field %q does not exist", variantGroupPath+"."+variant)
+		return
 	}
 
 	err := proptools.ExtendMatchingProperties([]interface{}{dst}, src.Interface(), nil, proptools.OrderAppend)
@@ -856,11 +895,22 @@ func (a *AndroidAppImport) uncompressDex(
 }
 
 func (a *AndroidAppImport) GenerateAndroidBuildActions(ctx android.ModuleContext) {
-	if String(a.properties.Certificate) == "" && !Bool(a.properties.Presigned) {
-		ctx.PropertyErrorf("certificate", "No certificate specified for prebuilt")
+	a.generateAndroidBuildActions(ctx)
+}
+
+func (a *AndroidAppImport) generateAndroidBuildActions(ctx android.ModuleContext) {
+	numCertPropsSet := 0
+	if String(a.properties.Certificate) != "" {
+		numCertPropsSet++
 	}
-	if String(a.properties.Certificate) != "" && Bool(a.properties.Presigned) {
-		ctx.PropertyErrorf("certificate", "Certificate can't be specified for presigned modules")
+	if Bool(a.properties.Presigned) {
+		numCertPropsSet++
+	}
+	if Bool(a.properties.Default_dev_cert) {
+		numCertPropsSet++
+	}
+	if numCertPropsSet != 1 {
+		ctx.ModuleErrorf("One and only one of certficate, presigned, and default_dev_cert properties must be set")
 	}
 
 	_, certificates := collectAppDeps(ctx)
@@ -901,7 +951,9 @@ func (a *AndroidAppImport) GenerateAndroidBuildActions(ctx android.ModuleContext
 	// Sign or align the package
 	// TODO: Handle EXTERNAL
 	if !Bool(a.properties.Presigned) {
-		certificates = processMainCert(a.ModuleBase, *a.properties.Certificate, certificates, ctx)
+		// If the certificate property is empty at this point, default_dev_cert must be set to true.
+		// Which makes processMainCert's behavior for the empty cert string WAI.
+		certificates = processMainCert(a.ModuleBase, String(a.properties.Certificate), certificates, ctx)
 		if len(certificates) != 1 {
 			ctx.ModuleErrorf("Unexpected number of certificates were extracted: %q", certificates)
 		}
@@ -917,7 +969,8 @@ func (a *AndroidAppImport) GenerateAndroidBuildActions(ctx android.ModuleContext
 
 	// TODO: Optionally compress the output apk.
 
-	ctx.InstallFile(installDir, a.BaseModuleName()+".apk", a.outputFile)
+	a.installPath = ctx.InstallFile(installDir,
+		proptools.StringDefault(a.properties.Filename, a.BaseModuleName()+".apk"), a.outputFile)
 
 	// TODO: androidmk converter jni libs
 }
@@ -930,26 +983,46 @@ func (a *AndroidAppImport) Name() string {
 	return a.prebuilt.Name(a.ModuleBase.Name())
 }
 
-// Populates dpi_variants property and its fields at creation time.
-func (a *AndroidAppImport) addDpiVariants() {
-	// TODO(jungjw): Do we want to do some filtering here?
-	props := reflect.ValueOf(&a.properties).Type()
+var dpiVariantGroupType reflect.Type
+var archVariantGroupType reflect.Type
 
-	dpiFields := make([]reflect.StructField, len(supportedDpis))
-	for i, dpi := range supportedDpis {
-		dpiFields[i] = reflect.StructField{
-			Name: proptools.FieldNameForProperty(dpi),
+func initAndroidAppImportVariantGroupTypes() {
+	dpiVariantGroupType = createVariantGroupType(supportedDpis, "Dpi_variants")
+
+	archNames := make([]string, len(android.ArchTypeList()))
+	for i, archType := range android.ArchTypeList() {
+		archNames[i] = archType.Name
+	}
+	archVariantGroupType = createVariantGroupType(archNames, "Arch")
+}
+
+// Populates all variant struct properties at creation time.
+func (a *AndroidAppImport) populateAllVariantStructs() {
+	a.dpiVariants = reflect.New(dpiVariantGroupType).Interface()
+	a.AddProperties(a.dpiVariants)
+
+	a.archVariants = reflect.New(archVariantGroupType).Interface()
+	a.AddProperties(a.archVariants)
+}
+
+func createVariantGroupType(variants []string, variantGroupName string) reflect.Type {
+	props := reflect.TypeOf((*AndroidAppImportProperties)(nil))
+
+	variantFields := make([]reflect.StructField, len(variants))
+	for i, variant := range variants {
+		variantFields[i] = reflect.StructField{
+			Name: proptools.FieldNameForProperty(variant),
 			Type: props,
 		}
 	}
-	dpiStruct := reflect.StructOf(dpiFields)
-	a.dpiVariants = reflect.New(reflect.StructOf([]reflect.StructField{
+
+	variantGroupStruct := reflect.StructOf(variantFields)
+	return reflect.StructOf([]reflect.StructField{
 		{
-			Name: "Dpi_variants",
-			Type: dpiStruct,
+			Name: variantGroupName,
+			Type: variantGroupStruct,
 		},
-	})).Interface()
-	a.AddProperties(a.dpiVariants)
+	})
 }
 
 // android_app_import imports a prebuilt apk with additional processing specified in the module.
@@ -973,9 +1046,42 @@ func AndroidAppImportFactory() android.Module {
 	module.AddProperties(&module.properties)
 	module.AddProperties(&module.dexpreoptProperties)
 	module.AddProperties(&module.usesLibrary.usesLibraryProperties)
-	module.addDpiVariants()
+	module.populateAllVariantStructs()
 	android.AddLoadHook(module, func(ctx android.LoadHookContext) {
-		module.updateSrcApkPath(ctx)
+		module.processVariants(ctx)
+	})
+
+	InitJavaModule(module, android.DeviceSupported)
+	android.InitSingleSourcePrebuiltModule(module, &module.properties, "Apk")
+
+	return module
+}
+
+type AndroidTestImport struct {
+	AndroidAppImport
+
+	testProperties testProperties
+
+	data android.Paths
+}
+
+func (a *AndroidTestImport) GenerateAndroidBuildActions(ctx android.ModuleContext) {
+	a.generateAndroidBuildActions(ctx)
+
+	a.data = android.PathsForModuleSrc(ctx, a.testProperties.Data)
+}
+
+// android_test_import imports a prebuilt test apk with additional processing specified in the
+// module. DPI or arch variant configurations can be made as with android_app_import.
+func AndroidTestImportFactory() android.Module {
+	module := &AndroidTestImport{}
+	module.AddProperties(&module.properties)
+	module.AddProperties(&module.dexpreoptProperties)
+	module.AddProperties(&module.usesLibrary.usesLibraryProperties)
+	module.AddProperties(&module.testProperties)
+	module.populateAllVariantStructs()
+	android.AddLoadHook(module, func(ctx android.LoadHookContext) {
+		module.processVariants(ctx)
 	})
 
 	InitJavaModule(module, android.DeviceSupported)

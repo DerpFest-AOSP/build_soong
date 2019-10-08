@@ -16,6 +16,7 @@ package android
 
 import (
 	"fmt"
+	"path/filepath"
 	"reflect"
 	"regexp"
 	"runtime"
@@ -291,4 +292,63 @@ func matchPattern(pat, str string) bool {
 		return pat == str
 	}
 	return strings.HasPrefix(str, pat[:i]) && strings.HasSuffix(str, pat[i+1:])
+}
+
+var shlibVersionPattern = regexp.MustCompile("(?:\\.\\d+(?:svn)?)+")
+
+// splitFileExt splits a file name into root, suffix and ext. root stands for the file name without
+// the file extension and the version number (e.g. "libexample"). suffix stands for the
+// concatenation of the file extension and the version number (e.g. ".so.1.0"). ext stands for the
+// file extension after the version numbers are trimmed (e.g. ".so").
+func SplitFileExt(name string) (string, string, string) {
+	// Extract and trim the shared lib version number if the file name ends with dot digits.
+	suffix := ""
+	matches := shlibVersionPattern.FindAllStringIndex(name, -1)
+	if len(matches) > 0 {
+		lastMatch := matches[len(matches)-1]
+		if lastMatch[1] == len(name) {
+			suffix = name[lastMatch[0]:lastMatch[1]]
+			name = name[0:lastMatch[0]]
+		}
+	}
+
+	// Extract the file name root and the file extension.
+	ext := filepath.Ext(name)
+	root := strings.TrimSuffix(name, ext)
+	suffix = ext + suffix
+
+	return root, suffix, ext
+}
+
+// ShardPaths takes a Paths, and returns a slice of Paths where each one has at most shardSize paths.
+func ShardPaths(paths Paths, shardSize int) []Paths {
+	if len(paths) == 0 {
+		return nil
+	}
+	ret := make([]Paths, 0, (len(paths)+shardSize-1)/shardSize)
+	for len(paths) > shardSize {
+		ret = append(ret, paths[0:shardSize])
+		paths = paths[shardSize:]
+	}
+	if len(paths) > 0 {
+		ret = append(ret, paths)
+	}
+	return ret
+}
+
+// ShardStrings takes a slice of strings, and returns a slice of slices of strings where each one has at most shardSize
+// elements.
+func ShardStrings(s []string, shardSize int) [][]string {
+	if len(s) == 0 {
+		return nil
+	}
+	ret := make([][]string, 0, (len(s)+shardSize-1)/shardSize)
+	for len(s) > shardSize {
+		ret = append(ret, s[0:shardSize])
+		s = s[shardSize:]
+	}
+	if len(s) > 0 {
+		ret = append(ret, s)
+	}
+	return ret
 }

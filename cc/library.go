@@ -31,24 +31,7 @@ import (
 	"android/soong/genrule"
 )
 
-type StaticSharedLibraryProperties struct {
-	Srcs   []string `android:"path,arch_variant"`
-	Cflags []string `android:"arch_variant"`
-
-	Enabled            *bool    `android:"arch_variant"`
-	Whole_static_libs  []string `android:"arch_variant"`
-	Static_libs        []string `android:"arch_variant"`
-	Shared_libs        []string `android:"arch_variant"`
-	System_shared_libs []string `android:"arch_variant"`
-
-	Export_shared_lib_headers []string `android:"arch_variant"`
-	Export_static_lib_headers []string `android:"arch_variant"`
-}
-
 type LibraryProperties struct {
-	Static StaticSharedLibraryProperties `android:"arch_variant"`
-	Shared StaticSharedLibraryProperties `android:"arch_variant"`
-
 	// local file name to pass to the linker as -unexported_symbols_list
 	Unexported_symbols_list *string `android:"path,arch_variant"`
 	// local file name to pass to the linker as -force_symbols_not_weak_list
@@ -88,6 +71,16 @@ type LibraryProperties struct {
 	// set the name of the output
 	Stem *string `android:"arch_variant"`
 
+	// set suffix of the name of the output
+	Suffix *string `android:"arch_variant"`
+
+	Target struct {
+		Vendor struct {
+			// set suffix of the name of the output
+			Suffix *string `android:"arch_variant"`
+		}
+	}
+
 	// Names of modules to be overridden. Listed modules can only be other shared libraries
 	// (in Make or Soong).
 	// This does not completely prevent installation of the overridden libraries, but if both
@@ -113,6 +106,31 @@ type LibraryProperties struct {
 
 	// Order symbols in .bss section by their sizes.  Only useful for shared libraries.
 	Sort_bss_symbols_by_size *bool
+
+	// Inject boringssl hash into the shared library.  This is only intended for use by external/boringssl.
+	Inject_bssl_hash *bool `android:"arch_variant"`
+}
+
+type StaticProperties struct {
+	Static StaticOrSharedProperties `android:"arch_variant"`
+}
+
+type SharedProperties struct {
+	Shared StaticOrSharedProperties `android:"arch_variant"`
+}
+
+type StaticOrSharedProperties struct {
+	Srcs   []string `android:"path,arch_variant"`
+	Cflags []string `android:"arch_variant"`
+
+	Enabled            *bool    `android:"arch_variant"`
+	Whole_static_libs  []string `android:"arch_variant"`
+	Static_libs        []string `android:"arch_variant"`
+	Shared_libs        []string `android:"arch_variant"`
+	System_shared_libs []string `android:"arch_variant"`
+
+	Export_shared_lib_headers []string `android:"arch_variant"`
+	Export_static_lib_headers []string `android:"arch_variant"`
 }
 
 type LibraryMutatedProperties struct {
@@ -282,6 +300,8 @@ var _ exportedFlagsProducer = (*flagExporter)(nil)
 // functionality: static vs. shared linkage, reusing object files for shared libraries
 type libraryDecorator struct {
 	Properties        LibraryProperties
+	StaticProperties  StaticProperties
+	SharedProperties  SharedProperties
 	MutatedProperties LibraryMutatedProperties
 
 	// For reusing static library objects for shared library
@@ -342,11 +362,20 @@ type libraryDecorator struct {
 func (library *libraryDecorator) linkerProps() []interface{} {
 	var props []interface{}
 	props = append(props, library.baseLinker.linkerProps()...)
-	return append(props,
+	props = append(props,
 		&library.Properties,
 		&library.MutatedProperties,
 		&library.flagExporter.Properties,
 		&library.stripper.StripProperties)
+
+	if library.MutatedProperties.BuildShared {
+		props = append(props, &library.SharedProperties)
+	}
+	if library.MutatedProperties.BuildStatic {
+		props = append(props, &library.StaticProperties)
+	}
+
+	return props
 }
 
 func (library *libraryDecorator) linkerFlags(ctx ModuleContext, flags Flags) Flags {
@@ -360,9 +389,9 @@ func (library *libraryDecorator) linkerFlags(ctx ModuleContext, flags Flags) Fla
 	}
 
 	if library.static() {
-		flags.CFlags = append(flags.CFlags, library.Properties.Static.Cflags...)
+		flags.CFlags = append(flags.CFlags, library.StaticProperties.Static.Cflags...)
 	} else if library.shared() {
-		flags.CFlags = append(flags.CFlags, library.Properties.Shared.Cflags...)
+		flags.CFlags = append(flags.CFlags, library.SharedProperties.Shared.Cflags...)
 	}
 
 	if library.shared() {
@@ -432,25 +461,46 @@ func (library *libraryDecorator) compilerFlags(ctx ModuleContext, flags Flags, d
 	return flags
 }
 
+// Returns a string that represents the class of the ABI dump.
+// Returns an empty string if ABI check is disabled for this library.
+func (library *libraryDecorator) classifySourceAbiDump(ctx ModuleContext) string {
+	enabled := library.Properties.Header_abi_checker.Enabled
+	if enabled != nil && !Bool(enabled) {
+		return ""
+	}
+	// Return NDK if the library is both NDK and LLNDK.
+	if ctx.isNdk() {
+		return "NDK"
+	}
+	if ctx.isLlndkPublic(ctx.Config()) {
+		return "LLNDK"
+	}
+	if ctx.useVndk() && ctx.isVndk() && !ctx.isVndkPrivate(ctx.Config()) {
+		if ctx.isVndkSp() {
+			if ctx.isVndkExt() {
+				return "VNDK-SP-ext"
+			} else {
+				return "VNDK-SP"
+			}
+		} else {
+			if ctx.isVndkExt() {
+				return "VNDK-ext"
+			} else {
+				return "VNDK-core"
+			}
+		}
+	}
+	if Bool(enabled) || ctx.hasStubsVariants() {
+		return "PLATFORM"
+	}
+	return ""
+}
+
 func (library *libraryDecorator) shouldCreateSourceAbiDump(ctx ModuleContext) bool {
 	if !ctx.shouldCreateSourceAbiDump() {
 		return false
 	}
-	if library.Properties.Header_abi_checker.Enabled != nil {
-		return Bool(library.Properties.Header_abi_checker.Enabled)
-	}
-	if ctx.isNdk() {
-		return true
-	}
-	if ctx.isLlndkPublic(ctx.Config()) {
-		return true
-	}
-	if ctx.useVndk() && ctx.isVndk() && !ctx.isVndkPrivate(ctx.Config()) {
-		// Return true if this is VNDK-core, VNDK-SP, or VNDK-Ext, and not
-		// VNDK-private.
-		return true
-	}
-	return false
+	return library.classifySourceAbiDump(ctx) != ""
 }
 
 func (library *libraryDecorator) compile(ctx ModuleContext, flags Flags, deps PathDeps) Objects {
@@ -464,10 +514,10 @@ func (library *libraryDecorator) compile(ctx ModuleContext, flags Flags, deps Pa
 		if len(library.baseCompiler.Properties.Srcs) > 0 {
 			ctx.PropertyErrorf("srcs", "cc_library_headers must not have any srcs")
 		}
-		if len(library.Properties.Static.Srcs) > 0 {
+		if len(library.StaticProperties.Static.Srcs) > 0 {
 			ctx.PropertyErrorf("static.srcs", "cc_library_headers must not have any srcs")
 		}
-		if len(library.Properties.Shared.Srcs) > 0 {
+		if len(library.SharedProperties.Shared.Srcs) > 0 {
 			ctx.PropertyErrorf("shared.srcs", "cc_library_headers must not have any srcs")
 		}
 		return Objects{}
@@ -482,8 +532,8 @@ func (library *libraryDecorator) compile(ctx ModuleContext, flags Flags, deps Pa
 			SourceAbiFlags = append(SourceAbiFlags, "-I"+reexportedInclude)
 		}
 		flags.SAbiFlags = SourceAbiFlags
-		total_length := len(library.baseCompiler.Properties.Srcs) + len(deps.GeneratedSources) + len(library.Properties.Shared.Srcs) +
-			len(library.Properties.Static.Srcs)
+		total_length := len(library.baseCompiler.Properties.Srcs) + len(deps.GeneratedSources) +
+			len(library.SharedProperties.Shared.Srcs) + len(library.StaticProperties.Static.Srcs)
 		if total_length > 0 {
 			flags.SAbiDump = true
 		}
@@ -493,11 +543,11 @@ func (library *libraryDecorator) compile(ctx ModuleContext, flags Flags, deps Pa
 	buildFlags := flagsToBuilderFlags(flags)
 
 	if library.static() {
-		srcs := android.PathsForModuleSrc(ctx, library.Properties.Static.Srcs)
+		srcs := android.PathsForModuleSrc(ctx, library.StaticProperties.Static.Srcs)
 		objs = objs.Append(compileObjs(ctx, buildFlags, android.DeviceStaticLibrary,
 			srcs, library.baseCompiler.pathDeps, library.baseCompiler.cFlagsDeps))
 	} else if library.shared() {
-		srcs := android.PathsForModuleSrc(ctx, library.Properties.Shared.Srcs)
+		srcs := android.PathsForModuleSrc(ctx, library.SharedProperties.Shared.Srcs)
 		objs = objs.Append(compileObjs(ctx, buildFlags, android.DeviceSharedLibrary,
 			srcs, library.baseCompiler.pathDeps, library.baseCompiler.cFlagsDeps))
 	}
@@ -525,7 +575,7 @@ type libraryInterface interface {
 	androidMkWriteAdditionalDependenciesForSourceAbiDiff(w io.Writer)
 }
 
-func (library *libraryDecorator) getLibName(ctx ModuleContext) string {
+func (library *libraryDecorator) getLibName(ctx BaseModuleContext) string {
 	name := library.libName
 	if name == "" {
 		name = String(library.Properties.Stem)
@@ -533,6 +583,16 @@ func (library *libraryDecorator) getLibName(ctx ModuleContext) string {
 			name = ctx.baseModuleName()
 		}
 	}
+
+	suffix := ""
+	if ctx.useVndk() {
+		suffix = String(library.Properties.Target.Vendor.Suffix)
+	}
+	if suffix == "" {
+		suffix = String(library.Properties.Suffix)
+	}
+
+	name += suffix
 
 	if ctx.isVndkExt() {
 		name = ctx.getVndkExtendsModuleName()
@@ -581,12 +641,12 @@ func (library *libraryDecorator) compilerDeps(ctx DepsContext, deps Deps) Deps {
 
 func (library *libraryDecorator) linkerDeps(ctx DepsContext, deps Deps) Deps {
 	if library.static() {
-		if library.Properties.Static.System_shared_libs != nil {
-			library.baseLinker.Properties.System_shared_libs = library.Properties.Static.System_shared_libs
+		if library.StaticProperties.Static.System_shared_libs != nil {
+			library.baseLinker.Properties.System_shared_libs = library.StaticProperties.Static.System_shared_libs
 		}
 	} else if library.shared() {
-		if library.Properties.Shared.System_shared_libs != nil {
-			library.baseLinker.Properties.System_shared_libs = library.Properties.Shared.System_shared_libs
+		if library.SharedProperties.Shared.System_shared_libs != nil {
+			library.baseLinker.Properties.System_shared_libs = library.SharedProperties.Shared.System_shared_libs
 		}
 	}
 
@@ -594,12 +654,12 @@ func (library *libraryDecorator) linkerDeps(ctx DepsContext, deps Deps) Deps {
 
 	if library.static() {
 		deps.WholeStaticLibs = append(deps.WholeStaticLibs,
-			library.Properties.Static.Whole_static_libs...)
-		deps.StaticLibs = append(deps.StaticLibs, library.Properties.Static.Static_libs...)
-		deps.SharedLibs = append(deps.SharedLibs, library.Properties.Static.Shared_libs...)
+			library.StaticProperties.Static.Whole_static_libs...)
+		deps.StaticLibs = append(deps.StaticLibs, library.StaticProperties.Static.Static_libs...)
+		deps.SharedLibs = append(deps.SharedLibs, library.StaticProperties.Static.Shared_libs...)
 
-		deps.ReexportSharedLibHeaders = append(deps.ReexportSharedLibHeaders, library.Properties.Static.Export_shared_lib_headers...)
-		deps.ReexportStaticLibHeaders = append(deps.ReexportStaticLibHeaders, library.Properties.Static.Export_static_lib_headers...)
+		deps.ReexportSharedLibHeaders = append(deps.ReexportSharedLibHeaders, library.StaticProperties.Static.Export_shared_lib_headers...)
+		deps.ReexportStaticLibHeaders = append(deps.ReexportStaticLibHeaders, library.StaticProperties.Static.Export_static_lib_headers...)
 	} else if library.shared() {
 		if ctx.toolchain().Bionic() && !Bool(library.baseLinker.Properties.Nocrt) {
 			if !ctx.useSdk() {
@@ -618,12 +678,12 @@ func (library *libraryDecorator) linkerDeps(ctx DepsContext, deps Deps) Deps {
 				deps.CrtEnd = "ndk_crtend_so." + version
 			}
 		}
-		deps.WholeStaticLibs = append(deps.WholeStaticLibs, library.Properties.Shared.Whole_static_libs...)
-		deps.StaticLibs = append(deps.StaticLibs, library.Properties.Shared.Static_libs...)
-		deps.SharedLibs = append(deps.SharedLibs, library.Properties.Shared.Shared_libs...)
+		deps.WholeStaticLibs = append(deps.WholeStaticLibs, library.SharedProperties.Shared.Whole_static_libs...)
+		deps.StaticLibs = append(deps.StaticLibs, library.SharedProperties.Shared.Static_libs...)
+		deps.SharedLibs = append(deps.SharedLibs, library.SharedProperties.Shared.Shared_libs...)
 
-		deps.ReexportSharedLibHeaders = append(deps.ReexportSharedLibHeaders, library.Properties.Shared.Export_shared_lib_headers...)
-		deps.ReexportStaticLibHeaders = append(deps.ReexportStaticLibHeaders, library.Properties.Shared.Export_static_lib_headers...)
+		deps.ReexportSharedLibHeaders = append(deps.ReexportSharedLibHeaders, library.SharedProperties.Shared.Export_shared_lib_headers...)
+		deps.ReexportStaticLibHeaders = append(deps.ReexportStaticLibHeaders, library.SharedProperties.Shared.Export_static_lib_headers...)
 	}
 	if ctx.useVndk() {
 		deps.WholeStaticLibs = removeListFromList(deps.WholeStaticLibs, library.baseLinker.Properties.Target.Vendor.Exclude_static_libs)
@@ -731,9 +791,7 @@ func (library *libraryDecorator) linkShared(ctx ModuleContext,
 
 	// Optimize out relinking against shared libraries whose interface hasn't changed by
 	// depending on a table of contents file instead of the library itself.
-	tocPath := outputFile.RelPathString()
-	tocPath = pathtools.ReplaceExtension(tocPath, flags.Toolchain.ShlibSuffix()[1:]+".toc")
-	tocFile := android.PathForOutput(ctx, tocPath)
+	tocFile := outputFile.ReplaceExtension(ctx, flags.Toolchain.ShlibSuffix()[1:]+".toc")
 	library.tocFile = android.OptionalPathForPath(tocFile)
 	TransformSharedObjectToToc(ctx, outputFile, tocFile, builderFlags)
 
@@ -745,8 +803,9 @@ func (library *libraryDecorator) linkShared(ctx ModuleContext,
 		outputFile = android.PathForModuleOut(ctx, "unstripped", fileName)
 		library.stripper.stripExecutableOrSharedLib(ctx, outputFile, strippedOutputFile, builderFlags)
 	}
-
 	library.unstrippedOutputFile = outputFile
+
+	outputFile = maybeInjectBoringSSLHash(ctx, outputFile, library.Properties.Inject_bssl_hash, fileName)
 
 	if Bool(library.baseLinker.Properties.Use_version_lib) {
 		if ctx.Host() {
@@ -815,11 +874,16 @@ func (library *libraryDecorator) nativeCoverage() bool {
 	return true
 }
 
-func getRefAbiDumpFile(ctx ModuleContext, vndkVersion, fileName string) android.Path {
-	isLlndkOrNdk := inList(ctx.baseModuleName(), *llndkLibraries(ctx.Config())) || inList(ctx.baseModuleName(), ndkMigratedLibs)
+func (library *libraryDecorator) coverageOutputFilePath() android.OptionalPath {
+	return library.coverageOutputFile
+}
 
-	refAbiDumpTextFile := android.PathForVndkRefAbiDump(ctx, vndkVersion, fileName, isLlndkOrNdk, ctx.isVndk(), false)
-	refAbiDumpGzipFile := android.PathForVndkRefAbiDump(ctx, vndkVersion, fileName, isLlndkOrNdk, ctx.isVndk(), true)
+func getRefAbiDumpFile(ctx ModuleContext, vndkVersion, fileName string) android.Path {
+	isNdk := ctx.isNdk()
+	isLlndkOrVndk := ctx.isLlndkPublic(ctx.Config()) || ctx.isVndk()
+
+	refAbiDumpTextFile := android.PathForVndkRefAbiDump(ctx, vndkVersion, fileName, isNdk, isLlndkOrVndk, false)
+	refAbiDumpGzipFile := android.PathForVndkRefAbiDump(ctx, vndkVersion, fileName, isNdk, isLlndkOrVndk, true)
 
 	if refAbiDumpTextFile.Valid() {
 		if refAbiDumpGzipFile.Valid() {
@@ -853,9 +917,11 @@ func (library *libraryDecorator) linkSAbiDumpFiles(ctx ModuleContext, objs Objec
 		}
 		exportedHeaderFlags := strings.Join(SourceAbiFlags, " ")
 		library.sAbiOutputFile = TransformDumpToLinkedDump(ctx, objs.sAbiDumpFiles, soFile, fileName, exportedHeaderFlags,
-			android.OptionalPathForModuleSrc(ctx, library.Properties.Header_abi_checker.Symbol_file),
+			android.OptionalPathForModuleSrc(ctx, library.symbolFileForAbiCheck(ctx)),
 			library.Properties.Header_abi_checker.Exclude_symbol_versions,
 			library.Properties.Header_abi_checker.Exclude_symbol_tags)
+
+		addLsdumpPath(library.classifySourceAbiDump(ctx) + ":" + library.sAbiOutputFile.String())
 
 		refAbiDumpFile := getRefAbiDumpFile(ctx, vndkVersion, fileName)
 		if refAbiDumpFile != nil {
@@ -909,9 +975,7 @@ func (library *libraryDecorator) link(ctx ModuleContext,
 			isVendor := ctx.useVndk()
 			isOwnerPlatform := Bool(library.Properties.Sysprop.Platform)
 
-			usePublic := isProduct || (isOwnerPlatform == isVendor)
-
-			if usePublic {
+			if !ctx.inRecovery() && (isProduct || (isOwnerPlatform == isVendor)) {
 				dir = android.PathForModuleGen(ctx, "sysprop/public", "include").String()
 			}
 		}
@@ -928,11 +992,13 @@ func (library *libraryDecorator) link(ctx ModuleContext,
 }
 
 func (library *libraryDecorator) buildStatic() bool {
-	return library.MutatedProperties.BuildStatic && BoolDefault(library.Properties.Static.Enabled, true)
+	return library.MutatedProperties.BuildStatic &&
+		BoolDefault(library.StaticProperties.Static.Enabled, true)
 }
 
 func (library *libraryDecorator) buildShared() bool {
-	return library.MutatedProperties.BuildShared && BoolDefault(library.Properties.Shared.Enabled, true)
+	return library.MutatedProperties.BuildShared &&
+		BoolDefault(library.SharedProperties.Shared.Enabled, true)
 }
 
 func (library *libraryDecorator) getWholeStaticMissingDeps() []string {
@@ -982,9 +1048,9 @@ func (library *libraryDecorator) install(ctx ModuleContext, file android.Path) {
 			// Bionic libraries (e.g. libc.so) is installed to the bootstrap subdirectory.
 			// The original path becomes a symlink to the corresponding file in the
 			// runtime APEX.
-			translatedArch := ctx.Target().NativeBridge == android.NativeBridgeEnabled || !ctx.Arch().Native
-			if installToBootstrap(ctx.baseModuleName(), ctx.Config()) && !library.buildStubs() && !translatedArch && !ctx.inRecovery() {
-				if ctx.Device() && isBionic(ctx.baseModuleName()) {
+			translatedArch := ctx.Target().NativeBridge == android.NativeBridgeEnabled
+			if InstallToBootstrap(ctx.baseModuleName(), ctx.Config()) && !library.buildStubs() && !translatedArch && !ctx.inRecovery() {
+				if ctx.Device() {
 					library.installSymlinkToRuntimeApex(ctx, file)
 				}
 				library.baseInstaller.subDir = "bootstrap"
@@ -1054,6 +1120,16 @@ func (library *libraryDecorator) buildStubs() bool {
 	return library.MutatedProperties.BuildStubs
 }
 
+func (library *libraryDecorator) symbolFileForAbiCheck(ctx ModuleContext) *string {
+	if library.Properties.Header_abi_checker.Symbol_file != nil {
+		return library.Properties.Header_abi_checker.Symbol_file
+	}
+	if ctx.hasStubsVariants() && library.Properties.Stubs.Symbol_file != nil {
+		return library.Properties.Stubs.Symbol_file
+	}
+	return nil
+}
+
 func (library *libraryDecorator) stubsVersion() string {
 	return library.MutatedProperties.StubsVersion
 }
@@ -1106,16 +1182,16 @@ func reuseStaticLibrary(mctx android.BottomUpMutatorContext, static, shared *Mod
 
 		// Check libraries in addition to cflags, since libraries may be exporting different
 		// include directories.
-		if len(staticCompiler.Properties.Static.Cflags) == 0 &&
-			len(sharedCompiler.Properties.Shared.Cflags) == 0 &&
-			len(staticCompiler.Properties.Static.Whole_static_libs) == 0 &&
-			len(sharedCompiler.Properties.Shared.Whole_static_libs) == 0 &&
-			len(staticCompiler.Properties.Static.Static_libs) == 0 &&
-			len(sharedCompiler.Properties.Shared.Static_libs) == 0 &&
-			len(staticCompiler.Properties.Static.Shared_libs) == 0 &&
-			len(sharedCompiler.Properties.Shared.Shared_libs) == 0 &&
-			staticCompiler.Properties.Static.System_shared_libs == nil &&
-			sharedCompiler.Properties.Shared.System_shared_libs == nil {
+		if len(staticCompiler.StaticProperties.Static.Cflags) == 0 &&
+			len(sharedCompiler.SharedProperties.Shared.Cflags) == 0 &&
+			len(staticCompiler.StaticProperties.Static.Whole_static_libs) == 0 &&
+			len(sharedCompiler.SharedProperties.Shared.Whole_static_libs) == 0 &&
+			len(staticCompiler.StaticProperties.Static.Static_libs) == 0 &&
+			len(sharedCompiler.SharedProperties.Shared.Static_libs) == 0 &&
+			len(staticCompiler.StaticProperties.Static.Shared_libs) == 0 &&
+			len(sharedCompiler.SharedProperties.Shared.Shared_libs) == 0 &&
+			staticCompiler.StaticProperties.Static.System_shared_libs == nil &&
+			sharedCompiler.SharedProperties.Shared.System_shared_libs == nil {
 
 			mctx.AddInterVariantDependency(reuseObjTag, shared, static)
 			sharedCompiler.baseCompiler.Properties.OriginalSrcs =
@@ -1244,4 +1320,40 @@ func VersionMutator(mctx android.BottomUpMutatorContext) {
 			return
 		}
 	}
+}
+
+// maybeInjectBoringSSLHash adds a rule to run bssl_inject_hash on the output file if the module has the
+// inject_bssl_hash or if any static library dependencies have inject_bssl_hash set.  It returns the output path
+// that the linked output file should be written to.
+// TODO(b/137267623): Remove this in favor of a cc_genrule when they support operating on shared libraries.
+func maybeInjectBoringSSLHash(ctx android.ModuleContext, outputFile android.ModuleOutPath,
+	inject *bool, fileName string) android.ModuleOutPath {
+	// TODO(b/137267623): Remove this in favor of a cc_genrule when they support operating on shared libraries.
+	injectBoringSSLHash := Bool(inject)
+	ctx.VisitDirectDeps(func(dep android.Module) {
+		tag := ctx.OtherModuleDependencyTag(dep)
+		if tag == staticDepTag || tag == staticExportDepTag || tag == wholeStaticDepTag || tag == lateStaticDepTag {
+			if cc, ok := dep.(*Module); ok {
+				if library, ok := cc.linker.(*libraryDecorator); ok {
+					if Bool(library.Properties.Inject_bssl_hash) {
+						injectBoringSSLHash = true
+					}
+				}
+			}
+		}
+	})
+	if injectBoringSSLHash {
+		hashedOutputfile := outputFile
+		outputFile = android.PathForModuleOut(ctx, "unhashed", fileName)
+
+		rule := android.NewRuleBuilder()
+		rule.Command().
+			BuiltTool(ctx, "bssl_inject_hash").
+			Flag("-sha256").
+			FlagWithInput("-in-object ", outputFile).
+			FlagWithOutput("-o ", hashedOutputfile)
+		rule.Build(pctx, ctx, "injectCryptoHash", "inject crypto hash")
+	}
+
+	return outputFile
 }

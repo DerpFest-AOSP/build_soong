@@ -64,6 +64,7 @@ var (
 
 	_ = pctx.VariableFunc("kytheCorpus",
 		func(ctx android.PackageVarContext) string { return ctx.Config().XrefCorpusName() })
+	_ = pctx.SourcePathVariable("kytheVnames", "build/soong/vnames.json")
 	// Run it with -add-opens=java.base/java.nio=ALL-UNNAMED to avoid JDK9's warning about
 	// "Illegal reflective access by com.google.protobuf.Utf8$UnsafeProcessor ...
 	// to field java.nio.Buffer.address"
@@ -74,6 +75,7 @@ var (
 				`( [ ! -s $srcJarDir/list -a ! -s $out.rsp ] || ` +
 				`KYTHE_ROOT_DIRECTORY=. KYTHE_OUTPUT_FILE=$out ` +
 				`KYTHE_CORPUS=${kytheCorpus} ` +
+				`KYTHE_VNAMES=${kytheVnames} ` +
 				`${config.SoongJavacWrapper} ${config.JavaCmd} ` +
 				`--add-opens=java.base/java.nio=ALL-UNNAMED ` +
 				`-jar ${config.JavaKytheExtractorJar} ` +
@@ -84,6 +86,7 @@ var (
 			CommandDeps: []string{
 				"${config.JavaCmd}",
 				"${config.JavaKytheExtractorJar}",
+				"${kytheVnames}",
 				"${config.ZipSyncCmd}",
 			},
 			CommandOrderOnly: []string{"${config.SoongJavacWrapper}"},
@@ -229,10 +232,9 @@ func RunErrorProne(ctx android.ModuleContext, outputFile android.WritablePath,
 
 // Emits the rule to generate Xref input file (.kzip file) for the given set of source files and source jars
 // to compile with given set of builder flags, etc.
-func emitXrefRule(ctx android.ModuleContext, xrefFile android.WritablePath,
+func emitXrefRule(ctx android.ModuleContext, xrefFile android.WritablePath, idx int,
 	srcFiles, srcJars android.Paths,
-	flags javaBuilderFlags, deps android.Paths,
-	intermediatesDir string) {
+	flags javaBuilderFlags, deps android.Paths) {
 
 	deps = append(deps, srcJars...)
 
@@ -258,6 +260,11 @@ func emitXrefRule(ctx android.ModuleContext, xrefFile android.WritablePath,
 	processor := "-proc:none"
 	if flags.processor != "" {
 		processor = "-processor " + flags.processor
+	}
+
+	intermediatesDir := "xref"
+	if idx >= 0 {
+		intermediatesDir += strconv.Itoa(idx)
 	}
 
 	ctx.Build(pctx,

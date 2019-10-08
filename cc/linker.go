@@ -383,6 +383,10 @@ func (linker *baseLinker) linkerFlags(ctx ModuleContext, flags Flags) Flags {
 		flags.LdFlags = append(flags.LdFlags, "-lfdio", "-lzircon")
 	}
 
+	if ctx.toolchain().LibclangRuntimeLibraryArch() != "" {
+		flags.LdFlags = append(flags.LdFlags, "-Wl,--exclude-libs="+config.BuiltinsRuntimeLibrary(ctx.toolchain())+".a")
+	}
+
 	CheckBadLinkerFlags(ctx, "ldflags", linker.Properties.Ldflags)
 
 	flags.LdFlags = append(flags.LdFlags, proptools.NinjaAndShellEscapeList(linker.Properties.Ldflags)...)
@@ -487,7 +491,7 @@ var (
 	gen_sorted_bss_symbols = pctx.AndroidStaticRule("gen_sorted_bss_symbols",
 		blueprint.RuleParams{
 			Command:     "CROSS_COMPILE=$crossCompile $genSortedBssSymbolsPath ${in} ${out}",
-			CommandDeps: []string{"$genSortedBssSymbolsPath"},
+			CommandDeps: []string{"$genSortedBssSymbolsPath", "${crossCompile}nm"},
 		},
 		"crossCompile")
 )

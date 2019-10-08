@@ -65,14 +65,14 @@ var (
 	ld = pctx.AndroidStaticRule("ld",
 		blueprint.RuleParams{
 			Command: "$ldCmd ${crtBegin} @${out}.rsp " +
-				"${libFlags} ${crtEnd} -o ${out} ${ldFlags}",
+				"${libFlags} ${crtEnd} -o ${out} ${ldFlags} ${extraLibFlags}",
 			CommandDeps:    []string{"$ldCmd"},
 			Rspfile:        "${out}.rsp",
 			RspfileContent: "${in}",
 			// clang -Wl,--out-implib doesn't update its output file if it hasn't changed.
 			Restat: true,
 		},
-		"ldCmd", "crtBegin", "libFlags", "crtEnd", "ldFlags")
+		"ldCmd", "crtBegin", "libFlags", "crtEnd", "ldFlags", "extraLibFlags")
 
 	partialLd = pctx.AndroidStaticRule("partialLd",
 		blueprint.RuleParams{
@@ -195,7 +195,7 @@ var (
 
 	_ = pctx.SourcePathVariable("sAbiDiffer", "prebuilts/clang-tools/${config.HostPrebuiltTag}/bin/header-abi-diff")
 
-	sAbiDiff = pctx.AndroidRuleFunc("sAbiDiff",
+	sAbiDiff = pctx.RuleFunc("sAbiDiff",
 		func(ctx android.PackageRuleContext) blueprint.RuleParams {
 			// TODO(b/78139997): Add -check-all-apis back
 			commandStr := "($sAbiDiffer ${allowFlags} -lib ${libName} -arch ${arch} -o ${out} -new ${in} -old ${referenceDump})"
@@ -224,12 +224,13 @@ var (
 
 	_ = pctx.SourcePathVariable("cxxExtractor",
 		"prebuilts/clang-tools/${config.HostPrebuiltTag}/bin/cxx_extractor")
+	_ = pctx.SourcePathVariable("kytheVnames", "build/soong/vnames.json")
 	_ = pctx.VariableFunc("kytheCorpus",
 		func(ctx android.PackageVarContext) string { return ctx.Config().XrefCorpusName() })
 	kytheExtract = pctx.StaticRule("kythe",
 		blueprint.RuleParams{
-			Command:     "rm -f $out && KYTHE_CORPUS=${kytheCorpus} KYTHE_OUTPUT_FILE=$out $cxxExtractor $cFlags $in ",
-			CommandDeps: []string{"$cxxExtractor"},
+			Command:     "rm -f $out && KYTHE_CORPUS=${kytheCorpus} KYTHE_OUTPUT_FILE=$out KYTHE_VNAMES=$kytheVnames $cxxExtractor $cFlags $in ",
+			CommandDeps: []string{"$cxxExtractor", "$kytheVnames"},
 		},
 		"cFlags")
 )
@@ -259,6 +260,7 @@ type builderFlags struct {
 	cppFlags        string
 	ldFlags         string
 	libFlags        string
+	extraLibFlags   string
 	tidyFlags       string
 	sAbiFlags       string
 	yasmFlags       string
@@ -269,6 +271,8 @@ type builderFlags struct {
 	coverage        bool
 	sAbiDump        bool
 	emitXrefs       bool
+
+	assemblerWithCpp bool
 
 	systemIncludeFlags string
 
@@ -411,6 +415,9 @@ func TransformSourceToObj(ctx android.ModuleContext, subdir string, srcFiles and
 				},
 			})
 			continue
+		case ".o":
+			objFiles[i] = srcFile
+			continue
 		}
 
 		var moduleCflags string
@@ -424,7 +431,9 @@ func TransformSourceToObj(ctx android.ModuleContext, subdir string, srcFiles and
 
 		switch srcFile.Ext() {
 		case ".s":
-			rule = ccNoDeps
+			if !flags.assemblerWithCpp {
+				rule = ccNoDeps
+			}
 			fallthrough
 		case ".S":
 			ccCmd = "clang"
@@ -543,7 +552,7 @@ func TransformObjToStaticLib(ctx android.ModuleContext, objFiles android.Paths,
 	flags builderFlags, outputFile android.ModuleOutPath, deps android.Paths) {
 
 	arCmd := "${config.ClangBin}/llvm-ar"
-	arFlags := "crsD"
+	arFlags := "crsPD"
 	if !ctx.Darwin() {
 		arFlags += " -format=gnu"
 	}
@@ -627,11 +636,12 @@ func TransformObjToDynamicBinary(ctx android.ModuleContext,
 		Inputs:          objFiles,
 		Implicits:       deps,
 		Args: map[string]string{
-			"ldCmd":    ldCmd,
-			"crtBegin": crtBegin.String(),
-			"libFlags": strings.Join(libFlagsList, " "),
-			"ldFlags":  flags.ldFlags,
-			"crtEnd":   crtEnd.String(),
+			"ldCmd":         ldCmd,
+			"crtBegin":      crtBegin.String(),
+			"libFlags":      strings.Join(libFlagsList, " "),
+			"extraLibFlags": flags.extraLibFlags,
+			"ldFlags":       flags.ldFlags,
+			"crtEnd":        crtEnd.String(),
 		},
 	})
 }
@@ -643,9 +653,6 @@ func TransformDumpToLinkedDump(ctx android.ModuleContext, sAbiDumps android.Path
 	excludedSymbolVersions, excludedSymbolTags []string) android.OptionalPath {
 
 	outputFile := android.PathForModuleOut(ctx, baseName+".lsdump")
-	sabiLock.Lock()
-	lsdumpPaths = append(lsdumpPaths, outputFile.String())
-	sabiLock.Unlock()
 
 	implicits := android.Paths{soFile}
 	symbolFilterStr := "-so " + soFile.String()
@@ -758,7 +765,7 @@ func TransformSharedObjectToToc(ctx android.ModuleContext, inputFile android.Pat
 
 // Generate a rule for compiling multiple .o files to a .o using ld partial linking
 func TransformObjsToObj(ctx android.ModuleContext, objFiles android.Paths,
-	flags builderFlags, outputFile android.WritablePath) {
+	flags builderFlags, outputFile android.WritablePath, deps android.Paths) {
 
 	ldCmd := "${config.ClangBin}/clang++"
 
@@ -767,6 +774,7 @@ func TransformObjsToObj(ctx android.ModuleContext, objFiles android.Paths,
 		Description: "link " + outputFile.Base(),
 		Output:      outputFile,
 		Inputs:      objFiles,
+		Implicits:   deps,
 		Args: map[string]string{
 			"ldCmd":   ldCmd,
 			"ldFlags": flags.ldFlags,
