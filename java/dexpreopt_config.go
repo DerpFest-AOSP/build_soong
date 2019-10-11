@@ -87,11 +87,7 @@ var systemServerClasspathKey = android.NewOnceKey("systemServerClasspath")
 // supported through native bridge.
 func dexpreoptTargets(ctx android.PathContext) []android.Target {
 	var targets []android.Target
-	for i, target := range ctx.Config().Targets[android.Android] {
-		if ctx.Config().SecondArchIsTranslated() && i > 0 {
-			break
-		}
-
+	for _, target := range ctx.Config().Targets[android.Android] {
 		if target.NativeBridge == android.NativeBridgeDisabled {
 			targets = append(targets, target)
 		}
@@ -107,17 +103,17 @@ func defaultBootImageConfig(ctx android.PathContext) bootImageConfig {
 	return ctx.Config().Once(defaultBootImageConfigKey, func() interface{} {
 		global := dexpreoptGlobalConfig(ctx)
 
-		runtimeModules := global.RuntimeApexJars
-		nonFrameworkModules := concat(runtimeModules, global.ProductUpdatableBootModules)
+		artModules := global.ArtApexJars
+		nonFrameworkModules := concat(artModules, global.ProductUpdatableBootModules)
 		frameworkModules := android.RemoveListFromList(global.BootJars, nonFrameworkModules)
 
 		var nonUpdatableBootModules []string
 		var nonUpdatableBootLocations []string
 
-		for _, m := range runtimeModules {
+		for _, m := range artModules {
 			nonUpdatableBootModules = append(nonUpdatableBootModules, m)
 			nonUpdatableBootLocations = append(nonUpdatableBootLocations,
-				filepath.Join("/apex/com.android.runtime/javalib", m+".jar"))
+				filepath.Join("/apex/com.android.art/javalib", m+".jar"))
 		}
 
 		for _, m := range frameworkModules {
@@ -176,16 +172,16 @@ func apexBootImageConfig(ctx android.PathContext) bootImageConfig {
 	return ctx.Config().Once(apexBootImageConfigKey, func() interface{} {
 		global := dexpreoptGlobalConfig(ctx)
 
-		runtimeModules := global.RuntimeApexJars
-		nonFrameworkModules := concat(runtimeModules, global.ProductUpdatableBootModules)
+		artModules := global.ArtApexJars
+		nonFrameworkModules := concat(artModules, global.ProductUpdatableBootModules)
 		frameworkModules := android.RemoveListFromList(global.BootJars, nonFrameworkModules)
-		imageModules := concat(runtimeModules, frameworkModules)
+		imageModules := concat(artModules, frameworkModules)
 
 		var bootLocations []string
 
-		for _, m := range runtimeModules {
+		for _, m := range artModules {
 			bootLocations = append(bootLocations,
-				filepath.Join("/apex/com.android.runtime/javalib", m+".jar"))
+				filepath.Join("/apex/com.android.art/javalib", m+".jar"))
 		}
 
 		for _, m := range frameworkModules {

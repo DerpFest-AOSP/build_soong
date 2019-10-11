@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package main
+package makedeps
 
 import (
 	"bytes"
@@ -144,6 +144,20 @@ b: e`,
 					"c",
 					"d",
 					"e",
+				},
+			},
+		},
+		{
+			// TODO(b/141372861): remove this
+			// AIDL produces a dep file with no output file for a parcelable (b/
+			name: "AIDL parcelable",
+			input: ` : \
+  frameworks/base/tests/net/integration/src/com/android/server/net/integrationtests/HttpResponse.aidl
+`,
+			output: Deps{
+				Output: "",
+				Inputs: []string{
+					"frameworks/base/tests/net/integration/src/com/android/server/net/integrationtests/HttpResponse.aidl",
 				},
 			},
 		},

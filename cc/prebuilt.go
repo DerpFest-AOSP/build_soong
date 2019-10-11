@@ -19,8 +19,8 @@ import (
 )
 
 func init() {
-	android.RegisterModuleType("cc_prebuilt_library_shared", prebuiltSharedLibraryFactory)
-	android.RegisterModuleType("cc_prebuilt_library_static", prebuiltStaticLibraryFactory)
+	android.RegisterModuleType("cc_prebuilt_library_shared", PrebuiltSharedLibraryFactory)
+	android.RegisterModuleType("cc_prebuilt_library_static", PrebuiltStaticLibraryFactory)
 	android.RegisterModuleType("cc_prebuilt_binary", prebuiltBinaryFactory)
 }
 
@@ -97,7 +97,7 @@ func (p *prebuiltLibraryLinker) link(ctx ModuleContext,
 
 		if p.shared() {
 			p.unstrippedOutputFile = in
-			libName := ctx.baseModuleName() + flags.Toolchain.ShlibSuffix()
+			libName := p.libraryDecorator.getLibName(ctx) + flags.Toolchain.ShlibSuffix()
 			if p.needsStrip(ctx) {
 				stripped := android.PathForModuleOut(ctx, "stripped", libName)
 				p.stripExecutableOrSharedLib(ctx, in, stripped, builderFlags)
@@ -131,7 +131,7 @@ func (p *prebuiltLibraryLinker) disablePrebuilt() {
 
 // cc_prebuilt_library_shared installs a precompiled shared library that are
 // listed in the srcs property in the device's directory.
-func prebuiltSharedLibraryFactory() android.Module {
+func PrebuiltSharedLibraryFactory() android.Module {
 	module, _ := NewPrebuiltSharedLibrary(android.HostAndDeviceSupported)
 	return module.Init()
 }
@@ -152,13 +152,14 @@ func NewPrebuiltSharedLibrary(hod android.HostOrDeviceSupported) (*Module, *libr
 
 	// Prebuilt libraries can be included in APEXes
 	android.InitApexModule(module)
+	android.InitSdkAwareModule(module)
 
 	return module, library
 }
 
 // cc_prebuilt_library_static installs a precompiled static library that are
 // listed in the srcs property in the device's directory.
-func prebuiltStaticLibraryFactory() android.Module {
+func PrebuiltStaticLibraryFactory() android.Module {
 	module, _ := NewPrebuiltStaticLibrary(android.HostAndDeviceSupported)
 	return module.Init()
 }
@@ -176,6 +177,7 @@ func NewPrebuiltStaticLibrary(hod android.HostOrDeviceSupported) (*Module, *libr
 	module.AddProperties(&prebuilt.properties)
 
 	android.InitPrebuiltModule(module, &prebuilt.properties.Srcs)
+	android.InitSdkAwareModule(module)
 	return module, library
 }
 

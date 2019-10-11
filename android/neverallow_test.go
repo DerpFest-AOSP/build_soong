@@ -20,23 +20,29 @@ import (
 	"github.com/google/blueprint"
 )
 
-func init() {
-	// Add extra rules needed for testing.
-	AddNeverAllowRules(
-		NeverAllow().InDirectDeps("not_allowed_in_direct_deps"),
-	)
-}
-
 var neverallowTests = []struct {
-	name          string
-	fs            map[string][]byte
-	expectedError string
+	// The name of the test.
+	name string
+
+	// Optional test specific rules. If specified then they are used instead of the default rules.
+	rules []Rule
+
+	// Additional contents to add to the virtual filesystem used by the tests.
+	fs map[string][]byte
+
+	// The expected error patterns. If empty then no errors are expected, otherwise each error
+	// reported must be matched by at least one of these patterns. A pattern matches if the error
+	// message contains the pattern. A pattern does not have to match the whole error message.
+	expectedErrors []string
 }{
 	// Test General Functionality
 
 	// in direct deps tests
 	{
 		name: "not_allowed_in_direct_deps",
+		rules: []Rule{
+			NeverAllow().InDirectDeps("not_allowed_in_direct_deps"),
+		},
 		fs: map[string][]byte{
 			"top/Blueprints": []byte(`
 				cc_library {
@@ -48,10 +54,12 @@ var neverallowTests = []struct {
 					static_libs: ["not_allowed_in_direct_deps"],
 				}`),
 		},
-		expectedError: `module "libother": violates neverallow deps:not_allowed_in_direct_deps`,
+		expectedErrors: []string{
+			`module "libother": violates neverallow deps:not_allowed_in_direct_deps`,
+		},
 	},
 
-	// Test specific rules
+	// Test android specific rules
 
 	// include_dir rule tests
 	{
@@ -63,7 +71,9 @@ var neverallowTests = []struct {
 					include_dirs: ["art/libdexfile/include"],
 				}`),
 		},
-		expectedError: "all usages of 'art' have been migrated",
+		expectedErrors: []string{
+			"all usages of 'art' have been migrated",
+		},
 	},
 	{
 		name: "include_dir can reference another location",
@@ -88,7 +98,9 @@ var neverallowTests = []struct {
 					},
 				}`),
 		},
-		expectedError: "VNDK can never contain a library that is device dependent",
+		expectedErrors: []string{
+			"VNDK can never contain a library that is device dependent",
+		},
 	},
 	{
 		name: "no vndk.enabled under device directory",
@@ -102,7 +114,9 @@ var neverallowTests = []struct {
 					},
 				}`),
 		},
-		expectedError: "VNDK can never contain a library that is device dependent",
+		expectedErrors: []string{
+			"VNDK can never contain a library that is device dependent",
+		},
 	},
 	{
 		name: "vndk-ext under vendor or device directory",
@@ -124,7 +138,6 @@ var neverallowTests = []struct {
 					},
 				}`),
 		},
-		expectedError: "",
 	},
 
 	{
@@ -140,22 +153,9 @@ var neverallowTests = []struct {
 					},
 				}`),
 		},
-		expectedError: "manifest enforcement should be independent",
-	},
-	{
-		name: "libhidltransport enforce_vintf_manifest.cflags",
-		fs: map[string][]byte{
-			"Blueprints": []byte(`
-				cc_library {
-					name: "libhidltransport",
-					product_variables: {
-						enforce_vintf_manifest: {
-							cflags: ["-DSHOULD_NOT_EXIST"],
-						},
-					},
-				}`),
+		expectedErrors: []string{
+			"manifest enforcement should be independent",
 		},
-		expectedError: "",
 	},
 
 	{
@@ -171,7 +171,9 @@ var neverallowTests = []struct {
 					},
 				}`),
 		},
-		expectedError: "nothing should care if linker namespaces are enabled or not",
+		expectedErrors: []string{
+			"nothing should care if linker namespaces are enabled or not",
+		},
 	},
 	{
 		name: "libc_bionic_ndk treble_linker_namespaces.cflags",
@@ -186,7 +188,19 @@ var neverallowTests = []struct {
 					},
 				}`),
 		},
-		expectedError: "",
+	},
+	{
+		name: "dependency on updatable-media",
+		fs: map[string][]byte{
+			"Blueprints": []byte(`
+				java_library {
+					name: "needs_updatable_media",
+					libs: ["updatable-media"],
+				}`),
+		},
+		expectedErrors: []string{
+			"updatable-media includes private APIs. Use updatable_media_stubs instead.",
+		},
 	},
 	{
 		name: "java_device_for_host",
@@ -197,7 +211,9 @@ var neverallowTests = []struct {
 					libs: ["core-libart"],
 				}`),
 		},
-		expectedError: "java_device_for_host can only be used in whitelisted projects",
+		expectedErrors: []string{
+			"java_device_for_host can only be used in whitelisted projects",
+		},
 	},
 	// Libcore rule tests
 	{
@@ -219,7 +235,9 @@ var neverallowTests = []struct {
 					sdk_version: "none",
 				}`),
 		},
-		expectedError: "module \"outside_core_libraries\": violates neverallow",
+		expectedErrors: []string{
+			"module \"outside_core_libraries\": violates neverallow",
+		},
 	},
 	{
 		name: "sdk_version: \"current\"",
@@ -234,22 +252,22 @@ var neverallowTests = []struct {
 }
 
 func TestNeverallow(t *testing.T) {
-	config := TestConfig(buildDir, nil)
-
 	for _, test := range neverallowTests {
-		t.Run(test.name, func(t *testing.T) {
-			_, errs := testNeverallow(t, config, test.fs)
+		// Create a test per config to allow for test specific config, e.g. test rules.
+		config := TestConfig(buildDir, nil)
 
-			if test.expectedError == "" {
-				FailIfErrored(t, errs)
-			} else {
-				FailIfNoMatchingErrors(t, test.expectedError, errs)
+		t.Run(test.name, func(t *testing.T) {
+			// If the test has its own rules then use them instead of the default ones.
+			if test.rules != nil {
+				setTestNeverallowRules(config, test.rules)
 			}
+			_, errs := testNeverallow(config, test.fs)
+			CheckErrorsAgainstExpectations(t, errs, test.expectedErrors)
 		})
 	}
 }
 
-func testNeverallow(t *testing.T, config Config, fs map[string][]byte) (*TestContext, []error) {
+func testNeverallow(config Config, fs map[string][]byte) (*TestContext, []error) {
 	ctx := NewTestContext()
 	ctx.RegisterModuleType("cc_library", ModuleFactoryAdaptor(newMockCcLibraryModule))
 	ctx.RegisterModuleType("java_library", ModuleFactoryAdaptor(newMockJavaLibraryModule))

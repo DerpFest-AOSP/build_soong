@@ -38,6 +38,7 @@ func GatherRequiredDepsForTest() string {
 	extraModules := []string{
 		"core-lambda-stubs",
 		"ext",
+		"updatable_media_stubs",
 		"android_stubs_current",
 		"android_system_stubs_current",
 		"android_test_stubs_current",
@@ -102,7 +103,6 @@ func GatherRequiredDepsForTest() string {
 	`
 
 	systemModules := []string{
-		"core-system-modules",
 		"core-current-stubs-system-modules",
 		"core-platform-api-stubs-system-modules",
 		"android_stubs_current_system_modules",
@@ -113,7 +113,13 @@ func GatherRequiredDepsForTest() string {
 	for _, extra := range systemModules {
 		bp += fmt.Sprintf(`
 			java_system_modules {
-				name: "%s",
+				name: "%[1]s",
+				libs: ["%[1]s-lib"],
+			}
+			java_library {
+				name: "%[1]s-lib",
+				sdk_version: "none",
+				system_modules: "none",
 			}
 		`, extra)
 	}

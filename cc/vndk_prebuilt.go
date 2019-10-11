@@ -129,6 +129,18 @@ func (p *vndkPrebuiltLibraryDecorator) singleSourcePath(ctx ModuleContext) andro
 
 func (p *vndkPrebuiltLibraryDecorator) link(ctx ModuleContext,
 	flags Flags, deps PathDeps, objs Objects) android.Path {
+
+	arches := ctx.DeviceConfig().Arches()
+	if len(arches) == 0 || arches[0].ArchType.String() != p.arch() {
+		ctx.Module().SkipInstall()
+		return nil
+	}
+
+	if ctx.DeviceConfig().BinderBitness() != p.binderBit() {
+		ctx.Module().SkipInstall()
+		return nil
+	}
+
 	if len(p.properties.Srcs) > 0 && p.shared() {
 		p.libraryDecorator.exportIncludes(ctx)
 		p.libraryDecorator.reexportSystemDirs(p.properties.Export_system_include_dirs...)
@@ -136,7 +148,13 @@ func (p *vndkPrebuiltLibraryDecorator) link(ctx ModuleContext,
 		// current VNDK prebuilts are only shared libs.
 		return p.singleSourcePath(ctx)
 	}
+
+	ctx.Module().SkipInstall()
 	return nil
+}
+
+func (p *vndkPrebuiltLibraryDecorator) nativeCoverage() bool {
+	return false
 }
 
 func (p *vndkPrebuiltLibraryDecorator) install(ctx ModuleContext, file android.Path) {
@@ -163,13 +181,19 @@ func vndkPrebuiltSharedLibrary() *Module {
 	module.stl = nil
 	module.sanitize = nil
 	library.StripProperties.Strip.None = BoolPtr(true)
-	module.Properties.UseVndk = true
 
 	prebuilt := &vndkPrebuiltLibraryDecorator{
 		libraryDecorator: library,
 	}
 
 	prebuilt.properties.Check_elf_files = BoolPtr(false)
+	prebuilt.baseLinker.Properties.No_libcrt = BoolPtr(true)
+	prebuilt.baseLinker.Properties.Nocrt = BoolPtr(true)
+
+	// Prevent default system libs (libc, libm, and libdl) from being linked
+	if prebuilt.baseLinker.Properties.System_shared_libs == nil {
+		prebuilt.baseLinker.Properties.System_shared_libs = []string{}
+	}
 
 	module.compiler = nil
 	module.linker = prebuilt
@@ -202,11 +226,11 @@ func vndkPrebuiltSharedLibrary() *Module {
 //            },
 //        },
 //    }
-func vndkPrebuiltSharedFactory() android.Module {
+func VndkPrebuiltSharedFactory() android.Module {
 	module := vndkPrebuiltSharedLibrary()
 	return module.Init()
 }
 
 func init() {
-	android.RegisterModuleType("vndk_prebuilt_shared", vndkPrebuiltSharedFactory)
+	android.RegisterModuleType("vndk_prebuilt_shared", VndkPrebuiltSharedFactory)
 }

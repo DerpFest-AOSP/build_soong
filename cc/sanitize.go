@@ -56,7 +56,8 @@ var (
 
 	minimalRuntimeFlags = []string{"-fsanitize-minimal-runtime", "-fno-sanitize-trap=integer,undefined",
 		"-fno-sanitize-recover=integer,undefined"}
-	hwasanGlobalOptions = []string{"heap_history_size=1023,stack_history_size=512"}
+	hwasanGlobalOptions = []string{"heap_history_size=1023", "stack_history_size=512",
+		"export_memory_stats=0", "max_malloc_fill_size=0"}
 )
 
 type sanitizerType int
@@ -475,6 +476,12 @@ func (sanitize *sanitize) flags(ctx ModuleContext, flags Flags) Flags {
 		// TODO(b/133876586): Experimental PM breaks sanitizer coverage.
 		_, flags.CFlags = removeFromList("-fexperimental-new-pass-manager", flags.CFlags)
 		flags.CFlags = append(flags.CFlags, "-fno-experimental-new-pass-manager")
+
+		// Disable fortify for fuzzing builds. Generally, we'll be building with
+		// UBSan or ASan here and the fortify checks pollute the stack traces.
+		_, flags.CFlags = removeFromList("-D_FORTIFY_SOURCE=1", flags.CFlags)
+		_, flags.CFlags = removeFromList("-D_FORTIFY_SOURCE=2", flags.CFlags)
+		flags.CFlags = append(flags.CFlags, "-U_FORTIFY_SOURCE")
 	}
 
 	if Bool(sanitize.Properties.Sanitize.Cfi) {
@@ -667,7 +674,7 @@ func (sanitize *sanitize) isSanitizerEnabled(t sanitizerType) bool {
 
 func isSanitizableDependencyTag(tag blueprint.DependencyTag) bool {
 	t, ok := tag.(dependencyTag)
-	return ok && t.library || t == reuseObjTag
+	return ok && t.library || t == reuseObjTag || t == objDepTag
 }
 
 // Propagate sanitizer requirements down from binaries

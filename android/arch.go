@@ -527,7 +527,6 @@ type Arch struct {
 	CpuVariant   string
 	Abi          []string
 	ArchFeatures []string
-	Native       bool
 }
 
 func (a Arch) String() string {
@@ -855,149 +854,11 @@ func decodeMultilib(base *ModuleBase, class OsClass) (multilib, extraMultilib st
 	}
 }
 
-func filterArchStructFields(fields []reflect.StructField) (filteredFields []reflect.StructField, filtered bool) {
-	for _, field := range fields {
-		if !proptools.HasTag(field, "android", "arch_variant") {
-			filtered = true
-			continue
-		}
-
-		// The arch_variant field isn't necessary past this point
-		// Instead of wasting space, just remove it. Go also has a
-		// 16-bit limit on structure name length. The name is constructed
-		// based on the Go source representation of the structure, so
-		// the tag names count towards that length.
-		//
-		// TODO: handle the uncommon case of other tags being involved
-		if field.Tag == `android:"arch_variant"` {
-			field.Tag = ""
-		}
-
-		// Recurse into structs
-		switch field.Type.Kind() {
-		case reflect.Struct:
-			var subFiltered bool
-			field.Type, subFiltered = filterArchStruct(field.Type)
-			filtered = filtered || subFiltered
-			if field.Type == nil {
-				continue
-			}
-		case reflect.Ptr:
-			if field.Type.Elem().Kind() == reflect.Struct {
-				nestedType, subFiltered := filterArchStruct(field.Type.Elem())
-				filtered = filtered || subFiltered
-				if nestedType == nil {
-					continue
-				}
-				field.Type = reflect.PtrTo(nestedType)
-			}
-		case reflect.Interface:
-			panic("Interfaces are not supported in arch_variant properties")
-		}
-
-		filteredFields = append(filteredFields, field)
-	}
-
-	return filteredFields, filtered
-}
-
-// filterArchStruct takes a reflect.Type that is either a sturct or a pointer to a struct, and returns a reflect.Type
-// that only contains the fields in the original type that have an `android:"arch_variant"` struct tag, and a bool
-// that is true if the new struct type has fewer fields than the original type.  If there are no fields in the
-// original type with the struct tag it returns nil and true.
-func filterArchStruct(prop reflect.Type) (filteredProp reflect.Type, filtered bool) {
-	var fields []reflect.StructField
-
-	ptr := prop.Kind() == reflect.Ptr
-	if ptr {
-		prop = prop.Elem()
-	}
-
-	for i := 0; i < prop.NumField(); i++ {
-		fields = append(fields, prop.Field(i))
-	}
-
-	filteredFields, filtered := filterArchStructFields(fields)
-
-	if len(filteredFields) == 0 {
-		return nil, true
-	}
-
-	if !filtered {
-		if ptr {
-			return reflect.PtrTo(prop), false
-		}
-		return prop, false
-	}
-
-	ret := reflect.StructOf(filteredFields)
-	if ptr {
-		ret = reflect.PtrTo(ret)
-	}
-
-	return ret, true
-}
-
-// filterArchStruct takes a reflect.Type that is either a sturct or a pointer to a struct, and returns a list of
-// reflect.Type that only contains the fields in the original type that have an `android:"arch_variant"` struct tag,
-// and a bool that is true if the new struct type has fewer fields than the original type.  If there are no fields in
-// the original type with the struct tag it returns nil and true.  Each returned struct type will have a maximum of
-// 10 top level fields in it to attempt to avoid hitting the reflect.StructOf name length limit, although the limit
-// can still be reached with a single struct field with many fields in it.
-func filterArchStructSharded(prop reflect.Type) (filteredProp []reflect.Type, filtered bool) {
-	var fields []reflect.StructField
-
-	ptr := prop.Kind() == reflect.Ptr
-	if ptr {
-		prop = prop.Elem()
-	}
-
-	for i := 0; i < prop.NumField(); i++ {
-		fields = append(fields, prop.Field(i))
-	}
-
-	fields, filtered = filterArchStructFields(fields)
-	if !filtered {
-		if ptr {
-			return []reflect.Type{reflect.PtrTo(prop)}, false
-		}
-		return []reflect.Type{prop}, false
-	}
-
-	if len(fields) == 0 {
-		return nil, true
-	}
-
-	shards := shardFields(fields, 10)
-
-	for _, shard := range shards {
-		s := reflect.StructOf(shard)
-		if ptr {
-			s = reflect.PtrTo(s)
-		}
-		filteredProp = append(filteredProp, s)
-	}
-
-	return filteredProp, true
-}
-
-func shardFields(fields []reflect.StructField, shardSize int) [][]reflect.StructField {
-	ret := make([][]reflect.StructField, 0, (len(fields)+shardSize-1)/shardSize)
-	for len(fields) > shardSize {
-		ret = append(ret, fields[0:shardSize])
-		fields = fields[shardSize:]
-	}
-	if len(fields) > 0 {
-		ret = append(ret, fields)
-	}
-	return ret
-}
-
 // createArchType takes a reflect.Type that is either a struct or a pointer to a struct, and returns a list of
 // reflect.Type that contains the arch-variant properties inside structs for each architecture, os, target, multilib,
 // etc.
 func createArchType(props reflect.Type) []reflect.Type {
-	propShards, _ := filterArchStructSharded(props)
+	propShards, _ := proptools.FilterPropertyStructSharded(props, filterArchStruct)
 	if len(propShards) == 0 {
 		return nil
 	}
@@ -1094,6 +955,23 @@ func createArchType(props reflect.Type) []reflect.Type {
 		}))
 	}
 	return ret
+}
+
+func filterArchStruct(field reflect.StructField, prefix string) (bool, reflect.StructField) {
+	if proptools.HasTag(field, "android", "arch_variant") {
+		// The arch_variant field isn't necessary past this point
+		// Instead of wasting space, just remove it. Go also has a
+		// 16-bit limit on structure name length. The name is constructed
+		// based on the Go source representation of the structure, so
+		// the tag names count towards that length.
+		//
+		// TODO: handle the uncommon case of other tags being involved
+		if field.Tag == `android:"arch_variant"` {
+			field.Tag = ""
+		}
+		return true, field
+	}
+	return false, field
 }
 
 var archPropTypeMap OncePer
@@ -1482,11 +1360,6 @@ func decodeTargetProductVariables(config *config) (map[OsType][]Target, error) {
 			addTarget(Android, *variables.DeviceSecondaryArch,
 				variables.DeviceSecondaryArchVariant, variables.DeviceSecondaryCpuVariant,
 				variables.DeviceSecondaryAbi, NativeBridgeDisabled, nil, nil)
-
-			deviceArches := targets[Android]
-			if deviceArches[0].Arch.ArchType.Multilib == deviceArches[1].Arch.ArchType.Multilib {
-				deviceArches[1].Arch.Native = false
-			}
 		}
 
 		if variables.NativeBridgeArch != nil && *variables.NativeBridgeArch != "" {
@@ -1634,7 +1507,7 @@ func decodeArchSettings(os OsType, archConfigs []archConfig) ([]Target, error) {
 		if err != nil {
 			return nil, err
 		}
-		arch.Native = false
+
 		ret = append(ret, Target{
 			Os:   Android,
 			Arch: arch,
@@ -1663,7 +1536,6 @@ func decodeArch(os OsType, arch string, archVariant, cpuVariant *string, abi []s
 		ArchVariant: stringPtr(archVariant),
 		CpuVariant:  stringPtr(cpuVariant),
 		Abi:         abi,
-		Native:      true,
 	}
 
 	if a.ArchVariant == a.ArchType.Name || a.ArchVariant == "generic" {

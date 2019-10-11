@@ -22,7 +22,7 @@ import (
 type dexpreopter struct {
 	dexpreoptProperties DexpreoptProperties
 
-	installPath         android.OutputPath
+	installPath         android.InstallPath
 	uncompressedDex     bool
 	isSDKLibrary        bool
 	isTest              bool
@@ -94,7 +94,7 @@ func (d *dexpreopter) dexpreoptDisabled(ctx android.ModuleContext) bool {
 	return false
 }
 
-func odexOnSystemOther(ctx android.ModuleContext, installPath android.OutputPath) bool {
+func odexOnSystemOther(ctx android.ModuleContext, installPath android.InstallPath) bool {
 	return dexpreopt.OdexOnSystemOtherByName(ctx.ModuleName(), android.InstallPathToOnDevicePath(ctx, installPath), dexpreoptGlobalConfig(ctx))
 }
 
@@ -125,10 +125,6 @@ func (d *dexpreopter) dexpreopt(ctx android.ModuleContext, dexJarFile android.Mo
 			// If the module is not an SDK library and it's a system server jar, only preopt the primary arch.
 			archs = archs[:1]
 		}
-	}
-	if ctx.Config().SecondArchIsTranslated() {
-		// Only preopt primary arch for translated arch since there is only an image there.
-		archs = archs[:1]
 	}
 
 	var images android.Paths
