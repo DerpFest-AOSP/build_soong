@@ -1389,10 +1389,9 @@ func (c *Module) DepsMutator(actx android.BottomUpMutatorContext) {
 			depTag = headerExportDepTag
 		}
 		if buildStubs {
-			actx.AddFarVariationDependencies([]blueprint.Variation{
-				{Mutator: "arch", Variation: ctx.Target().String()},
-				{Mutator: "image", Variation: c.imageVariation()},
-			}, depTag, lib)
+			actx.AddFarVariationDependencies(append(ctx.Target().Variations(),
+				blueprint.Variation{Mutator: "image", Variation: c.imageVariation()}),
+				depTag, lib)
 		} else {
 			actx.AddVariationDependencies(nil, depTag, lib)
 		}
@@ -1934,7 +1933,11 @@ func (c *Module) depsToPaths(ctx android.ModuleContext) PathDeps {
 
 		if ptr != nil {
 			if !linkFile.Valid() {
-				ctx.ModuleErrorf("module %q missing output file", depName)
+				if !ctx.Config().AllowMissingDependencies() {
+					ctx.ModuleErrorf("module %q missing output file", depName)
+				} else {
+					ctx.AddMissingDependencies([]string{depName})
+				}
 				return
 			}
 			*ptr = append(*ptr, linkFile.Path())
@@ -2150,6 +2153,16 @@ func (c *Module) IsInstallableToApex() bool {
 		return true
 	}
 	return false
+}
+
+func (c *Module) AvailableFor(what string) bool {
+	if linker, ok := c.linker.(interface {
+		availableFor(string) bool
+	}); ok {
+		return c.ApexModuleBase.AvailableFor(what) || linker.availableFor(what)
+	} else {
+		return c.ApexModuleBase.AvailableFor(what)
+	}
 }
 
 func (c *Module) installable() bool {
