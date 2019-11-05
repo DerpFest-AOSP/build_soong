@@ -19,7 +19,18 @@
 blueprint_go_binary {
     name: "bpfix",
     srcs: [
-        "cmd/bpfix.go",
+        "cmd/main.go",
+    ],
+    deps: [
+        "bpfix-cmd",
+    ],
+}
+
+bootstrap_go_package {
+    name: "bpfix-cmd",
+    pkgPath: "android/soong/bpfix/bpfix/cmd",
+    srcs: [
+        "cmd-lib/bpfix.go",
     ],
     deps: [
         "bpfix-lib",
