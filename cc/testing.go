@@ -145,6 +145,18 @@ func GatherRequiredDepsForTest(os android.OsType) string {
 			symbol_file: "",
 		}
 		cc_library {
+			name: "libft2",
+			no_libcrt: true,
+			nocrt: true,
+			system_shared_libs: [],
+			recovery_available: true,
+		}
+		llndk_library {
+			name: "libft2",
+			symbol_file: "",
+			vendor_available: false,
+		}
+		cc_library {
 			name: "libc++_static",
 			no_libcrt: true,
 			nocrt: true,
@@ -190,6 +202,7 @@ func GatherRequiredDepsForTest(os android.OsType) string {
 			name: "crtbegin_so",
 			recovery_available: true,
 			vendor_available: true,
+			stl: "none",
 		}
 
 		cc_object {
@@ -208,6 +221,7 @@ func GatherRequiredDepsForTest(os android.OsType) string {
 			name: "crtend_so",
 			recovery_available: true,
 			vendor_available: true,
+			stl: "none",
 		}
 
 		cc_object {

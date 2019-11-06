@@ -89,9 +89,10 @@ type config struct {
 	ConfigFileName           string
 	ProductVariablesFileName string
 
-	Targets              map[OsType][]Target
-	BuildOsVariant       string
-	BuildOsCommonVariant string
+	Targets             map[OsType][]Target
+	BuildOSTarget       Target // the Target for tools run on the build machine
+	BuildOSCommonTarget Target // the Target for common (java) tools run on the build machine
+	AndroidCommonTarget Target // the Target for common modules for the Android device
 
 	// multilibConflicts for an ArchType is true if there is earlier configured device architecture with the same
 	// multilib value.
@@ -111,8 +112,6 @@ type config struct {
 
 	captureBuild      bool // true for tests, saves build parameters for each module
 	ignoreEnvironment bool // true for tests, returns empty from all Getenv calls
-
-	targetOpenJDK9 bool // Target 1.9
 
 	stopBefore bootstrap.StopBefore
 
@@ -213,9 +212,9 @@ func TestConfig(buildDir string, env map[string]string) Config {
 	config := &config{
 		productVariables: productVariables{
 			DeviceName:                  stringPtr("test_device"),
-			Platform_sdk_version:        intPtr(26),
+			Platform_sdk_version:        intPtr(30),
 			DeviceSystemSdkVersions:     []string{"14", "15"},
-			Platform_systemsdk_versions: []string{"25", "26"},
+			Platform_systemsdk_versions: []string{"29", "30"},
 			AAPTConfig:                  []string{"normal", "large", "xlarge", "hdpi", "xhdpi", "xxhdpi"},
 			AAPTPreferredConfig:         stringPtr("xhdpi"),
 			AAPTCharacteristics:         stringPtr("nosdcard"),
@@ -289,8 +288,9 @@ func TestArchConfig(buildDir string, env map[string]string) Config {
 		config.Targets[BuildOs] = config.Targets[BuildOs][:1]
 	}
 
-	config.BuildOsVariant = config.Targets[BuildOs][0].String()
-	config.BuildOsCommonVariant = getCommonTargets(config.Targets[BuildOs])[0].String()
+	config.BuildOSTarget = config.Targets[BuildOs][0]
+	config.BuildOSCommonTarget = getCommonTargets(config.Targets[BuildOs])[0]
+	config.AndroidCommonTarget = getCommonTargets(config.Targets[Android])[0]
 	config.TestProductVariables.DeviceArch = proptools.StringPtr("arm64")
 	config.TestProductVariables.DeviceArchVariant = proptools.StringPtr("armv8-a")
 	config.TestProductVariables.DeviceSecondaryArch = proptools.StringPtr("arm")
@@ -374,8 +374,11 @@ func NewConfig(srcDir, buildDir string) (Config, error) {
 	}
 
 	config.Targets = targets
-	config.BuildOsVariant = targets[BuildOs][0].String()
-	config.BuildOsCommonVariant = getCommonTargets(targets[BuildOs])[0].String()
+	config.BuildOSTarget = config.Targets[BuildOs][0]
+	config.BuildOSCommonTarget = getCommonTargets(config.Targets[BuildOs])[0]
+	if len(config.Targets[Android]) > 0 {
+		config.AndroidCommonTarget = getCommonTargets(config.Targets[Android])[0]
+	}
 
 	if err := config.fromEnv(); err != nil {
 		return Config{}, err
@@ -386,13 +389,10 @@ func NewConfig(srcDir, buildDir string) (Config, error) {
 
 func (c *config) fromEnv() error {
 	switch c.Getenv("EXPERIMENTAL_JAVA_LANGUAGE_LEVEL_9") {
-	case "":
-		// Nothing, this is the default
-	case "true":
-		// Use -source 9 -target 9
-		c.targetOpenJDK9 = true
+	case "", "true":
+		// Do nothing
 	default:
-		return fmt.Errorf(`Invalid value for EXPERIMENTAL_JAVA_LANGUAGE_LEVEL_9, should be "" or "true"`)
+		return fmt.Errorf("The environment variable EXPERIMENTAL_JAVA_LANGUAGE_LEVEL_9 is no longer supported. Java language level 9 is now the global default.")
 	}
 
 	return nil
@@ -771,11 +771,6 @@ func (c *config) XrefCorpusName() string {
 
 func (c *config) EmitXrefRules() bool {
 	return c.XrefCorpusName() != ""
-}
-
-// Returns true if -source 1.9 -target 1.9 is being passed to javac
-func (c *config) TargetOpenJDK9() bool {
-	return c.targetOpenJDK9
 }
 
 func (c *config) ClangTidy() bool {

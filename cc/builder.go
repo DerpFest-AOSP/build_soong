@@ -46,7 +46,7 @@ var (
 var (
 	pctx = android.NewPackageContext("android/soong/cc")
 
-	cc = pctx.AndroidGomaStaticRule("cc",
+	cc = pctx.AndroidRemoteStaticRule("cc", android.SUPPORTS_BOTH,
 		blueprint.RuleParams{
 			Depfile:     "${out}.d",
 			Deps:        blueprint.DepsGCC,
@@ -55,7 +55,7 @@ var (
 		},
 		"ccCmd", "cFlags")
 
-	ccNoDeps = pctx.AndroidGomaStaticRule("ccNoDeps",
+	ccNoDeps = pctx.AndroidRemoteStaticRule("ccNoDeps", android.SUPPORTS_GOMA,
 		blueprint.RuleParams{
 			Command:     "$relPwd ${config.CcWrapper}$ccCmd -c $cFlags -o $out $in",
 			CommandDeps: []string{"$ccCmd"},
@@ -129,6 +129,17 @@ var (
 			Pool:        darwinStripPool,
 		},
 		"args", "crossCompile")
+
+	_ = pctx.SourcePathVariable("archiveRepackPath", "build/soong/scripts/archive_repack.sh")
+
+	archiveRepack = pctx.AndroidStaticRule("archiveRepack",
+		blueprint.RuleParams{
+			Depfile:     "${out}.d",
+			Deps:        blueprint.DepsGCC,
+			Command:     "CLANG_BIN=${config.ClangBin} $archiveRepackPath -i ${in} -o ${out} -d ${out}.d ${objects}",
+			CommandDeps: []string{"$archiveRepackPath"},
+		},
+		"objects")
 
 	emptyFile = pctx.AndroidStaticRule("emptyFile",
 		blueprint.RuleParams{
@@ -864,6 +875,20 @@ func TransformCoverageFilesToZip(ctx android.ModuleContext,
 	}
 
 	return android.OptionalPath{}
+}
+
+func TransformArchiveRepack(ctx android.ModuleContext, inputFile android.Path,
+	outputFile android.WritablePath, objects []string) {
+
+	ctx.Build(pctx, android.BuildParams{
+		Rule:        archiveRepack,
+		Description: "Repack archive " + outputFile.Base(),
+		Output:      outputFile,
+		Input:       inputFile,
+		Args: map[string]string{
+			"objects": strings.Join(objects, " "),
+		},
+	})
 }
 
 func gccCmd(toolchain config.Toolchain, cmd string) string {

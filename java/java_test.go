@@ -148,9 +148,9 @@ func testContext(bp string, fs map[string][]byte) *android.TestContext {
 		"prebuilts/sdk/17/public/android.jar":         nil,
 		"prebuilts/sdk/17/public/framework.aidl":      nil,
 		"prebuilts/sdk/17/system/android.jar":         nil,
-		"prebuilts/sdk/25/public/android.jar":         nil,
-		"prebuilts/sdk/25/public/framework.aidl":      nil,
-		"prebuilts/sdk/25/system/android.jar":         nil,
+		"prebuilts/sdk/29/public/android.jar":         nil,
+		"prebuilts/sdk/29/public/framework.aidl":      nil,
+		"prebuilts/sdk/29/system/android.jar":         nil,
 		"prebuilts/sdk/current/core/android.jar":      nil,
 		"prebuilts/sdk/current/public/android.jar":    nil,
 		"prebuilts/sdk/current/public/framework.aidl": nil,
@@ -1073,29 +1073,31 @@ func checkPatchModuleFlag(t *testing.T, ctx *android.TestContext, moduleName str
 }
 
 func TestPatchModule(t *testing.T) {
-	bp := `
-		java_library {
-			name: "foo",
-			srcs: ["a.java"],
-		}
-
-		java_library {
-			name: "bar",
-			srcs: ["b.java"],
-			sdk_version: "none",
-			system_modules: "none",
-			patch_module: "java.base",
-		}
-
-		java_library {
-			name: "baz",
-			srcs: ["c.java"],
-			patch_module: "java.base",
-		}
-	`
-
 	t.Run("Java language level 8", func(t *testing.T) {
-		// Test default javac -source 1.8 -target 1.8
+		// Test with legacy javac -source 1.8 -target 1.8
+		bp := `
+			java_library {
+				name: "foo",
+				srcs: ["a.java"],
+				java_version: "1.8",
+			}
+
+			java_library {
+				name: "bar",
+				srcs: ["b.java"],
+				sdk_version: "none",
+				system_modules: "none",
+				patch_module: "java.base",
+				java_version: "1.8",
+			}
+
+			java_library {
+				name: "baz",
+				srcs: ["c.java"],
+				patch_module: "java.base",
+				java_version: "1.8",
+			}
+		`
 		ctx, _ := testJava(t, bp)
 
 		checkPatchModuleFlag(t, ctx, "foo", "")
@@ -1104,10 +1106,28 @@ func TestPatchModule(t *testing.T) {
 	})
 
 	t.Run("Java language level 9", func(t *testing.T) {
-		// Test again with javac -source 9 -target 9
-		config := testConfig(map[string]string{"EXPERIMENTAL_JAVA_LANGUAGE_LEVEL_9": "true"})
-		ctx := testContext(bp, nil)
-		run(t, ctx, config)
+		// Test with default javac -source 9 -target 9
+		bp := `
+			java_library {
+				name: "foo",
+				srcs: ["a.java"],
+			}
+
+			java_library {
+				name: "bar",
+				srcs: ["b.java"],
+				sdk_version: "none",
+				system_modules: "none",
+				patch_module: "java.base",
+			}
+
+			java_library {
+				name: "baz",
+				srcs: ["c.java"],
+				patch_module: "java.base",
+			}
+		`
+		ctx, _ := testJava(t, bp)
 
 		checkPatchModuleFlag(t, ctx, "foo", "")
 		expected := "java.base=.:" + buildDir

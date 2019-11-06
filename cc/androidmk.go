@@ -36,10 +36,10 @@ type AndroidMkContext interface {
 	Arch() android.Arch
 	Os() android.OsType
 	Host() bool
-	useVndk() bool
+	UseVndk() bool
 	vndkVersion() string
 	static() bool
-	inRecovery() bool
+	InRecovery() bool
 }
 
 type subAndroidMkProvider interface {
@@ -89,9 +89,9 @@ func (c *Module) AndroidMk() android.AndroidMkData {
 					fmt.Fprintln(w, "LOCAL_WHOLE_STATIC_LIBRARIES := "+strings.Join(c.Properties.AndroidMkWholeStaticLibs, " "))
 				}
 				fmt.Fprintln(w, "LOCAL_SOONG_LINK_TYPE :=", c.makeLinkType)
-				if c.useVndk() {
+				if c.UseVndk() {
 					fmt.Fprintln(w, "LOCAL_USE_VNDK := true")
-					if c.isVndk() && !c.static() {
+					if c.IsVndk() && !c.static() {
 						fmt.Fprintln(w, "LOCAL_SOONG_VNDK_VERSION := "+c.vndkVersion())
 						// VNDK libraries available to vendor are not installed because
 						// they are packaged in VNDK APEX and installed by APEX packages (apex/apex.go)
@@ -153,10 +153,10 @@ func makeOverrideModuleNames(ctx AndroidMkContext, overrides []string) []string 
 func (library *libraryDecorator) androidMkWriteExportedFlags(w io.Writer) {
 	exportedFlags := library.exportedFlags()
 	for _, dir := range library.exportedDirs() {
-		exportedFlags = append(exportedFlags, "-I"+dir)
+		exportedFlags = append(exportedFlags, "-I"+dir.String())
 	}
 	for _, dir := range library.exportedSystemDirs() {
-		exportedFlags = append(exportedFlags, "-isystem "+dir)
+		exportedFlags = append(exportedFlags, "-isystem "+dir.String())
 	}
 	if len(exportedFlags) > 0 {
 		fmt.Fprintln(w, "LOCAL_EXPORT_CFLAGS :=", strings.Join(exportedFlags, " "))
@@ -229,7 +229,7 @@ func (library *libraryDecorator) AndroidMk(ctx AndroidMkContext, ret *android.An
 		})
 	}
 	if len(library.Properties.Stubs.Versions) > 0 &&
-		android.DirectlyInAnyApex(ctx, ctx.Name()) && !ctx.inRecovery() && !ctx.useVndk() &&
+		android.DirectlyInAnyApex(ctx, ctx.Name()) && !ctx.InRecovery() && !ctx.UseVndk() &&
 		!ctx.static() {
 		if !library.buildStubs() {
 			ret.SubName = ".bootstrap"
@@ -313,15 +313,18 @@ func (fuzz *fuzzBinary) AndroidMk(ctx AndroidMkContext, ret *android.AndroidMkDa
 
 	var fuzzFiles []string
 	for _, d := range fuzz.corpus {
-		rel := d.Rel()
-		path := d.String()
-		path = strings.TrimSuffix(path, rel)
-		fuzzFiles = append(fuzzFiles, path+":corpus/"+d.Base())
+		fuzzFiles = append(fuzzFiles,
+			filepath.Dir(fuzz.corpusIntermediateDir.String())+":corpus/"+d.Base())
 	}
 
 	if fuzz.dictionary != nil {
-		path := strings.TrimSuffix(fuzz.dictionary.String(), fuzz.dictionary.Rel())
-		fuzzFiles = append(fuzzFiles, path+":"+fuzz.dictionary.Base())
+		fuzzFiles = append(fuzzFiles,
+			filepath.Dir(fuzz.dictionary.String())+":"+fuzz.dictionary.Base())
+	}
+
+	if fuzz.config != nil {
+		fuzzFiles = append(fuzzFiles,
+			filepath.Dir(fuzz.config.String())+":config.json")
 	}
 
 	if len(fuzzFiles) > 0 {

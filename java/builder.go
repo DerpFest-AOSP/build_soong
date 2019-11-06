@@ -38,7 +38,7 @@ var (
 	// this, all java rules write into separate directories and then are combined into a .jar file
 	// (if the rule produces .class files) or a .srcjar file (if the rule produces .java files).
 	// .srcjar files are unzipped into a temporary directory when compiled with javac.
-	javac = pctx.AndroidGomaStaticRule("javac",
+	javac = pctx.AndroidRemoteStaticRule("javac", android.SUPPORTS_GOMA,
 		blueprint.RuleParams{
 			Command: `rm -rf "$outDir" "$annoDir" "$srcJarDir" && mkdir -p "$outDir" "$annoDir" "$srcJarDir" && ` +
 				`${config.ZipSyncCmd} -d $srcJarDir -l $srcJarDir/list -f "*.java" $srcJars && ` +
@@ -182,15 +182,16 @@ func init() {
 }
 
 type javaBuilderFlags struct {
-	javacFlags    string
-	bootClasspath classpath
-	classpath     classpath
-	processorPath classpath
-	processor     string
-	systemModules *systemModules
-	aidlFlags     string
-	aidlDeps      android.Paths
-	javaVersion   string
+	javacFlags     string
+	bootClasspath  classpath
+	classpath      classpath
+	java9Classpath classpath
+	processorPath  classpath
+	processor      string
+	systemModules  *systemModules
+	aidlFlags      string
+	aidlDeps       android.Paths
+	javaVersion    javaVersion
 
 	errorProneExtraJavacFlags string
 	errorProneProcessorPath   classpath
@@ -237,12 +238,14 @@ func emitXrefRule(ctx android.ModuleContext, xrefFile android.WritablePath, idx 
 	flags javaBuilderFlags, deps android.Paths) {
 
 	deps = append(deps, srcJars...)
+	classpath := flags.classpath
 
 	var bootClasspath string
-	if flags.javaVersion == "1.9" {
+	if flags.javaVersion.usesJavaModules() {
 		var systemModuleDeps android.Paths
 		bootClasspath, systemModuleDeps = flags.systemModules.FormJavaSystemModulesPath(ctx.Device())
 		deps = append(deps, systemModuleDeps...)
+		classpath = append(flags.java9Classpath, classpath...)
 	} else {
 		deps = append(deps, flags.bootClasspath...)
 		if len(flags.bootClasspath) == 0 && ctx.Device() {
@@ -254,7 +257,7 @@ func emitXrefRule(ctx android.ModuleContext, xrefFile android.WritablePath, idx 
 		}
 	}
 
-	deps = append(deps, flags.classpath...)
+	deps = append(deps, classpath...)
 	deps = append(deps, flags.processorPath...)
 
 	processor := "-proc:none"
@@ -277,9 +280,9 @@ func emitXrefRule(ctx android.ModuleContext, xrefFile android.WritablePath, idx 
 			Args: map[string]string{
 				"annoDir":       android.PathForModuleOut(ctx, intermediatesDir, "anno").String(),
 				"bootClasspath": bootClasspath,
-				"classpath":     flags.classpath.FormJavaClassPath("-classpath"),
+				"classpath":     classpath.FormJavaClassPath("-classpath"),
 				"javacFlags":    flags.javacFlags,
-				"javaVersion":   flags.javaVersion,
+				"javaVersion":   flags.javaVersion.String(),
 				"outDir":        android.PathForModuleOut(ctx, "javac", "classes.xref").String(),
 				"processorpath": flags.processorPath.FormJavaClassPath("-processorpath"),
 				"processor":     processor,
@@ -294,17 +297,28 @@ func TransformJavaToHeaderClasses(ctx android.ModuleContext, outputFile android.
 
 	var deps android.Paths
 	deps = append(deps, srcJars...)
-	deps = append(deps, flags.bootClasspath...)
-	deps = append(deps, flags.classpath...)
+
+	classpath := flags.classpath
 
 	var bootClasspath string
-	if len(flags.bootClasspath) == 0 && ctx.Device() {
-		// explicitly specify -bootclasspath "" if the bootclasspath is empty to
-		// ensure java does not fall back to the default bootclasspath.
-		bootClasspath = `--bootclasspath ""`
+	if flags.javaVersion.usesJavaModules() {
+		var systemModuleDeps android.Paths
+		bootClasspath, systemModuleDeps = flags.systemModules.FormTurbineSystemModulesPath(ctx.Device())
+		deps = append(deps, systemModuleDeps...)
+		classpath = append(flags.java9Classpath, classpath...)
 	} else {
-		bootClasspath = strings.Join(flags.bootClasspath.FormTurbineClasspath("--bootclasspath "), " ")
+		deps = append(deps, flags.bootClasspath...)
+		if len(flags.bootClasspath) == 0 && ctx.Device() {
+			// explicitly specify -bootclasspath "" if the bootclasspath is empty to
+			// ensure turbine does not fall back to the default bootclasspath.
+			bootClasspath = `--bootclasspath ""`
+		} else {
+			bootClasspath = strings.Join(flags.bootClasspath.FormTurbineClasspath("--bootclasspath "), " ")
+		}
 	}
+
+	deps = append(deps, classpath...)
+	deps = append(deps, flags.processorPath...)
 
 	ctx.Build(pctx, android.BuildParams{
 		Rule:        turbine,
@@ -316,9 +330,9 @@ func TransformJavaToHeaderClasses(ctx android.ModuleContext, outputFile android.
 			"javacFlags":    flags.javacFlags,
 			"bootClasspath": bootClasspath,
 			"srcJars":       strings.Join(srcJars.Strings(), " "),
-			"classpath":     strings.Join(flags.classpath.FormTurbineClasspath("--classpath "), " "),
+			"classpath":     strings.Join(classpath.FormTurbineClasspath("--classpath "), " "),
 			"outDir":        android.PathForModuleOut(ctx, "turbine", "classes").String(),
-			"javaVersion":   flags.javaVersion,
+			"javaVersion":   flags.javaVersion.String(),
 		},
 	})
 }
@@ -339,11 +353,14 @@ func transformJavaToClasses(ctx android.ModuleContext, outputFile android.Writab
 
 	deps = append(deps, srcJars...)
 
+	classpath := flags.classpath
+
 	var bootClasspath string
-	if flags.javaVersion == "1.9" {
+	if flags.javaVersion.usesJavaModules() {
 		var systemModuleDeps android.Paths
 		bootClasspath, systemModuleDeps = flags.systemModules.FormJavaSystemModulesPath(ctx.Device())
 		deps = append(deps, systemModuleDeps...)
+		classpath = append(flags.java9Classpath, classpath...)
 	} else {
 		deps = append(deps, flags.bootClasspath...)
 		if len(flags.bootClasspath) == 0 && ctx.Device() {
@@ -355,7 +372,7 @@ func transformJavaToClasses(ctx android.ModuleContext, outputFile android.Writab
 		}
 	}
 
-	deps = append(deps, flags.classpath...)
+	deps = append(deps, classpath...)
 	deps = append(deps, flags.processorPath...)
 
 	processor := "-proc:none"
@@ -381,14 +398,14 @@ func transformJavaToClasses(ctx android.ModuleContext, outputFile android.Writab
 		Args: map[string]string{
 			"javacFlags":    flags.javacFlags,
 			"bootClasspath": bootClasspath,
-			"classpath":     flags.classpath.FormJavaClassPath("-classpath"),
+			"classpath":     classpath.FormJavaClassPath("-classpath"),
 			"processorpath": flags.processorPath.FormJavaClassPath("-processorpath"),
 			"processor":     processor,
 			"srcJars":       strings.Join(srcJars.Strings(), " "),
 			"srcJarDir":     android.PathForModuleOut(ctx, intermediatesDir, srcJarDir).String(),
 			"outDir":        android.PathForModuleOut(ctx, intermediatesDir, outDir).String(),
 			"annoDir":       android.PathForModuleOut(ctx, intermediatesDir, annoDir).String(),
-			"javaVersion":   flags.javaVersion,
+			"javaVersion":   flags.javaVersion.String(),
 		},
 	})
 }
@@ -550,14 +567,27 @@ type systemModules struct {
 	deps android.Paths
 }
 
-// Returns a --system argument in the form javac expects with -source 1.9.  If forceEmpty is true,
-// returns --system=none if the list is empty to ensure javac does not fall back to the default
-// system modules.
+// Returns a --system argument in the form javac expects with -source 1.9 and the list of files to
+// depend on.  If forceEmpty is true, returns --system=none if the list is empty to ensure javac
+// does not fall back to the default system modules.
 func (x *systemModules) FormJavaSystemModulesPath(forceEmpty bool) (string, android.Paths) {
 	if x != nil {
 		return "--system=" + x.dir.String(), x.deps
 	} else if forceEmpty {
 		return "--system=none", nil
+	} else {
+		return "", nil
+	}
+}
+
+// Returns a --system argument in the form turbine expects with -source 1.9 and the list of files to
+// depend on.  If forceEmpty is true, returns --bootclasspath "" if the list is empty to ensure turbine
+// does not fall back to the default bootclasspath.
+func (x *systemModules) FormTurbineSystemModulesPath(forceEmpty bool) (string, android.Paths) {
+	if x != nil {
+		return "--system " + x.dir.String(), x.deps
+	} else if forceEmpty {
+		return `--bootclasspath ""`, nil
 	} else {
 		return "", nil
 	}

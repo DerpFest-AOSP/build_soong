@@ -93,6 +93,20 @@ func SortedStringKeys(m interface{}) []string {
 	return s
 }
 
+func SortedStringMapValues(m interface{}) []string {
+	v := reflect.ValueOf(m)
+	if v.Kind() != reflect.Map {
+		panic(fmt.Sprintf("%#v is not a map", m))
+	}
+	keys := v.MapKeys()
+	s := make([]string, 0, len(keys))
+	for _, key := range keys {
+		s = append(s, v.MapIndex(key).String())
+	}
+	sort.Strings(s)
+	return s
+}
+
 func IndexList(s string, list []string) int {
 	for i, l := range list {
 		if l == s {
@@ -351,4 +365,15 @@ func ShardStrings(s []string, shardSize int) [][]string {
 		ret = append(ret, s)
 	}
 	return ret
+}
+
+func CheckDuplicate(values []string) (duplicate string, found bool) {
+	seen := make(map[string]string)
+	for _, v := range values {
+		if duplicate, found = seen[v]; found {
+			return
+		}
+		seen[v] = v
+	}
+	return
 }
