@@ -53,6 +53,14 @@ func TransformSrctoDylib(ctx android.ModuleContext, mainSrc android.Path, deps P
 	transformSrctoCrate(ctx, mainSrc, deps.RLibs, deps.DyLibs, deps.ProcMacros, deps.StaticLibs, deps.SharedLibs, deps.CrtBegin, deps.CrtEnd, flags, outputFile, "dylib", includeDirs)
 }
 
+func TransformSrctoStatic(ctx android.ModuleContext, mainSrc android.Path, deps PathDeps, flags Flags, outputFile android.WritablePath, includeDirs []string) {
+	transformSrctoCrate(ctx, mainSrc, deps.RLibs, deps.DyLibs, deps.ProcMacros, deps.StaticLibs, deps.SharedLibs, deps.CrtBegin, deps.CrtEnd, flags, outputFile, "staticlib", includeDirs)
+}
+
+func TransformSrctoShared(ctx android.ModuleContext, mainSrc android.Path, deps PathDeps, flags Flags, outputFile android.WritablePath, includeDirs []string) {
+	transformSrctoCrate(ctx, mainSrc, deps.RLibs, deps.DyLibs, deps.ProcMacros, deps.StaticLibs, deps.SharedLibs, deps.CrtBegin, deps.CrtEnd, flags, outputFile, "cdylib", includeDirs)
+}
+
 func TransformSrctoProcMacro(ctx android.ModuleContext, mainSrc android.Path, deps PathDeps, flags Flags, outputFile android.WritablePath, includeDirs []string) {
 	transformSrctoCrate(ctx, mainSrc, deps.RLibs, deps.DyLibs, deps.ProcMacros, deps.StaticLibs, deps.SharedLibs, deps.CrtBegin, deps.CrtEnd, flags, outputFile, "proc-macro", includeDirs)
 }
@@ -80,7 +88,9 @@ func transformSrctoCrate(ctx android.ModuleContext, main android.Path,
 	rustcFlags = append(rustcFlags, flags.GlobalRustFlags...)
 	rustcFlags = append(rustcFlags, flags.RustFlags...)
 	rustcFlags = append(rustcFlags, "--crate-type="+crate_type)
-	rustcFlags = append(rustcFlags, "--crate-name="+crate_name)
+	if crate_name != "" {
+		rustcFlags = append(rustcFlags, "--crate-name="+crate_name)
+	}
 	if targetTriple != "" {
 		rustcFlags = append(rustcFlags, "--target="+targetTriple)
 		linkFlags = append(linkFlags, "-target "+targetTriple)

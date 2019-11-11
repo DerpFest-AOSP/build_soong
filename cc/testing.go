@@ -145,6 +145,18 @@ func GatherRequiredDepsForTest(os android.OsType) string {
 			symbol_file: "",
 		}
 		cc_library {
+			name: "libft2",
+			no_libcrt: true,
+			nocrt: true,
+			system_shared_libs: [],
+			recovery_available: true,
+		}
+		llndk_library {
+			name: "libft2",
+			symbol_file: "",
+			vendor_available: false,
+		}
+		cc_library {
 			name: "libc++_static",
 			no_libcrt: true,
 			nocrt: true,
@@ -257,6 +269,7 @@ func CreateTestContext(bp string, fs map[string][]byte,
 	ctx.RegisterModuleType("cc_object", android.ModuleFactoryAdaptor(ObjectFactory))
 	ctx.RegisterModuleType("filegroup", android.ModuleFactoryAdaptor(android.FileGroupFactory))
 	ctx.RegisterModuleType("vndk_prebuilt_shared", android.ModuleFactoryAdaptor(VndkPrebuiltSharedFactory))
+	ctx.RegisterModuleType("vndk_libraries_txt", android.ModuleFactoryAdaptor(VndkLibrariesTxtFactory))
 	ctx.PreDepsMutators(func(ctx android.RegisterMutatorsContext) {
 		ctx.BottomUp("image", ImageMutator).Parallel()
 		ctx.BottomUp("link", LinkageMutator).Parallel()

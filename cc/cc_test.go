@@ -213,7 +213,7 @@ func checkVndkModule(t *testing.T, ctx *android.TestContext, name, subDir string
 	t.Helper()
 
 	mod := ctx.ModuleForTests(name, vendorVariant).Module().(*Module)
-	if !mod.hasVendorVariant() {
+	if !mod.HasVendorVariant() {
 		t.Errorf("%q must have vendor variant", name)
 	}
 
@@ -230,8 +230,8 @@ func checkVndkModule(t *testing.T, ctx *android.TestContext, name, subDir string
 	if mod.vndkdep == nil {
 		t.Fatalf("%q must have `vndkdep`", name)
 	}
-	if !mod.isVndk() {
-		t.Errorf("%q isVndk() must equal to true", name)
+	if !mod.IsVndk() {
+		t.Errorf("%q IsVndk() must equal to true", name)
 	}
 	if mod.isVndkSp() != isVndkSp {
 		t.Errorf("%q isVndkSp() must equal to %t", name, isVndkSp)
@@ -248,20 +248,45 @@ func checkVndkModule(t *testing.T, ctx *android.TestContext, name, subDir string
 	}
 }
 
-func checkVndkSnapshot(t *testing.T, ctx *android.TestContext, name, subDir, variant string) {
+func checkVndkSnapshot(t *testing.T, ctx *android.TestContext, moduleName, snapshotFilename, subDir, variant string) {
 	vndkSnapshot := ctx.SingletonForTests("vndk-snapshot")
 
-	snapshotPath := filepath.Join(subDir, name+".so")
-	mod := ctx.ModuleForTests(name, variant).Module().(*Module)
-	if !mod.outputFile.Valid() {
-		t.Errorf("%q must have output\n", name)
+	mod, ok := ctx.ModuleForTests(moduleName, variant).Module().(android.OutputFileProducer)
+	if !ok {
+		t.Errorf("%q must have output\n", moduleName)
 		return
 	}
+	outputFiles, err := mod.OutputFiles("")
+	if err != nil || len(outputFiles) != 1 {
+		t.Errorf("%q must have single output\n", moduleName)
+		return
+	}
+	snapshotPath := filepath.Join(subDir, snapshotFilename)
 
 	out := vndkSnapshot.Output(snapshotPath)
-	if out.Input != mod.outputFile.Path() {
-		t.Errorf("The input of VNDK snapshot must be %q, but %q", out.Input.String(), mod.outputFile.String())
+	if out.Input.String() != outputFiles[0].String() {
+		t.Errorf("The input of VNDK snapshot must be %q, but %q", out.Input.String(), outputFiles[0])
 	}
+}
+
+func checkWriteFileOutput(t *testing.T, params android.TestingBuildParams, expected []string) {
+	t.Helper()
+	assertString(t, params.Rule.String(), android.WriteFile.String())
+	actual := strings.FieldsFunc(strings.ReplaceAll(params.Args["content"], "\\n", "\n"), func(r rune) bool { return r == '\n' })
+	assertArrayString(t, actual, expected)
+}
+
+func checkVndkOutput(t *testing.T, ctx *android.TestContext, output string, expected []string) {
+	t.Helper()
+	vndkSnapshot := ctx.SingletonForTests("vndk-snapshot")
+	checkWriteFileOutput(t, vndkSnapshot.Output(output), expected)
+}
+
+func checkVndkLibrariesOutput(t *testing.T, ctx *android.TestContext, module string, expected []string) {
+	t.Helper()
+	vndkLibraries := ctx.ModuleForTests(module, "")
+	output := insertVndkVersion(module, "VER")
+	checkWriteFileOutput(t, vndkLibraries.Output(output), expected)
 }
 
 func TestVndk(t *testing.T) {
@@ -286,6 +311,7 @@ func TestVndk(t *testing.T) {
 				enabled: true,
 			},
 			nocrt: true,
+			stem: "libvndk-private",
 		}
 
 		cc_library {
@@ -296,6 +322,7 @@ func TestVndk(t *testing.T) {
 				support_system_process: true,
 			},
 			nocrt: true,
+			suffix: "-x",
 		}
 
 		cc_library {
@@ -306,6 +333,26 @@ func TestVndk(t *testing.T) {
 				support_system_process: true,
 			},
 			nocrt: true,
+			target: {
+				vendor: {
+					suffix: "-x",
+				},
+			},
+		}
+		vndk_libraries_txt {
+			name: "llndk.libraries.txt",
+		}
+		vndk_libraries_txt {
+			name: "vndkcore.libraries.txt",
+		}
+		vndk_libraries_txt {
+			name: "vndksp.libraries.txt",
+		}
+		vndk_libraries_txt {
+			name: "vndkprivate.libraries.txt",
+		}
+		vndk_libraries_txt {
+			name: "vndkcorevariant.libraries.txt",
 		}
 	`, config)
 
@@ -332,10 +379,118 @@ func TestVndk(t *testing.T) {
 	variant := "android_arm64_armv8-a_vendor.VER_shared"
 	variant2nd := "android_arm_armv7-a-neon_vendor.VER_shared"
 
-	checkVndkSnapshot(t, ctx, "libvndk", vndkCoreLibPath, variant)
-	checkVndkSnapshot(t, ctx, "libvndk", vndkCoreLib2ndPath, variant2nd)
-	checkVndkSnapshot(t, ctx, "libvndk_sp", vndkSpLibPath, variant)
-	checkVndkSnapshot(t, ctx, "libvndk_sp", vndkSpLib2ndPath, variant2nd)
+	checkVndkSnapshot(t, ctx, "libvndk", "libvndk.so", vndkCoreLibPath, variant)
+	checkVndkSnapshot(t, ctx, "libvndk", "libvndk.so", vndkCoreLib2ndPath, variant2nd)
+	checkVndkSnapshot(t, ctx, "libvndk_sp", "libvndk_sp-x.so", vndkSpLibPath, variant)
+	checkVndkSnapshot(t, ctx, "libvndk_sp", "libvndk_sp-x.so", vndkSpLib2ndPath, variant2nd)
+
+	snapshotConfigsPath := filepath.Join(snapshotVariantPath, "configs")
+	checkVndkSnapshot(t, ctx, "llndk.libraries.txt", "llndk.libraries.txt", snapshotConfigsPath, "")
+	checkVndkSnapshot(t, ctx, "vndkcore.libraries.txt", "vndkcore.libraries.txt", snapshotConfigsPath, "")
+	checkVndkSnapshot(t, ctx, "vndksp.libraries.txt", "vndksp.libraries.txt", snapshotConfigsPath, "")
+	checkVndkSnapshot(t, ctx, "vndkprivate.libraries.txt", "vndkprivate.libraries.txt", snapshotConfigsPath, "")
+
+	checkVndkOutput(t, ctx, "vndk/vndk.libraries.txt", []string{
+		"LLNDK: libc.so",
+		"LLNDK: libdl.so",
+		"LLNDK: libft2.so",
+		"LLNDK: libm.so",
+		"VNDK-SP: libc++.so",
+		"VNDK-SP: libvndk_sp-x.so",
+		"VNDK-SP: libvndk_sp_private-x.so",
+		"VNDK-core: libvndk-private.so",
+		"VNDK-core: libvndk.so",
+		"VNDK-private: libft2.so",
+		"VNDK-private: libvndk-private.so",
+		"VNDK-private: libvndk_sp_private-x.so",
+	})
+	checkVndkLibrariesOutput(t, ctx, "llndk.libraries.txt", []string{"libc.so", "libdl.so", "libft2.so", "libm.so"})
+	checkVndkLibrariesOutput(t, ctx, "vndkcore.libraries.txt", []string{"libvndk-private.so", "libvndk.so"})
+	checkVndkLibrariesOutput(t, ctx, "vndkprivate.libraries.txt", []string{"libft2.so", "libvndk-private.so", "libvndk_sp_private-x.so"})
+	checkVndkLibrariesOutput(t, ctx, "vndksp.libraries.txt", []string{"libc++.so", "libvndk_sp-x.so", "libvndk_sp_private-x.so"})
+	checkVndkLibrariesOutput(t, ctx, "vndkcorevariant.libraries.txt", nil)
+}
+
+func TestVndkLibrariesTxtAndroidMk(t *testing.T) {
+	config := android.TestArchConfig(buildDir, nil)
+	config.TestProductVariables.DeviceVndkVersion = StringPtr("current")
+	config.TestProductVariables.Platform_vndk_version = StringPtr("VER")
+	ctx := testCcWithConfig(t, `
+		vndk_libraries_txt {
+			name: "llndk.libraries.txt",
+		}`, config)
+
+	module := ctx.ModuleForTests("llndk.libraries.txt", "")
+	entries := android.AndroidMkEntriesForTest(t, config, "", module.Module())
+	assertArrayString(t, entries.EntryMap["LOCAL_MODULE_STEM"], []string{"llndk.libraries.VER.txt"})
+}
+
+func TestVndkUsingCoreVariant(t *testing.T) {
+	config := android.TestArchConfig(buildDir, nil)
+	config.TestProductVariables.DeviceVndkVersion = StringPtr("current")
+	config.TestProductVariables.Platform_vndk_version = StringPtr("VER")
+	config.TestProductVariables.VndkUseCoreVariant = BoolPtr(true)
+
+	setVndkMustUseVendorVariantListForTest(config, []string{"libvndk"})
+
+	ctx := testCcWithConfig(t, `
+		cc_library {
+			name: "libvndk",
+			vendor_available: true,
+			vndk: {
+				enabled: true,
+			},
+			nocrt: true,
+		}
+
+		cc_library {
+			name: "libvndk_sp",
+			vendor_available: true,
+			vndk: {
+				enabled: true,
+				support_system_process: true,
+			},
+			nocrt: true,
+		}
+
+		cc_library {
+			name: "libvndk2",
+			vendor_available: false,
+			vndk: {
+				enabled: true,
+			},
+			nocrt: true,
+		}
+
+		vndk_libraries_txt {
+			name: "vndkcorevariant.libraries.txt",
+		}
+	`, config)
+
+	checkVndkLibrariesOutput(t, ctx, "vndkcorevariant.libraries.txt", []string{"libc++.so", "libvndk2.so", "libvndk_sp.so"})
+}
+
+func TestVndkWhenVndkVersionIsNotSet(t *testing.T) {
+	ctx := testCcNoVndk(t, `
+		cc_library {
+			name: "libvndk",
+			vendor_available: true,
+			vndk: {
+				enabled: true,
+			},
+			nocrt: true,
+		}
+	`)
+
+	checkVndkOutput(t, ctx, "vndk/vndk.libraries.txt", []string{
+		"LLNDK: libc.so",
+		"LLNDK: libdl.so",
+		"LLNDK: libft2.so",
+		"LLNDK: libm.so",
+		"VNDK-SP: libc++.so",
+		"VNDK-core: libvndk.so",
+		"VNDK-private: libft2.so",
+	})
 }
 
 func TestVndkDepError(t *testing.T) {
@@ -1361,14 +1516,14 @@ func TestMakeLinkType(t *testing.T) {
 		symbol_file: "",
 	}`, config)
 
-	assertArrayString(t, *vndkCoreLibraries(config),
+	assertMapKeys(t, vndkCoreLibraries(config),
 		[]string{"libvndk", "libvndkprivate"})
-	assertArrayString(t, *vndkSpLibraries(config),
+	assertMapKeys(t, vndkSpLibraries(config),
 		[]string{"libc++", "libvndksp"})
-	assertArrayString(t, *llndkLibraries(config),
-		[]string{"libc", "libdl", "libllndk", "libllndkprivate", "libm"})
-	assertArrayString(t, *vndkPrivateLibraries(config),
-		[]string{"libllndkprivate", "libvndkprivate"})
+	assertMapKeys(t, llndkLibraries(config),
+		[]string{"libc", "libdl", "libft2", "libllndk", "libllndkprivate", "libm"})
+	assertMapKeys(t, vndkPrivateLibraries(config),
+		[]string{"libft2", "libllndkprivate", "libvndkprivate"})
 
 	vendorVariant27 := "android_arm64_armv8-a_vendor.27_shared"
 
@@ -2239,7 +2394,7 @@ func TestStaticExecutable(t *testing.T) {
 	variant := "android_arm64_armv8-a_core"
 	binModuleRule := ctx.ModuleForTests("static_test", variant).Rule("ld")
 	libFlags := binModuleRule.Args["libFlags"]
-	systemStaticLibs := []string{"libc.a", "libm.a", "libdl.a"}
+	systemStaticLibs := []string{"libc.a", "libm.a"}
 	for _, lib := range systemStaticLibs {
 		if !strings.Contains(libFlags, lib) {
 			t.Errorf("Static lib %q was not found in %q", lib, libFlags)
@@ -2347,6 +2502,11 @@ func assertArrayString(t *testing.T, got, expected []string) {
 			return
 		}
 	}
+}
+
+func assertMapKeys(t *testing.T, m map[string]string, expected []string) {
+	t.Helper()
+	assertArrayString(t, android.SortedStringKeys(m), expected)
 }
 
 func TestDefaults(t *testing.T) {

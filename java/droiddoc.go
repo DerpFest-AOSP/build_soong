@@ -404,7 +404,7 @@ func JavadocHostFactory() android.Module {
 var _ android.OutputFileProducer = (*Javadoc)(nil)
 
 func (j *Javadoc) sdkVersion() string {
-	return proptools.StringDefault(j.properties.Sdk_version, defaultSdkVersion(j))
+	return String(j.properties.Sdk_version)
 }
 
 func (j *Javadoc) systemModules() string {
@@ -422,25 +422,16 @@ func (j *Javadoc) targetSdkVersion() string {
 func (j *Javadoc) addDeps(ctx android.BottomUpMutatorContext) {
 	if ctx.Device() {
 		sdkDep := decodeSdkDep(ctx, sdkContext(j))
-		if sdkDep.hasStandardLibs() {
-			if sdkDep.useDefaultLibs {
-				ctx.AddVariationDependencies(nil, bootClasspathTag, config.DefaultBootclasspathLibraries...)
-				if ctx.Config().TargetOpenJDK9() {
-					ctx.AddVariationDependencies(nil, systemModulesTag, config.DefaultSystemModules)
-				}
-				if sdkDep.hasFrameworkLibs() {
-					ctx.AddVariationDependencies(nil, libTag, config.DefaultLibraries...)
-				}
-			} else if sdkDep.useModule {
-				if ctx.Config().TargetOpenJDK9() {
-					ctx.AddVariationDependencies(nil, systemModulesTag, sdkDep.systemModules)
-				}
-				ctx.AddVariationDependencies(nil, bootClasspathTag, sdkDep.modules...)
+		if sdkDep.useDefaultLibs {
+			ctx.AddVariationDependencies(nil, bootClasspathTag, config.DefaultBootclasspathLibraries...)
+			ctx.AddVariationDependencies(nil, systemModulesTag, config.DefaultSystemModules)
+			if sdkDep.hasFrameworkLibs() {
+				ctx.AddVariationDependencies(nil, libTag, config.DefaultLibraries...)
 			}
-		} else if sdkDep.systemModules != "" {
-			// Add the system modules to both the system modules and bootclasspath.
+		} else if sdkDep.useModule {
+			ctx.AddVariationDependencies(nil, bootClasspathTag, sdkDep.bootclasspath...)
 			ctx.AddVariationDependencies(nil, systemModulesTag, sdkDep.systemModules)
-			ctx.AddVariationDependencies(nil, bootClasspathTag, sdkDep.systemModules)
+			ctx.AddVariationDependencies(nil, java9LibTag, sdkDep.java9Classpath...)
 		}
 	}
 
@@ -515,7 +506,8 @@ func (j *Javadoc) collectDeps(ctx android.ModuleContext) deps {
 
 	sdkDep := decodeSdkDep(ctx, sdkContext(j))
 	if sdkDep.invalidVersion {
-		ctx.AddMissingDependencies(sdkDep.modules)
+		ctx.AddMissingDependencies(sdkDep.bootclasspath)
+		ctx.AddMissingDependencies(sdkDep.java9Classpath)
 	} else if sdkDep.useFiles {
 		deps.bootClasspath = append(deps.bootClasspath, sdkDep.jars...)
 	}
@@ -545,6 +537,13 @@ func (j *Javadoc) collectDeps(ctx android.ModuleContext) deps {
 			case android.SourceFileProducer:
 				checkProducesJars(ctx, dep)
 				deps.classpath = append(deps.classpath, dep.Srcs()...)
+			default:
+				ctx.ModuleErrorf("depends on non-java module %q", otherName)
+			}
+		case java9LibTag:
+			switch dep := module.(type) {
+			case Dependency:
+				deps.java9Classpath = append(deps.java9Classpath, dep.HeaderJars()...)
 			default:
 				ctx.ModuleErrorf("depends on non-java module %q", otherName)
 			}
@@ -669,7 +668,7 @@ func (j *Javadoc) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 	cmd := javadocSystemModulesCmd(ctx, rule, j.srcFiles, outDir, srcJarDir, srcJarList,
 		deps.systemModules, deps.classpath, j.sourcepaths)
 
-	cmd.FlagWithArg("-source ", javaVersion).
+	cmd.FlagWithArg("-source ", javaVersion.String()).
 		Flag("-J-Xmx1024m").
 		Flag("-XDignore.symbol.file").
 		Flag("-Xdoclint:none")
@@ -1183,6 +1182,7 @@ type Droidstubs struct {
 	updateCurrentApiTimestamp     android.WritablePath
 	checkLastReleasedApiTimestamp android.WritablePath
 	apiLintTimestamp              android.WritablePath
+	apiLintReport                 android.WritablePath
 
 	checkNullabilityWarningsTimestamp android.WritablePath
 
@@ -1325,13 +1325,8 @@ func (d *Droidstubs) annotationsFlags(ctx android.ModuleContext, cmd *android.Ru
 		validatingNullability :=
 			strings.Contains(d.Javadoc.args, "--validate-nullability-from-merged-stubs") ||
 				String(d.properties.Validate_nullability_from_list) != ""
+
 		migratingNullability := String(d.properties.Previous_api) != ""
-
-		if !(migratingNullability || validatingNullability) {
-			ctx.PropertyErrorf("previous_api",
-				"has to be non-empty if annotations was enabled (unless validating nullability)")
-		}
-
 		if migratingNullability {
 			previousApi := android.PathForModuleSrc(ctx, String(d.properties.Previous_api))
 			cmd.FlagWithInput("--migrate-nullness ", previousApi)
@@ -1436,12 +1431,12 @@ func (d *Droidstubs) apiToXmlFlags(ctx android.ModuleContext, cmd *android.RuleB
 	}
 }
 
-func metalavaCmd(ctx android.ModuleContext, rule *android.RuleBuilder, javaVersion string, srcs android.Paths,
+func metalavaCmd(ctx android.ModuleContext, rule *android.RuleBuilder, javaVersion javaVersion, srcs android.Paths,
 	srcJarList android.Path, bootclasspath, classpath classpath, sourcepaths android.Paths) *android.RuleBuilderCommand {
 	cmd := rule.Command().BuiltTool(ctx, "metalava").
 		Flag(config.JavacVmFlags).
 		FlagWithArg("-encoding ", "UTF-8").
-		FlagWithArg("-source ", javaVersion).
+		FlagWithArg("-source ", javaVersion.String()).
 		FlagWithRspFileInputList("@", srcs).
 		FlagWithInput("@", srcJarList)
 
@@ -1553,6 +1548,8 @@ func (d *Droidstubs) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 		} else {
 			cmd.Flag("--api-lint")
 		}
+		d.apiLintReport = android.PathForModuleOut(ctx, "api_lint_report.txt")
+		cmd.FlagWithOutput("--report-even-if-suppressed ", d.apiLintReport)
 
 		d.inclusionAnnotationsFlags(ctx, cmd)
 		d.mergeAnnoDirFlags(ctx, cmd)
