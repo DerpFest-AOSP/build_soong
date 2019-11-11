@@ -119,6 +119,10 @@ type variableProperties struct {
 		Flatten_apex struct {
 			Enabled *bool
 		}
+
+		Experimental_mte struct {
+			Cflags []string `android:"arch_variant"`
+		} `android:"arch_variant"`
 	} `android:"arch_variant"`
 }
 
@@ -228,6 +232,8 @@ type productVariables struct {
 	EnableXOM       *bool    `json:",omitempty"`
 	XOMExcludePaths []string `json:",omitempty"`
 
+	Experimental_mte *bool `json:",omitempty"`
+
 	VendorPath    *string `json:",omitempty"`
 	OdmPath       *string `json:",omitempty"`
 	ProductPath   *string `json:",omitempty"`
@@ -303,6 +309,8 @@ type productVariables struct {
 	TargetFSConfigGen []string `json:",omitempty"`
 
 	MissingUsesLibraries []string `json:",omitempty"`
+
+	EnforceProductPartitionInterface *bool `json:",omitempty"`
 }
 
 func boolPtr(v bool) *bool {

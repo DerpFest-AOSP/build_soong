@@ -26,7 +26,7 @@ import (
 	"github.com/google/blueprint"
 )
 
-var kotlinc = pctx.AndroidGomaStaticRule("kotlinc",
+var kotlinc = pctx.AndroidRemoteStaticRule("kotlinc", android.SUPPORTS_GOMA,
 	blueprint.RuleParams{
 		Command: `rm -rf "$classesDir" "$srcJarDir" "$kotlinBuildFile" "$emptyDir" && ` +
 			`mkdir -p "$classesDir" "$srcJarDir" "$emptyDir" && ` +
@@ -88,7 +88,7 @@ func kotlinCompile(ctx android.ModuleContext, outputFile android.WritablePath,
 	})
 }
 
-var kapt = pctx.AndroidGomaStaticRule("kapt",
+var kapt = pctx.AndroidRemoteStaticRule("kapt", android.SUPPORTS_GOMA,
 	blueprint.RuleParams{
 		Command: `rm -rf "$srcJarDir" "$kotlinBuildFile" "$kaptDir" && mkdir -p "$srcJarDir" "$kaptDir" && ` +
 			`${config.ZipSyncCmd} -d $srcJarDir -l $srcJarDir/list -f "*.java" $srcJars && ` +
@@ -133,7 +133,7 @@ func kotlinKapt(ctx android.ModuleContext, outputFile android.WritablePath,
 	deps = append(deps, srcJars...)
 	deps = append(deps, flags.processorPath...)
 
-	kaptProcessorPath := flags.processorPath.FormTurbineClasspath("-P plugin:org.jetbrains.kotlin.kapt3:apclasspath=")
+	kaptProcessorPath := flags.processorPath.FormRepeatedClassPath("-P plugin:org.jetbrains.kotlin.kapt3:apclasspath=")
 
 	kaptProcessor := ""
 	if flags.processor != "" {
@@ -141,8 +141,8 @@ func kotlinKapt(ctx android.ModuleContext, outputFile android.WritablePath,
 	}
 
 	encodedJavacFlags := kaptEncodeFlags([][2]string{
-		{"-source", flags.javaVersion},
-		{"-target", flags.javaVersion},
+		{"-source", flags.javaVersion.String()},
+		{"-target", flags.javaVersion.String()},
 	})
 
 	kotlinName := filepath.Join(ctx.ModuleDir(), ctx.ModuleSubDir(), ctx.ModuleName())
