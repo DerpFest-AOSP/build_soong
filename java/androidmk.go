@@ -332,10 +332,9 @@ func (app *AndroidApp) AndroidMkEntries() android.AndroidMkEntries {
 				if len(app.dexpreopter.builtInstalled) > 0 {
 					entries.SetString("LOCAL_SOONG_BUILT_INSTALLED", app.dexpreopter.builtInstalled)
 				}
-				for _, split := range app.aapt.splits {
-					install := app.onDeviceDir + "/" +
-						strings.TrimSuffix(app.installApkName, ".apk") + "_" + split.suffix + ".apk"
-					entries.AddStrings("LOCAL_SOONG_BUILT_INSTALLED", split.path.String()+":"+install)
+				for _, extra := range app.extraOutputFiles {
+					install := app.onDeviceDir + "/" + extra.Base()
+					entries.AddStrings("LOCAL_SOONG_BUILT_INSTALLED", extra.String()+":"+install)
 				}
 			},
 		},
@@ -612,10 +611,15 @@ func (dstubs *Droidstubs) AndroidMkEntries() android.AndroidMkEntries {
 
 					fmt.Fprintln(w, ".PHONY: checkapi")
 					fmt.Fprintln(w, "checkapi:",
-						dstubs.apiLintTimestamp.String())
+						dstubs.Name()+"-api-lint")
 
 					fmt.Fprintln(w, ".PHONY: droidcore")
 					fmt.Fprintln(w, "droidcore: checkapi")
+
+					if dstubs.apiLintReport != nil {
+						fmt.Fprintf(w, "$(call dist-for-goals,%s,%s:%s)\n", dstubs.Name()+"-api-lint",
+							dstubs.apiLintReport.String(), "apilint/"+dstubs.Name()+"-lint-report.txt")
+					}
 				}
 				if dstubs.checkNullabilityWarningsTimestamp != nil {
 					fmt.Fprintln(w, ".PHONY:", dstubs.Name()+"-check-nullability-warnings")
