@@ -365,11 +365,6 @@ type commonProperties struct {
 	// /system/product if product partition does not exist).
 	Product_specific *bool
 
-	// TODO(b/135957588) Product_services_specific will be removed once we clear all Android.bp
-	// files that have 'product_services_specific: true'. This will be converted to
-	// Product_speicific as a workaround.
-	Product_services_specific *bool
-
 	// whether this module extends system. When set to true, it is installed into /system_ext
 	// (or /system/system_ext if system_ext partition does not exist).
 	System_ext_specific *bool
@@ -1517,6 +1512,12 @@ func (m *ModuleBase) MakeAsPlatform() {
 
 func (m *ModuleBase) EnableNativeBridgeSupportByDefault() {
 	m.commonProperties.Native_bridge_supported = boolPtr(true)
+}
+
+func (m *ModuleBase) MakeAsSystemExt() {
+	if !Bool(m.commonProperties.Vendor) && !Bool(m.commonProperties.Product_specific) {
+		m.commonProperties.System_ext_specific = boolPtr(true)
+	}
 }
 
 // IsNativeBridgeSupported returns true if "native_bridge_supported" is explicitly set as "true"

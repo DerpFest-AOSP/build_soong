@@ -17,6 +17,7 @@ package apex
 import (
 	"io/ioutil"
 	"os"
+	"path"
 	"reflect"
 	"sort"
 	"strings"
@@ -106,6 +107,7 @@ func testApexContext(t *testing.T, bp string, handlers ...testCustomizer) (*andr
 	ctx.RegisterModuleType("apex_key", android.ModuleFactoryAdaptor(ApexKeyFactory))
 	ctx.RegisterModuleType("apex_defaults", android.ModuleFactoryAdaptor(defaultsFactory))
 	ctx.RegisterModuleType("prebuilt_apex", android.ModuleFactoryAdaptor(PrebuiltFactory))
+	ctx.RegisterModuleType("override_apex", android.ModuleFactoryAdaptor(overrideApexFactory))
 
 	ctx.RegisterModuleType("cc_library", android.ModuleFactoryAdaptor(cc.LibraryFactory))
 	ctx.RegisterModuleType("cc_library_shared", android.ModuleFactoryAdaptor(cc.LibrarySharedFactory))
@@ -114,9 +116,13 @@ func testApexContext(t *testing.T, bp string, handlers ...testCustomizer) (*andr
 	ctx.RegisterModuleType("cc_prebuilt_library_static", android.ModuleFactoryAdaptor(cc.PrebuiltStaticLibraryFactory))
 	ctx.RegisterModuleType("cc_binary", android.ModuleFactoryAdaptor(cc.BinaryFactory))
 	ctx.RegisterModuleType("cc_object", android.ModuleFactoryAdaptor(cc.ObjectFactory))
+	ctx.RegisterModuleType("cc_defaults", android.ModuleFactoryAdaptor(func() android.Module {
+		return cc.DefaultsFactory()
+	}))
 	ctx.RegisterModuleType("cc_test", android.ModuleFactoryAdaptor(cc.TestFactory))
 	ctx.RegisterModuleType("llndk_library", android.ModuleFactoryAdaptor(cc.LlndkLibraryFactory))
 	ctx.RegisterModuleType("vndk_prebuilt_shared", android.ModuleFactoryAdaptor(cc.VndkPrebuiltSharedFactory))
+	ctx.RegisterModuleType("vndk_libraries_txt", android.ModuleFactoryAdaptor(cc.VndkLibrariesTxtFactory))
 	ctx.RegisterModuleType("toolchain_library", android.ModuleFactoryAdaptor(cc.ToolchainLibraryFactory))
 	ctx.RegisterModuleType("prebuilt_etc", android.ModuleFactoryAdaptor(android.PrebuiltEtcFactory))
 	ctx.RegisterModuleType("sh_binary", android.ModuleFactoryAdaptor(android.ShBinaryFactory))
@@ -127,6 +133,7 @@ func testApexContext(t *testing.T, bp string, handlers ...testCustomizer) (*andr
 	ctx.RegisterModuleType("java_system_modules", android.ModuleFactoryAdaptor(java.SystemModulesFactory))
 	ctx.RegisterModuleType("android_app", android.ModuleFactoryAdaptor(java.AndroidAppFactory))
 	ctx.RegisterModuleType("android_app_import", android.ModuleFactoryAdaptor(java.AndroidAppImportFactory))
+	ctx.RegisterModuleType("override_android_app", android.ModuleFactoryAdaptor(java.OverrideAndroidAppModuleFactory))
 
 	ctx.PreArchMutators(android.RegisterDefaultsPreArchMutators)
 	ctx.PreArchMutators(func(ctx android.RegisterMutatorsContext) {
@@ -141,6 +148,7 @@ func testApexContext(t *testing.T, bp string, handlers ...testCustomizer) (*andr
 		ctx.BottomUp("begin", cc.BeginMutator).Parallel()
 	})
 	ctx.PreDepsMutators(RegisterPreDepsMutators)
+	ctx.PostDepsMutators(android.RegisterOverridePostDepsMutators)
 	ctx.PostDepsMutators(RegisterPostDepsMutators)
 	ctx.PostDepsMutators(func(ctx android.RegisterMutatorsContext) {
 		ctx.TopDown("prebuilt_select", android.PrebuiltSelectModuleMutator).Parallel()
@@ -298,6 +306,7 @@ func testApexContext(t *testing.T, bp string, handlers ...testCustomizer) (*andr
 		"framework/aidl/a.aidl":                      nil,
 		"build/make/core/proguard.flags":             nil,
 		"build/make/core/proguard_basic_keeps.flags": nil,
+		"dummy.txt":                                  nil,
 	}
 
 	for _, handler := range handlers {
@@ -515,6 +524,26 @@ func TestBasicApex(t *testing.T) {
 	}
 	ensureListContains(t, noticeInputs, "NOTICE")
 	ensureListContains(t, noticeInputs, "custom_notice")
+}
+
+func TestApexManifest(t *testing.T) {
+	ctx, _ := testApex(t, `
+		apex {
+			name: "myapex",
+			key: "myapex.key",
+		}
+
+		apex_key {
+			name: "myapex.key",
+			public_key: "testkey.avbpubkey",
+			private_key: "testkey.pem",
+		}
+	`)
+
+	module := ctx.ModuleForTests("myapex", "android_common_myapex_image")
+	module.Output("apex_manifest.pb")
+	module.Output("apex_manifest.json")
+	module.Output("apex_manifest_full.json")
 }
 
 func TestBasicZipApex(t *testing.T) {
@@ -1319,7 +1348,18 @@ func ensureExactContents(t *testing.T, ctx *android.TestContext, moduleName stri
 	apexRule := ctx.ModuleForTests(moduleName, "android_common_"+moduleName+"_image").Rule("apexRule")
 	copyCmds := apexRule.Args["copy_commands"]
 	imageApexDir := "/image.apex/"
-	dstFiles := []string{}
+	var failed bool
+	var surplus []string
+	filesMatched := make(map[string]bool)
+	addContent := func(content string) {
+		for _, expected := range files {
+			if matched, _ := path.Match(expected, content); matched {
+				filesMatched[expected] = true
+				return
+			}
+		}
+		surplus = append(surplus, content)
+	}
 	for _, cmd := range strings.Split(copyCmds, "&&") {
 		cmd = strings.TrimSpace(cmd)
 		if cmd == "" {
@@ -1338,42 +1378,26 @@ func ensureExactContents(t *testing.T, ctx *android.TestContext, moduleName stri
 				t.Fatal("copyCmds should copy a file to image.apex/", cmd)
 			}
 			dstFile := dst[index+len(imageApexDir):]
-			dstFiles = append(dstFiles, dstFile)
+			addContent(dstFile)
 		default:
 			t.Fatalf("copyCmds should contain mkdir/cp commands only: %q", cmd)
 		}
 	}
-	sort.Strings(dstFiles)
-	sort.Strings(files)
-	missing := []string{}
-	surplus := []string{}
-	i := 0
-	j := 0
-	for i < len(dstFiles) && j < len(files) {
-		if dstFiles[i] == files[j] {
-			i++
-			j++
-		} else if dstFiles[i] < files[j] {
-			surplus = append(surplus, dstFiles[i])
-			i++
-		} else {
-			missing = append(missing, files[j])
-			j++
-		}
-	}
-	if i < len(dstFiles) {
-		surplus = append(surplus, dstFiles[i:]...)
-	}
-	if j < len(files) {
-		missing = append(missing, files[j:]...)
-	}
 
-	failed := false
 	if len(surplus) > 0 {
+		sort.Strings(surplus)
 		t.Log("surplus files", surplus)
 		failed = true
 	}
-	if len(missing) > 0 {
+
+	if len(files) > len(filesMatched) {
+		var missing []string
+		for _, expected := range files {
+			if !filesMatched[expected] {
+				missing = append(missing, expected)
+			}
+		}
+		sort.Strings(missing)
 		t.Log("missing files", missing)
 		failed = true
 	}
@@ -1418,13 +1442,18 @@ func TestVndkApexCurrent(t *testing.T) {
 			system_shared_libs: [],
 			stl: "none",
 		}
-	`)
+	`+vndkLibrariesTxtFiles("current"))
 
 	ensureExactContents(t, ctx, "myapex", []string{
 		"lib/libvndk.so",
 		"lib/libvndksp.so",
 		"lib64/libvndk.so",
 		"lib64/libvndksp.so",
+		"etc/llndk.libraries.VER.txt",
+		"etc/vndkcore.libraries.VER.txt",
+		"etc/vndksp.libraries.VER.txt",
+		"etc/vndkprivate.libraries.VER.txt",
+		"etc/vndkcorevariant.libraries.VER.txt",
 	})
 }
 
@@ -1469,16 +1498,42 @@ func TestVndkApexWithPrebuilt(t *testing.T) {
 			system_shared_libs: [],
 			stl: "none",
 		}
-	`, withFiles(map[string][]byte{
-		"libvndk.so":     nil,
-		"libvndk.arm.so": nil,
-	}))
+		`+vndkLibrariesTxtFiles("current"),
+		withFiles(map[string][]byte{
+			"libvndk.so":     nil,
+			"libvndk.arm.so": nil,
+		}))
 
 	ensureExactContents(t, ctx, "myapex", []string{
 		"lib/libvndk.so",
 		"lib/libvndk.arm.so",
 		"lib64/libvndk.so",
+		"etc/*",
 	})
+}
+
+func vndkLibrariesTxtFiles(vers ...string) (result string) {
+	for _, v := range vers {
+		if v == "current" {
+			for _, txt := range []string{"llndk", "vndkcore", "vndksp", "vndkprivate", "vndkcorevariant"} {
+				result += `
+					vndk_libraries_txt {
+						name: "` + txt + `.libraries.txt",
+					}
+				`
+			}
+		} else {
+			for _, txt := range []string{"llndk", "vndkcore", "vndksp", "vndkprivate"} {
+				result += `
+					prebuilt_etc {
+						name: "` + txt + `.libraries.` + v + `.txt",
+						src: "dummy.txt",
+					}
+				`
+			}
+		}
+	}
+	return
 }
 
 func TestVndkApexVersion(t *testing.T) {
@@ -1530,17 +1585,19 @@ func TestVndkApexVersion(t *testing.T) {
 					srcs: ["libvndk27_x86_64.so"],
 				},
 			},
-	}
-	`, withFiles(map[string][]byte{
-		"libvndk27_arm.so":    nil,
-		"libvndk27_arm64.so":  nil,
-		"libvndk27_x86.so":    nil,
-		"libvndk27_x86_64.so": nil,
-	}))
+		}
+		`+vndkLibrariesTxtFiles("27"),
+		withFiles(map[string][]byte{
+			"libvndk27_arm.so":    nil,
+			"libvndk27_arm64.so":  nil,
+			"libvndk27_x86.so":    nil,
+			"libvndk27_x86_64.so": nil,
+		}))
 
 	ensureExactContents(t, ctx, "myapex_v27", []string{
 		"lib/libvndk27_arm.so",
 		"lib64/libvndk27_arm64.so",
+		"etc/*",
 	})
 }
 
@@ -1607,7 +1664,7 @@ func TestVndkApexNameRule(t *testing.T) {
 			name: "myapex.key",
 			public_key: "testkey.avbpubkey",
 			private_key: "testkey.pem",
-		}`)
+		}`+vndkLibrariesTxtFiles("28", "current"))
 
 	assertApexName := func(expected, moduleName string) {
 		bundle := ctx.ModuleForTests(moduleName, "android_common_"+moduleName+"_image").Module().(*apexBundle)
@@ -1647,18 +1704,20 @@ func TestVndkApexSkipsNativeBridgeSupportedModules(t *testing.T) {
 			system_shared_libs: [],
 			stl: "none",
 		}
-	`, withTargets(map[android.OsType][]android.Target{
-		android.Android: []android.Target{
-			{Os: android.Android, Arch: android.Arch{ArchType: android.Arm64, ArchVariant: "armv8-a", Abi: []string{"arm64-v8a"}}, NativeBridge: android.NativeBridgeDisabled, NativeBridgeHostArchName: "", NativeBridgeRelativePath: ""},
-			{Os: android.Android, Arch: android.Arch{ArchType: android.Arm, ArchVariant: "armv7-a-neon", Abi: []string{"armeabi-v7a"}}, NativeBridge: android.NativeBridgeDisabled, NativeBridgeHostArchName: "", NativeBridgeRelativePath: ""},
-			{Os: android.Android, Arch: android.Arch{ArchType: android.X86_64, ArchVariant: "silvermont", Abi: []string{"arm64-v8a"}}, NativeBridge: android.NativeBridgeEnabled, NativeBridgeHostArchName: "arm64", NativeBridgeRelativePath: "x86_64"},
-			{Os: android.Android, Arch: android.Arch{ArchType: android.X86, ArchVariant: "silvermont", Abi: []string{"armeabi-v7a"}}, NativeBridge: android.NativeBridgeEnabled, NativeBridgeHostArchName: "arm", NativeBridgeRelativePath: "x86"},
-		},
-	}))
+		`+vndkLibrariesTxtFiles("current"),
+		withTargets(map[android.OsType][]android.Target{
+			android.Android: []android.Target{
+				{Os: android.Android, Arch: android.Arch{ArchType: android.Arm64, ArchVariant: "armv8-a", Abi: []string{"arm64-v8a"}}, NativeBridge: android.NativeBridgeDisabled, NativeBridgeHostArchName: "", NativeBridgeRelativePath: ""},
+				{Os: android.Android, Arch: android.Arch{ArchType: android.Arm, ArchVariant: "armv7-a-neon", Abi: []string{"armeabi-v7a"}}, NativeBridge: android.NativeBridgeDisabled, NativeBridgeHostArchName: "", NativeBridgeRelativePath: ""},
+				{Os: android.Android, Arch: android.Arch{ArchType: android.X86_64, ArchVariant: "silvermont", Abi: []string{"arm64-v8a"}}, NativeBridge: android.NativeBridgeEnabled, NativeBridgeHostArchName: "arm64", NativeBridgeRelativePath: "x86_64"},
+				{Os: android.Android, Arch: android.Arch{ArchType: android.X86, ArchVariant: "silvermont", Abi: []string{"armeabi-v7a"}}, NativeBridge: android.NativeBridgeEnabled, NativeBridgeHostArchName: "arm", NativeBridgeRelativePath: "x86"},
+			},
+		}))
 
 	ensureExactContents(t, ctx, "myapex", []string{
 		"lib/libvndk.so",
 		"lib64/libvndk.so",
+		"etc/*",
 	})
 }
 
@@ -1693,8 +1752,7 @@ func TestVndkApexDoesntSupportNativeBridgeSupported(t *testing.T) {
 }
 
 func TestVndkApexWithBinder32(t *testing.T) {
-	ctx, _ := testApex(t,
-		`
+	ctx, _ := testApex(t, `
 		apex_vndk {
 			name: "myapex_v27",
 			key: "myapex.key",
@@ -1738,7 +1796,7 @@ func TestVndkApexWithBinder32(t *testing.T) {
 				}
 			},
 		}
-		`,
+		`+vndkLibrariesTxtFiles("27"),
 		withFiles(map[string][]byte{
 			"libvndk27.so":         nil,
 			"libvndk27binder32.so": nil,
@@ -1753,6 +1811,7 @@ func TestVndkApexWithBinder32(t *testing.T) {
 
 	ensureExactContents(t, ctx, "myapex_v27", []string{
 		"lib/libvndk27binder32.so",
+		"etc/*",
 	})
 }
 
@@ -2198,9 +2257,9 @@ func TestPrebuiltOverrides(t *testing.T) {
 	p := ctx.ModuleForTests("myapex.prebuilt", "android_common").Module().(*Prebuilt)
 
 	expected := []string{"myapex"}
-	actual := android.AndroidMkEntriesForTest(t, config, "", p).EntryMap["LOCAL_OVERRIDES_PACKAGES"]
+	actual := android.AndroidMkEntriesForTest(t, config, "", p).EntryMap["LOCAL_OVERRIDES_MODULES"]
 	if !reflect.DeepEqual(actual, expected) {
-		t.Errorf("Incorrect LOCAL_OVERRIDES_PACKAGES value '%s', expected '%s'", actual, expected)
+		t.Errorf("Incorrect LOCAL_OVERRIDES_MODULES value '%s', expected '%s'", actual, expected)
 	}
 }
 
@@ -2460,6 +2519,7 @@ func TestApexWithApps(t *testing.T) {
 			srcs: ["foo/bar/MyClass.java"],
 			sdk_version: "none",
 			system_modules: "none",
+			jni_libs: ["libjni"],
 		}
 
 		android_app {
@@ -2469,6 +2529,13 @@ func TestApexWithApps(t *testing.T) {
 			system_modules: "none",
 			privileged: true,
 		}
+
+		cc_library_shared {
+			name: "libjni",
+			srcs: ["mylib.cpp"],
+			stl: "none",
+			system_shared_libs: [],
+		}
 	`)
 
 	module := ctx.ModuleForTests("myapex", "android_common_myapex_image")
@@ -2477,6 +2544,17 @@ func TestApexWithApps(t *testing.T) {
 
 	ensureContains(t, copyCmds, "image.apex/app/AppFoo/AppFoo.apk")
 	ensureContains(t, copyCmds, "image.apex/priv-app/AppFooPriv/AppFooPriv.apk")
+
+	// JNI libraries are embedded inside APK
+	appZipRule := ctx.ModuleForTests("AppFoo", "android_common_myapex").Rule("zip")
+	libjniOutput := ctx.ModuleForTests("libjni", "android_arm64_armv8-a_core_shared_myapex").Module().(*cc.Module).OutputFile()
+	ensureListContains(t, appZipRule.Implicits.Strings(), libjniOutput.String())
+	// ... uncompressed
+	if args := appZipRule.Args["jarArgs"]; !strings.Contains(args, "-L 0") {
+		t.Errorf("jni lib is not uncompressed for AppFoo")
+	}
+	// ... and not directly inside the APEX
+	ensureNotContains(t, copyCmds, "image.apex/lib64/libjni.so")
 }
 
 func TestApexWithAppImports(t *testing.T) {
@@ -2522,6 +2600,40 @@ func TestApexWithAppImports(t *testing.T) {
 
 	ensureContains(t, copyCmds, "image.apex/app/AppFooPrebuilt/AppFooPrebuilt.apk")
 	ensureContains(t, copyCmds, "image.apex/priv-app/AppFooPrivPrebuilt/AppFooPrivPrebuilt.apk")
+}
+
+func TestApexPropertiesShouldBeDefaultable(t *testing.T) {
+	// libfoo's apex_available comes from cc_defaults
+	testApexError(t, `"myapex" .*: requires "libfoo" that is not available for the APEX`, `
+	apex {
+		name: "myapex",
+		key: "myapex.key",
+		native_shared_libs: ["libfoo"],
+	}
+
+	apex_key {
+		name: "myapex.key",
+		public_key: "testkey.avbpubkey",
+		private_key: "testkey.pem",
+	}
+
+	apex {
+		name: "otherapex",
+		key: "myapex.key",
+		native_shared_libs: ["libfoo"],
+	}
+
+	cc_defaults {
+		name: "libfoo-defaults",
+		apex_available: ["otherapex"],
+	}
+
+	cc_library {
+		name: "libfoo",
+		defaults: ["libfoo-defaults"],
+		stl: "none",
+		system_shared_libs: [],
+	}`)
 }
 
 func TestApexAvailable(t *testing.T) {
@@ -2704,6 +2816,49 @@ func TestApexAvailable(t *testing.T) {
 	// but the static variant is available to both myapex and the platform
 	ensureListContains(t, ctx.ModuleVariantsForTests("libfoo"), "android_arm64_armv8-a_core_static_myapex")
 	ensureListContains(t, ctx.ModuleVariantsForTests("libfoo"), "android_arm64_armv8-a_core_static")
+}
+
+func TestOverrideApex(t *testing.T) {
+	ctx, _ := testApex(t, `
+		apex {
+			name: "myapex",
+			key: "myapex.key",
+			apps: ["app"],
+		}
+
+		override_apex {
+			name: "override_myapex",
+			base: "myapex",
+			apps: ["override_app"],
+		}
+
+		apex_key {
+			name: "myapex.key",
+			public_key: "testkey.avbpubkey",
+			private_key: "testkey.pem",
+		}
+
+		android_app {
+			name: "app",
+			srcs: ["foo/bar/MyClass.java"],
+			package_name: "foo",
+			sdk_version: "none",
+			system_modules: "none",
+		}
+
+		override_android_app {
+			name: "override_app",
+			base: "app",
+			package_name: "bar",
+		}
+	`)
+
+	module := ctx.ModuleForTests("myapex", "android_common_override_myapex_myapex_image")
+	apexRule := module.Rule("apexRule")
+	copyCmds := apexRule.Args["copy_commands"]
+
+	ensureNotContains(t, copyCmds, "image.apex/app/app/app.apk")
+	ensureContains(t, copyCmds, "image.apex/app/app/override_app.apk")
 }
 
 func TestMain(m *testing.M) {

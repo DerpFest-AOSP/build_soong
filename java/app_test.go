@@ -666,6 +666,44 @@ func TestJNIABI(t *testing.T) {
 	}
 }
 
+func TestAppSdkVersionByPartition(t *testing.T) {
+	testJavaError(t, "sdk_version must have a value when the module is located at vendor or product", `
+		android_app {
+			name: "foo",
+			srcs: ["a.java"],
+			vendor: true,
+			platform_apis: true,
+		}
+	`)
+
+	testJava(t, `
+		android_app {
+			name: "bar",
+			srcs: ["b.java"],
+			platform_apis: true,
+		}
+	`)
+
+	for _, enforce := range []bool{true, false} {
+
+		config := testConfig(nil)
+		config.TestProductVariables.EnforceProductPartitionInterface = proptools.BoolPtr(enforce)
+		bp := `
+			android_app {
+				name: "foo",
+				srcs: ["a.java"],
+				product_specific: true,
+				platform_apis: true,
+			}
+		`
+		if enforce {
+			testJavaErrorWithConfig(t, "sdk_version must have a value when the module is located at vendor or product", bp, config)
+		} else {
+			testJavaWithConfig(t, bp, config)
+		}
+	}
+}
+
 func TestJNIPackaging(t *testing.T) {
 	ctx, _ := testJava(t, cc.GatherRequiredDepsForTest(android.Android)+`
 		cc_library {
@@ -876,7 +914,7 @@ func TestPackageNameOverride(t *testing.T) {
 			packageNameOverride: "foo:bar",
 			expected: []string{
 				// The package apk should be still be the original name for test dependencies.
-				buildDir + "/.intermediates/foo/android_common/foo.apk",
+				buildDir + "/.intermediates/foo/android_common/bar.apk",
 				buildDir + "/target/product/test_device/system/app/bar/bar.apk",
 			},
 		},
@@ -1016,7 +1054,7 @@ func TestOverrideAndroidApp(t *testing.T) {
 		}
 
 		// Check the certificate paths
-		signapk := variant.Output("foo.apk")
+		signapk := variant.Output(expected.moduleName + ".apk")
 		signFlag := signapk.Args["certificates"]
 		if expected.signFlag != signFlag {
 			t.Errorf("Incorrect signing flags, expected: %q, got: %q", expected.signFlag, signFlag)
@@ -1077,6 +1115,101 @@ func TestOverrideAndroidAppDependency(t *testing.T) {
 	barTurbine := filepath.Join(buildDir, ".intermediates", "foo", "android_common_bar", "turbine-combined", "foo.jar")
 	if !strings.Contains(javac.Args["classpath"], barTurbine) {
 		t.Errorf("qux classpath %v does not contain %q", javac.Args["classpath"], barTurbine)
+	}
+}
+
+func TestOverrideAndroidTest(t *testing.T) {
+	ctx, _ := testJava(t, `
+		android_app {
+			name: "foo",
+			srcs: ["a.java"],
+			package_name: "com.android.foo",
+			sdk_version: "current",
+		}
+
+		override_android_app {
+			name: "bar",
+			base: "foo",
+			package_name: "com.android.bar",
+		}
+
+		android_test {
+			name: "foo_test",
+			srcs: ["b.java"],
+			instrumentation_for: "foo",
+		}
+
+		override_android_test {
+			name: "bar_test",
+			base: "foo_test",
+			package_name: "com.android.bar.test",
+			instrumentation_for: "bar",
+			instrumentation_target_package: "com.android.bar",
+		}
+		`)
+
+	expectedVariants := []struct {
+		moduleName        string
+		variantName       string
+		apkPath           string
+		overrides         []string
+		targetVariant     string
+		packageFlag       string
+		targetPackageFlag string
+	}{
+		{
+			variantName:       "android_common",
+			apkPath:           "/target/product/test_device/testcases/foo_test/foo_test.apk",
+			overrides:         nil,
+			targetVariant:     "android_common",
+			packageFlag:       "",
+			targetPackageFlag: "",
+		},
+		{
+			variantName:       "android_common_bar_test",
+			apkPath:           "/target/product/test_device/testcases/bar_test/bar_test.apk",
+			overrides:         []string{"foo_test"},
+			targetVariant:     "android_common_bar",
+			packageFlag:       "com.android.bar.test",
+			targetPackageFlag: "com.android.bar",
+		},
+	}
+	for _, expected := range expectedVariants {
+		variant := ctx.ModuleForTests("foo_test", expected.variantName)
+
+		// Check the final apk name
+		outputs := variant.AllOutputs()
+		expectedApkPath := buildDir + expected.apkPath
+		found := false
+		for _, o := range outputs {
+			if o == expectedApkPath {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("Can't find %q in output files.\nAll outputs:%v", expectedApkPath, outputs)
+		}
+
+		// Check if the overrides field values are correctly aggregated.
+		mod := variant.Module().(*AndroidTest)
+		if !reflect.DeepEqual(expected.overrides, mod.appProperties.Overrides) {
+			t.Errorf("Incorrect overrides property value, expected: %q, got: %q",
+				expected.overrides, mod.appProperties.Overrides)
+		}
+
+		// Check if javac classpath has the correct jar file path. This checks instrumentation_for overrides.
+		javac := variant.Rule("javac")
+		turbine := filepath.Join(buildDir, ".intermediates", "foo", expected.targetVariant, "turbine-combined", "foo.jar")
+		if !strings.Contains(javac.Args["classpath"], turbine) {
+			t.Errorf("classpath %q does not contain %q", javac.Args["classpath"], turbine)
+		}
+
+		// Check aapt2 flags.
+		res := variant.Output("package-res.apk")
+		aapt2Flags := res.Args["flags"]
+		checkAapt2LinkFlag(t, aapt2Flags, "rename-manifest-package", expected.packageFlag)
+		checkAapt2LinkFlag(t, aapt2Flags, "rename-instrumentation-target-package", expected.targetPackageFlag)
 	}
 }
 
@@ -1813,5 +1946,19 @@ func TestUncompressDex(t *testing.T) {
 				test(t, tt.bp, tt.uncompressedUnbundled, true)
 			})
 		})
+	}
+}
+
+func checkAapt2LinkFlag(t *testing.T, aapt2Flags, flagName, expectedValue string) {
+	if expectedValue != "" {
+		expectedFlag := "--" + flagName + " " + expectedValue
+		if !strings.Contains(aapt2Flags, expectedFlag) {
+			t.Errorf("%q is missing in aapt2 link flags, %q", expectedFlag, aapt2Flags)
+		}
+	} else {
+		unexpectedFlag := "--" + flagName
+		if strings.Contains(aapt2Flags, unexpectedFlag) {
+			t.Errorf("unexpected flag, %q is found in aapt2 link flags, %q", unexpectedFlag, aapt2Flags)
+		}
 	}
 }
