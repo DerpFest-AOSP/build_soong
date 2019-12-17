@@ -15,8 +15,10 @@
 package android
 
 import (
+	"sort"
 	"strings"
 
+	"github.com/google/blueprint"
 	"github.com/google/blueprint/proptools"
 )
 
@@ -31,9 +33,6 @@ type SdkAware interface {
 	MemberName() string
 	BuildWithSdks(sdks SdkRefs)
 	RequiredSdks() SdkRefs
-
-	// Build a snapshot of the module.
-	BuildSnapshot(sdkModuleContext ModuleContext, builder SnapshotBuilder)
 }
 
 // SdkRef refers to a version of an SDK
@@ -164,16 +163,164 @@ type SnapshotBuilder interface {
 	// to the zip
 	CopyToSnapshot(src Path, dest string)
 
-	// Get the AndroidBpFile for the snapshot.
-	AndroidBpFile() GeneratedSnapshotFile
+	// Unzip the supplied zip into the snapshot relative directory destDir.
+	UnzipToSnapshot(zipPath Path, destDir string)
 
-	// Get a versioned name appropriate for the SDK snapshot version being taken.
-	VersionedSdkMemberName(unversionedName string) interface{}
+	// Add a new prebuilt module to the snapshot. The returned module
+	// must be populated with the module type specific properties. The following
+	// properties will be automatically populated.
+	//
+	// * name
+	// * sdk_member_name
+	// * prefer
+	//
+	// This will result in two Soong modules being generated in the Android. One
+	// that is versioned, coupled to the snapshot version and marked as
+	// prefer=true. And one that is not versioned, not marked as prefer=true and
+	// will only be used if the equivalently named non-prebuilt module is not
+	// present.
+	AddPrebuiltModule(member SdkMember, moduleType string) BpModule
 }
 
-// Provides support for generating a file, e.g. the Android.bp file.
-type GeneratedSnapshotFile interface {
-	Printfln(format string, args ...interface{})
-	Indent()
-	Dedent()
+// A set of properties for use in a .bp file.
+type BpPropertySet interface {
+	// Add a property, the value can be one of the following types:
+	// * string
+	// * array of the above
+	// * bool
+	// * BpPropertySet
+	//
+	// It is an error is multiples properties with the same name are added.
+	AddProperty(name string, value interface{})
+
+	// Add a property set with the specified name and return so that additional
+	// properties can be added.
+	AddPropertySet(name string) BpPropertySet
+}
+
+// A .bp module definition.
+type BpModule interface {
+	BpPropertySet
+}
+
+// An individual member of the SDK, includes all of the variants that the SDK
+// requires.
+type SdkMember interface {
+	// The name of the member.
+	Name() string
+
+	// All the variants required by the SDK.
+	Variants() []SdkAware
+}
+
+// Interface that must be implemented for every type that can be a member of an
+// sdk.
+//
+// The basic implementation should look something like this, where ModuleType is
+// the name of the module type being supported.
+//
+//    type moduleTypeSdkMemberType struct {
+//        android.SdkMemberTypeBase
+//    }
+//
+//    func init() {
+//        android.RegisterSdkMemberType(&moduleTypeSdkMemberType{
+//            SdkMemberTypeBase: android.SdkMemberTypeBase{
+//                PropertyName: "module_types",
+//            },
+//        }
+//    }
+//
+//    ...methods...
+//
+type SdkMemberType interface {
+	// The name of the member type property on an sdk module.
+	SdkPropertyName() string
+
+	// Add dependencies from the SDK module to all the variants the member
+	// contributes to the SDK. The exact set of variants required is determined
+	// by the SDK and its properties. The dependencies must be added with the
+	// supplied tag.
+	//
+	// The BottomUpMutatorContext provided is for the SDK module.
+	AddDependencies(mctx BottomUpMutatorContext, dependencyTag blueprint.DependencyTag, names []string)
+
+	// Return true if the supplied module is an instance of this member type.
+	//
+	// This is used to check the type of each variant before added to the
+	// SdkMember. Returning false will cause an error to be logged expaining that
+	// the module is not allowed in whichever sdk property it was added.
+	IsInstance(module Module) bool
+
+	// Build the snapshot for the SDK member
+	//
+	// The ModuleContext provided is for the SDK module, so information for
+	// variants in the supplied member can be accessed using the Other... methods.
+	//
+	// The SdkMember is guaranteed to contain variants for which the
+	// IsInstance(Module) method returned true.
+	BuildSnapshot(sdkModuleContext ModuleContext, builder SnapshotBuilder, member SdkMember)
+}
+
+type SdkMemberTypeBase struct {
+	PropertyName string
+}
+
+func (b *SdkMemberTypeBase) SdkPropertyName() string {
+	return b.PropertyName
+}
+
+// Encapsulates the information about registered SdkMemberTypes.
+type SdkMemberTypesRegistry struct {
+	// The list of types sorted by property name.
+	list []SdkMemberType
+
+	// The key that uniquely identifies this registry instance.
+	key OnceKey
+}
+
+func (r *SdkMemberTypesRegistry) RegisteredTypes() []SdkMemberType {
+	return r.list
+}
+
+func (r *SdkMemberTypesRegistry) UniqueOnceKey() OnceKey {
+	// Use the pointer to the registry as the unique key.
+	return NewCustomOnceKey(r)
+}
+
+// The set of registered SdkMemberTypes.
+var SdkMemberTypes = &SdkMemberTypesRegistry{}
+
+// Register an SdkMemberType object to allow them to be used in the sdk and sdk_snapshot module
+// types.
+func RegisterSdkMemberType(memberType SdkMemberType) {
+	oldList := SdkMemberTypes.list
+
+	// Copy the slice just in case this is being read while being modified, e.g. when testing.
+	list := make([]SdkMemberType, 0, len(oldList)+1)
+	list = append(list, oldList...)
+	list = append(list, memberType)
+
+	// Sort the member types by their property name to ensure that registry order has no effect
+	// on behavior.
+	sort.Slice(list, func(i1, i2 int) bool {
+		t1 := list[i1]
+		t2 := list[i2]
+
+		return t1.SdkPropertyName() < t2.SdkPropertyName()
+	})
+
+	// Generate a key that identifies the slice of SdkMemberTypes by joining the property names
+	// from all the SdkMemberType .
+	var properties []string
+	for _, t := range list {
+		properties = append(properties, t.SdkPropertyName())
+	}
+	key := NewOnceKey(strings.Join(properties, "|"))
+
+	// Create a new registry so the pointer uniquely identifies the set of registered types.
+	SdkMemberTypes = &SdkMemberTypesRegistry{
+		list: list,
+		key:  key,
+	}
 }

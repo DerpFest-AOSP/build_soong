@@ -175,6 +175,95 @@ func TestPlatformAPIs(t *testing.T) {
 	`)
 }
 
+func TestAndroidAppLinkType(t *testing.T) {
+	testJava(t, `
+		android_app {
+			name: "foo",
+			srcs: ["a.java"],
+			libs: ["bar"],
+			static_libs: ["baz"],
+			platform_apis: true,
+		}
+
+		java_library {
+			name: "bar",
+			sdk_version: "current",
+			srcs: ["b.java"],
+		}
+
+		android_library {
+			name: "baz",
+			sdk_version: "system_current",
+			srcs: ["c.java"],
+		}
+	`)
+
+	testJavaError(t, "Adjust sdk_version: property of the source or target module so that target module is built with the same or smaller API set than the source.", `
+		android_app {
+			name: "foo",
+			srcs: ["a.java"],
+			libs: ["bar"],
+			sdk_version: "current",
+			static_libs: ["baz"],
+		}
+
+		java_library {
+			name: "bar",
+			sdk_version: "current",
+			srcs: ["b.java"],
+		}
+
+		android_library {
+			name: "baz",
+			sdk_version: "system_current",
+			srcs: ["c.java"],
+		}
+	`)
+
+	testJava(t, `
+		android_app {
+			name: "foo",
+			srcs: ["a.java"],
+			libs: ["bar"],
+			sdk_version: "system_current",
+			static_libs: ["baz"],
+		}
+
+		java_library {
+			name: "bar",
+			sdk_version: "current",
+			srcs: ["b.java"],
+		}
+
+		android_library {
+			name: "baz",
+			sdk_version: "system_current",
+			srcs: ["c.java"],
+		}
+	`)
+
+	testJavaError(t, "Adjust sdk_version: property of the source or target module so that target module is built with the same or smaller API set than the source.", `
+		android_app {
+			name: "foo",
+			srcs: ["a.java"],
+			libs: ["bar"],
+			sdk_version: "system_current",
+			static_libs: ["baz"],
+		}
+
+		java_library {
+			name: "bar",
+			sdk_version: "current",
+			srcs: ["b.java"],
+		}
+
+		android_library {
+			name: "baz",
+			srcs: ["c.java"],
+		}
+	`)
+}
+
 func TestResourceDirs(t *testing.T) {
 	testCases := []struct {
 		name      string
@@ -399,18 +488,21 @@ func TestAndroidResources(t *testing.T) {
 
 			android_library {
 				name: "lib",
+				sdk_version: "current",
 				resource_dirs: ["lib/res"],
 				static_libs: ["lib2"],
 			}
 
 			android_library {
 				name: "lib2",
+				sdk_version: "current",
 				resource_dirs: ["lib2/res"],
 			}
 
 			// This library has the same resources as lib (should not lead to dupe RROs)
 			android_library {
 				name: "lib3",
+				sdk_version: "current",
 				resource_dirs: ["lib/res"]
 			}
 		`
@@ -1159,7 +1251,7 @@ func TestOverrideAndroidTest(t *testing.T) {
 	}{
 		{
 			variantName:       "android_common",
-			apkPath:           "/target/product/test_device/testcases/foo_test/foo_test.apk",
+			apkPath:           "/target/product/test_device/testcases/foo_test/arm64/foo_test.apk",
 			overrides:         nil,
 			targetVariant:     "android_common",
 			packageFlag:       "",
@@ -1167,7 +1259,7 @@ func TestOverrideAndroidTest(t *testing.T) {
 		},
 		{
 			variantName:       "android_common_bar_test",
-			apkPath:           "/target/product/test_device/testcases/bar_test/bar_test.apk",
+			apkPath:           "/target/product/test_device/testcases/bar_test/arm64/bar_test.apk",
 			overrides:         []string{"foo_test"},
 			targetVariant:     "android_common_bar",
 			packageFlag:       "com.android.bar.test",
@@ -1437,7 +1529,7 @@ func TestAndroidAppImport_Filename(t *testing.T) {
 		a := variant.Module().(*AndroidAppImport)
 		expectedValues := []string{test.expected}
 		actualValues := android.AndroidMkEntriesForTest(
-			t, config, "", a).EntryMap["LOCAL_INSTALLED_MODULE_STEM"]
+			t, config, "", a)[0].EntryMap["LOCAL_INSTALLED_MODULE_STEM"]
 		if !reflect.DeepEqual(actualValues, expectedValues) {
 			t.Errorf("Incorrect LOCAL_INSTALLED_MODULE_STEM value '%s', expected '%s'",
 				actualValues, expectedValues)
@@ -1523,7 +1615,7 @@ func TestAndroidTestImport(t *testing.T) {
 	test := ctx.ModuleForTests("foo", "android_common").Module().(*AndroidTestImport)
 
 	// Check android mks.
-	entries := android.AndroidMkEntriesForTest(t, config, "", test)
+	entries := android.AndroidMkEntriesForTest(t, config, "", test)[0]
 	expected := []string{"tests"}
 	actual := entries.EntryMap["LOCAL_MODULE_TAGS"]
 	if !reflect.DeepEqual(expected, actual) {

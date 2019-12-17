@@ -460,8 +460,8 @@ func (txt *vndkLibrariesTxt) GenerateAndroidBuildActions(ctx android.ModuleConte
 	ctx.InstallFile(installPath, filename, txt.outputFile)
 }
 
-func (txt *vndkLibrariesTxt) AndroidMkEntries() android.AndroidMkEntries {
-	return android.AndroidMkEntries{
+func (txt *vndkLibrariesTxt) AndroidMkEntries() []android.AndroidMkEntries {
+	return []android.AndroidMkEntries{android.AndroidMkEntries{
 		Class:      "ETC",
 		OutputFile: android.OptionalPathForPath(txt.outputFile),
 		ExtraEntries: []android.AndroidMkExtraEntriesFunc{
@@ -469,7 +469,7 @@ func (txt *vndkLibrariesTxt) AndroidMkEntries() android.AndroidMkEntries {
 				entries.SetString("LOCAL_MODULE_STEM", txt.outputFile.Base())
 			},
 		},
-	}
+	}}
 }
 
 func (txt *vndkLibrariesTxt) OutputFile() android.OutputPath {
@@ -704,7 +704,7 @@ func (c *vndkSnapshotSingleton) GenerateBuildActions(ctx android.SingletonContex
 		// We glob headers from include directories inside source tree. So we first gather
 		// all include directories inside our source tree. On the contrast, we manually
 		// collect generated headers from dependencies as they can't globbed.
-		generatedHeaders = append(generatedHeaders, l.exportedDeps()...)
+		generatedHeaders = append(generatedHeaders, l.exportedGeneratedHeaders()...)
 		for _, dir := range append(l.exportedDirs(), l.exportedSystemDirs()...) {
 			exportedIncludes[dir.String()] = true
 		}

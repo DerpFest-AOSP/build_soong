@@ -34,7 +34,7 @@ import (
 )
 
 func init() {
-	android.RegisterModuleType("java_defaults", defaultsFactory)
+	android.RegisterModuleType("java_defaults", DefaultsFactory)
 
 	android.RegisterModuleType("java_library", LibraryFactory)
 	android.RegisterModuleType("java_library_static", LibraryStaticFactory)
@@ -52,6 +52,23 @@ func init() {
 
 	android.RegisterSingletonType("logtags", LogtagsSingleton)
 	android.RegisterSingletonType("kythe_java_extract", kytheExtractJavaFactory)
+
+	// Register sdk member types.
+	android.RegisterSdkMemberType(&headerLibrarySdkMemberType{
+		librarySdkMemberType{
+			android.SdkMemberTypeBase{
+				PropertyName: "java_header_libs",
+			},
+		},
+	})
+
+	android.RegisterSdkMemberType(&implLibrarySdkMemberType{
+		librarySdkMemberType{
+			android.SdkMemberTypeBase{
+				PropertyName: "java_libs",
+			},
+		},
+	})
 }
 
 func (j *Module) checkSdkVersion(ctx android.ModuleContext) {
@@ -144,6 +161,9 @@ type CompilerProperties struct {
 
 	// List of modules to use as annotation processors
 	Plugins []string
+
+	// List of modules to export to libraries that directly depend on this library as annotation processors
+	Exported_plugins []string
 
 	// The number of Java source entries each Javac instance can process
 	Javac_shard_size *int64
@@ -360,10 +380,16 @@ type Module struct {
 	// manifest file to use instead of properties.Manifest
 	overrideManifest android.OptionalPath
 
-	// list of SDK lib names that this java moudule is exporting
+	// list of SDK lib names that this java module is exporting
 	exportedSdkLibs []string
 
-	// list of source files, collected from srcFiles with uniqie java and all kt files,
+	// list of plugins that this java module is exporting
+	exportedPluginJars android.Paths
+
+	// list of plugins that this java module is exporting
+	exportedPluginClasses []string
+
+	// list of source files, collected from srcFiles with unique java and all kt files,
 	// will be used by android.IDEInfo struct
 	expandIDEInfoCompiledSrcs []string
 
@@ -410,6 +436,7 @@ type Dependency interface {
 	DexJar() android.Path
 	AidlIncludeDirs() android.Paths
 	ExportedSdkLibs() []string
+	ExportedPlugins() (android.Paths, []string)
 	SrcJarArgs() ([]string, android.Paths)
 	BaseModuleName() string
 }
@@ -452,6 +479,7 @@ var (
 	libTag                = dependencyTag{name: "javalib"}
 	java9LibTag           = dependencyTag{name: "java9lib"}
 	pluginTag             = dependencyTag{name: "plugin"}
+	exportedPluginTag     = dependencyTag{name: "exported-plugin"}
 	bootClasspathTag      = dependencyTag{name: "bootclasspath"}
 	systemModulesTag      = dependencyTag{name: "system modules"}
 	frameworkResTag       = dependencyTag{name: "framework-res"}
@@ -531,6 +559,16 @@ func (j *Module) targetSdkVersion() string {
 	return j.sdkVersion()
 }
 
+func (j *Module) AvailableFor(what string) bool {
+	if what == android.AvailableToPlatform && Bool(j.deviceProperties.Hostdex) {
+		// Exception: for hostdex: true libraries, the platform variant is created
+		// even if it's not marked as available to platform. In that case, the platform
+		// variant is used only for the hostdex and not installed to the device.
+		return true
+	}
+	return j.ApexModuleBase.AvailableFor(what)
+}
+
 func (j *Module) deps(ctx android.BottomUpMutatorContext) {
 	if ctx.Device() {
 		sdkDep := decodeSdkDep(ctx, sdkContext(j))
@@ -561,6 +599,7 @@ func (j *Module) deps(ctx android.BottomUpMutatorContext) {
 	ctx.AddVariationDependencies(nil, staticLibTag, j.properties.Static_libs...)
 
 	ctx.AddFarVariationDependencies(ctx.Config().BuildOSCommonTarget.Variations(), pluginTag, j.properties.Plugins...)
+	ctx.AddFarVariationDependencies(ctx.Config().BuildOSCommonTarget.Variations(), exportedPluginTag, j.properties.Exported_plugins...)
 
 	android.ProtoDeps(ctx, &j.protoProperties)
 	if j.hasSrcExt(".proto") {
@@ -677,7 +716,12 @@ const (
 	javaPlatform
 )
 
-func getLinkType(m *Module, name string) (ret linkType, stubs bool) {
+type linkTypeContext interface {
+	android.Module
+	getLinkType(name string) (ret linkType, stubs bool)
+}
+
+func (m *Module) getLinkType(name string) (ret linkType, stubs bool) {
 	ver := m.sdkVersion()
 	switch {
 	case name == "core.current.stubs" || name == "core.platform.api.stubs" ||
@@ -708,16 +752,16 @@ func getLinkType(m *Module, name string) (ret linkType, stubs bool) {
 	}
 }
 
-func checkLinkType(ctx android.ModuleContext, from *Module, to *Library, tag dependencyTag) {
+func checkLinkType(ctx android.ModuleContext, from *Module, to linkTypeContext, tag dependencyTag) {
 	if ctx.Host() {
 		return
 	}
 
-	myLinkType, stubs := getLinkType(from, ctx.ModuleName())
+	myLinkType, stubs := from.getLinkType(ctx.ModuleName())
 	if stubs {
 		return
 	}
-	otherLinkType, _ := getLinkType(&to.Module, ctx.OtherModuleName(to))
+	otherLinkType, _ := to.getLinkType(ctx.OtherModuleName(to))
 	commonMessage := "Adjust sdk_version: property of the source or target module so that target module is built with the same or smaller API set than the source."
 
 	switch myLinkType {
@@ -774,11 +818,13 @@ func (j *Module) collectDeps(ctx android.ModuleContext) deps {
 			// Handled by AndroidApp.collectAppDeps
 			return
 		}
-
-		if to, ok := module.(*Library); ok {
-			switch tag {
-			case bootClasspathTag, libTag, staticLibTag:
-				checkLinkType(ctx, j, to, tag.(dependencyTag))
+		switch module.(type) {
+		case *Library, *AndroidLibrary:
+			if to, ok := module.(linkTypeContext); ok {
+				switch tag {
+				case bootClasspathTag, libTag, staticLibTag:
+					checkLinkType(ctx, j, to, tag.(dependencyTag))
+				}
 			}
 		}
 		switch dep := module.(type) {
@@ -800,6 +846,8 @@ func (j *Module) collectDeps(ctx android.ModuleContext) deps {
 				// sdk lib names from dependencies are re-exported
 				j.exportedSdkLibs = append(j.exportedSdkLibs, dep.ExportedSdkLibs()...)
 				deps.aidlIncludeDirs = append(deps.aidlIncludeDirs, dep.AidlIncludeDirs()...)
+				pluginJars, pluginClasses := dep.ExportedPlugins()
+				addPlugins(&deps, pluginJars, pluginClasses...)
 			case java9LibTag:
 				deps.java9Classpath = append(deps.java9Classpath, dep.HeaderJars()...)
 			case staticLibTag:
@@ -810,15 +858,30 @@ func (j *Module) collectDeps(ctx android.ModuleContext) deps {
 				// sdk lib names from dependencies are re-exported
 				j.exportedSdkLibs = append(j.exportedSdkLibs, dep.ExportedSdkLibs()...)
 				deps.aidlIncludeDirs = append(deps.aidlIncludeDirs, dep.AidlIncludeDirs()...)
+				pluginJars, pluginClasses := dep.ExportedPlugins()
+				addPlugins(&deps, pluginJars, pluginClasses...)
 			case pluginTag:
 				if plugin, ok := dep.(*Plugin); ok {
-					deps.processorPath = append(deps.processorPath, dep.ImplementationAndResourcesJars()...)
 					if plugin.pluginProperties.Processor_class != nil {
-						deps.processorClasses = append(deps.processorClasses, *plugin.pluginProperties.Processor_class)
+						addPlugins(&deps, plugin.ImplementationAndResourcesJars(), *plugin.pluginProperties.Processor_class)
+					} else {
+						addPlugins(&deps, plugin.ImplementationAndResourcesJars())
 					}
 					deps.disableTurbine = deps.disableTurbine || Bool(plugin.pluginProperties.Generates_api)
 				} else {
 					ctx.PropertyErrorf("plugins", "%q is not a java_plugin module", otherName)
+				}
+			case exportedPluginTag:
+				if plugin, ok := dep.(*Plugin); ok {
+					if plugin.pluginProperties.Generates_api != nil && *plugin.pluginProperties.Generates_api {
+						ctx.PropertyErrorf("exported_plugins", "Cannot export plugins with generates_api = true, found %v", otherName)
+					}
+					j.exportedPluginJars = append(j.exportedPluginJars, plugin.ImplementationAndResourcesJars()...)
+					if plugin.pluginProperties.Processor_class != nil {
+						j.exportedPluginClasses = append(j.exportedPluginClasses, *plugin.pluginProperties.Processor_class)
+					}
+				} else {
+					ctx.PropertyErrorf("exported_plugins", "%q is not a java_plugin module", otherName)
 				}
 			case frameworkApkTag:
 				if ctx.ModuleName() == "android_stubs_current" ||
@@ -873,6 +936,11 @@ func (j *Module) collectDeps(ctx android.ModuleContext) deps {
 	j.exportedSdkLibs = android.FirstUniqueStrings(j.exportedSdkLibs)
 
 	return deps
+}
+
+func addPlugins(deps *deps, pluginJars android.Paths, pluginClasses ...string) {
+	deps.processorPath = append(deps.processorPath, pluginJars...)
+	deps.processorClasses = append(deps.processorClasses, pluginClasses...)
 }
 
 func getJavaVersion(ctx android.ModuleContext, javaVersion string, sdkContext sdkContext) javaVersion {
@@ -1569,6 +1637,10 @@ func (j *Module) ExportedSdkLibs() []string {
 	return j.exportedSdkLibs
 }
 
+func (j *Module) ExportedPlugins() (android.Paths, []string) {
+	return j.exportedPluginJars, j.exportedPluginClasses
+}
+
 func (j *Module) SrcJarArgs() ([]string, android.Paths) {
 	return j.srcJarArgs, j.srcJarDeps
 }
@@ -1665,23 +1737,48 @@ func (j *Library) DepsMutator(ctx android.BottomUpMutatorContext) {
 }
 
 const (
-	aidlIncludeDir     = "aidl"
-	javaStubDir        = "java"
-	javaStubFileSuffix = ".jar"
+	aidlIncludeDir = "aidl"
+	javaDir        = "java"
+	jarFileSuffix  = ".jar"
 )
 
-// path to the stub file of a java library. Relative to <sdk_root>/<api_dir>
-func (j *Library) javaStubFilePathFor() string {
-	return filepath.Join(javaStubDir, j.Name()+javaStubFileSuffix)
+// path to the jar file of a java library. Relative to <sdk_root>/<api_dir>
+func (j *Library) sdkSnapshotFilePathForJar() string {
+	return filepath.Join(javaDir, j.Name()+jarFileSuffix)
 }
 
-func (j *Library) BuildSnapshot(sdkModuleContext android.ModuleContext, builder android.SnapshotBuilder) {
-	headerJars := j.HeaderJars()
-	if len(headerJars) != 1 {
-		panic(fmt.Errorf("there must be only one header jar from %q", j.Name()))
+type librarySdkMemberType struct {
+	android.SdkMemberTypeBase
+}
+
+func (mt *librarySdkMemberType) AddDependencies(mctx android.BottomUpMutatorContext, dependencyTag blueprint.DependencyTag, names []string) {
+	mctx.AddVariationDependencies(nil, dependencyTag, names...)
+}
+
+func (mt *librarySdkMemberType) IsInstance(module android.Module) bool {
+	_, ok := module.(*Library)
+	return ok
+}
+
+func (mt *librarySdkMemberType) buildSnapshot(
+	sdkModuleContext android.ModuleContext,
+	builder android.SnapshotBuilder,
+	member android.SdkMember,
+	jarToExportGetter func(j *Library) android.Path) {
+
+	variants := member.Variants()
+	if len(variants) != 1 {
+		sdkModuleContext.ModuleErrorf("sdk contains %d variants of member %q but only one is allowed", len(variants), member.Name())
+		for _, variant := range variants {
+			sdkModuleContext.ModuleErrorf("    %q", variant)
+		}
 	}
-	snapshotRelativeJavaLibPath := j.javaStubFilePathFor()
-	builder.CopyToSnapshot(headerJars[0], snapshotRelativeJavaLibPath)
+	variant := variants[0]
+	j := variant.(*Library)
+
+	exportedJar := jarToExportGetter(j)
+	snapshotRelativeJavaLibPath := j.sdkSnapshotFilePathForJar()
+	builder.CopyToSnapshot(exportedJar, snapshotRelativeJavaLibPath)
 
 	for _, dir := range j.AidlIncludeDirs() {
 		// TODO(jiyong): copy parcelable declarations only
@@ -1691,28 +1788,38 @@ func (j *Library) BuildSnapshot(sdkModuleContext android.ModuleContext, builder 
 		}
 	}
 
-	name := j.Name()
-	bp := builder.AndroidBpFile()
-	bp.Printfln("java_import {")
-	bp.Indent()
-	bp.Printfln("name: %q,", builder.VersionedSdkMemberName(name))
-	bp.Printfln("sdk_member_name: %q,", name)
-	bp.Printfln("jars: [%q],", snapshotRelativeJavaLibPath)
-	bp.Dedent()
-	bp.Printfln("}")
-	bp.Printfln("")
+	module := builder.AddPrebuiltModule(member, "java_import")
+	module.AddProperty("jars", []string{snapshotRelativeJavaLibPath})
+}
 
-	// This module is for the case when the source tree for the unversioned module
-	// doesn't exist (i.e. building in an unbundled tree). "prefer:" is set to false
-	// so that this module does not eclipse the unversioned module if it exists.
-	bp.Printfln("java_import {")
-	bp.Indent()
-	bp.Printfln("name: %q,", name)
-	bp.Printfln("jars: [%q],", snapshotRelativeJavaLibPath)
-	bp.Printfln("prefer: false,")
-	bp.Dedent()
-	bp.Printfln("}")
-	bp.Printfln("")
+type headerLibrarySdkMemberType struct {
+	librarySdkMemberType
+}
+
+func (mt *headerLibrarySdkMemberType) BuildSnapshot(sdkModuleContext android.ModuleContext, builder android.SnapshotBuilder, member android.SdkMember) {
+	mt.librarySdkMemberType.buildSnapshot(sdkModuleContext, builder, member, func(j *Library) android.Path {
+		headerJars := j.HeaderJars()
+		if len(headerJars) != 1 {
+			panic(fmt.Errorf("there must be only one header jar from %q", j.Name()))
+		}
+
+		return headerJars[0]
+	})
+}
+
+type implLibrarySdkMemberType struct {
+	librarySdkMemberType
+}
+
+func (mt *implLibrarySdkMemberType) BuildSnapshot(sdkModuleContext android.ModuleContext, builder android.SnapshotBuilder, member android.SdkMember) {
+	mt.librarySdkMemberType.buildSnapshot(sdkModuleContext, builder, member, func(j *Library) android.Path {
+		implementationJars := j.ImplementationJars()
+		if len(implementationJars) != 1 {
+			panic(fmt.Errorf("there must be only one implementation jar from %q", j.Name()))
+		}
+
+		return implementationJars[0]
+	})
 }
 
 // java_library builds and links sources into a `.jar` file for the device, and possibly for the host as well.
@@ -2143,6 +2250,10 @@ func (j *Import) ExportedSdkLibs() []string {
 	return j.exportedSdkLibs
 }
 
+func (j *Import) ExportedPlugins() (android.Paths, []string) {
+	return nil, nil
+}
+
 func (j *Import) SrcJarArgs() ([]string, android.Paths) {
 	return nil, nil
 }
@@ -2364,10 +2475,9 @@ func defaultsFactory() android.Module {
 	return DefaultsFactory()
 }
 
-func DefaultsFactory(props ...interface{}) android.Module {
+func DefaultsFactory() android.Module {
 	module := &Defaults{}
 
-	module.AddProperties(props...)
 	module.AddProperties(
 		&CompilerProperties{},
 		&CompilerDeviceProperties{},

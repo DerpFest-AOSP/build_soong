@@ -302,9 +302,6 @@ type commonProperties struct {
 	// If a module does not specify the `visibility` property then it uses the
 	// `default_visibility` property of the `package` module in the module's package.
 	//
-	// If a module does not specify the `visibility` property then it uses the
-	// `default_visibility` property of the `package` module in the module's package.
-	//
 	// If the `default_visibility` property is not set for the module's package then
 	// it will use the `default_visibility` of its closest ancestor package for which
 	// a `default_visibility` property is specified.
@@ -431,6 +428,9 @@ type commonProperties struct {
 	DebugName       string   `blueprint:"mutated"`
 	DebugMutators   []string `blueprint:"mutated"`
 	DebugVariations []string `blueprint:"mutated"`
+
+	// set by ImageMutator
+	ImageVariation string `blueprint:"mutated"`
 }
 
 type hostAndDeviceProperties struct {
@@ -775,6 +775,13 @@ func (m *ModuleBase) DeviceSupported() bool {
 				*m.hostAndDeviceProperties.Device_supported)
 }
 
+func (m *ModuleBase) HostSupported() bool {
+	return m.commonProperties.HostOrDeviceSupported == HostSupported ||
+		m.commonProperties.HostOrDeviceSupported == HostAndDeviceSupported &&
+			(m.hostAndDeviceProperties.Host_supported != nil &&
+				*m.hostAndDeviceProperties.Host_supported)
+}
+
 func (m *ModuleBase) Platform() bool {
 	return !m.DeviceSpecific() && !m.SocSpecific() && !m.ProductSpecific() && !m.SystemExtSpecific()
 }
@@ -863,6 +870,21 @@ func (m *ModuleBase) Owner() string {
 
 func (m *ModuleBase) NoticeFile() OptionalPath {
 	return m.noticeFile
+}
+
+func (m *ModuleBase) setImageVariation(variant string) {
+	m.commonProperties.ImageVariation = variant
+}
+
+func (m *ModuleBase) ImageVariation() blueprint.Variation {
+	return blueprint.Variation{
+		Mutator:   "image",
+		Variation: m.base().commonProperties.ImageVariation,
+	}
+}
+
+func (m *ModuleBase) InRecovery() bool {
+	return m.base().commonProperties.ImageVariation == RecoveryVariation
 }
 
 func (m *ModuleBase) generateModuleTarget(ctx ModuleContext) {
@@ -1515,9 +1537,11 @@ func (m *ModuleBase) EnableNativeBridgeSupportByDefault() {
 }
 
 func (m *ModuleBase) MakeAsSystemExt() {
-	if !Bool(m.commonProperties.Vendor) && !Bool(m.commonProperties.Product_specific) {
-		m.commonProperties.System_ext_specific = boolPtr(true)
-	}
+	m.commonProperties.Vendor = boolPtr(false)
+	m.commonProperties.Proprietary = boolPtr(false)
+	m.commonProperties.Soc_specific = boolPtr(false)
+	m.commonProperties.Product_specific = boolPtr(false)
+	m.commonProperties.System_ext_specific = boolPtr(true)
 }
 
 // IsNativeBridgeSupported returns true if "native_bridge_supported" is explicitly set as "true"
@@ -1771,7 +1795,7 @@ type SourceFileProducer interface {
 }
 
 // A module that implements OutputFileProducer can be referenced from any property that is tagged with `android:"path"`
-// using the ":module" syntax or ":module{.tag}" syntax and provides a list of otuput files to be used as if they were
+// using the ":module" syntax or ":module{.tag}" syntax and provides a list of output files to be used as if they were
 // listed in the property.
 type OutputFileProducer interface {
 	OutputFiles(tag string) (Paths, error)

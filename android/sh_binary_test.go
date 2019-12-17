@@ -9,8 +9,8 @@ func testShBinary(t *testing.T, bp string) (*TestContext, Config) {
 	config := TestArchConfig(buildDir, nil)
 
 	ctx := NewTestArchContext()
-	ctx.RegisterModuleType("sh_test", ModuleFactoryAdaptor(ShTestFactory))
-	ctx.RegisterModuleType("sh_test_host", ModuleFactoryAdaptor(ShTestHostFactory))
+	ctx.RegisterModuleType("sh_test", ShTestFactory)
+	ctx.RegisterModuleType("sh_test_host", ShTestHostFactory)
 	ctx.Register()
 	mockFiles := map[string][]byte{
 		"Android.bp":         []byte(bp),
@@ -42,7 +42,7 @@ func TestShTestTestData(t *testing.T) {
 
 	mod := ctx.ModuleForTests("foo", "android_arm64_armv8-a").Module().(*ShTest)
 
-	entries := AndroidMkEntriesForTest(t, config, "", mod)
+	entries := AndroidMkEntriesForTest(t, config, "", mod)[0]
 	expected := []string{":testdata/data1", ":testdata/sub/data2"}
 	actual := entries.EntryMap["LOCAL_TEST_DATA"]
 	if !reflect.DeepEqual(expected, actual) {

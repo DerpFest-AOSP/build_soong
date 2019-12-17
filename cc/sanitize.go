@@ -39,7 +39,16 @@ var (
 
 	hwasanCflags = []string{"-fno-omit-frame-pointer", "-Wno-frame-larger-than=",
 		"-fsanitize-hwaddress-abi=platform",
-		"-fno-experimental-new-pass-manager"}
+		"-fno-experimental-new-pass-manager",
+		// The following improves debug location information
+		// availability at the cost of its accuracy. It increases
+		// the likelihood of a stack variable's frame offset
+		// to be recorded in the debug info, which is important
+		// for the quality of hwasan reports. The downside is a
+		// higher number of "optimized out" stack variables.
+		// b/112437883.
+		"-mllvm", "-instcombine-lower-dbg-declare=0",
+	}
 
 	cfiCflags = []string{"-flto", "-fsanitize-cfi-cross-dso",
 		"-fsanitize-blacklist=external/compiler-rt/lib/cfi/cfi_blacklist.txt"}
@@ -485,6 +494,15 @@ func (sanitize *sanitize) flags(ctx ModuleContext, flags Flags) Flags {
 		// Disable fortify for fuzzing builds. Generally, we'll be building with
 		// UBSan or ASan here and the fortify checks pollute the stack traces.
 		flags.Local.CFlags = append(flags.Local.CFlags, "-U_FORTIFY_SOURCE")
+
+		// Build fuzzer-sanitized libraries with an $ORIGIN DT_RUNPATH. Android's
+		// linker uses DT_RUNPATH, not DT_RPATH. When we deploy cc_fuzz targets and
+		// their libraries to /data/fuzz/<arch>/lib, any transient shared library gets
+		// the DT_RUNPATH from the shared library above it, and not the executable,
+		// meaning that the lookup falls back to the system. Adding the $ORIGIN to the
+		// DT_RUNPATH here means that transient shared libraries can be found
+		// colocated with their parents.
+		flags.Local.LdFlags = append(flags.Local.LdFlags, `-Wl,-rpath,\$$ORIGIN`)
 	}
 
 	if Bool(sanitize.Properties.Sanitize.Cfi) {
@@ -886,13 +904,13 @@ func sanitizerRuntimeMutator(mctx android.BottomUpMutatorContext) {
 				// static executable gets static runtime libs
 				mctx.AddFarVariationDependencies(append(mctx.Target().Variations(), []blueprint.Variation{
 					{Mutator: "link", Variation: "static"},
-					{Mutator: "image", Variation: c.imageVariation()},
+					c.ImageVariation(),
 				}...), StaticDepTag, append([]string{runtimeLibrary}, extraStaticDeps...)...)
 			} else if !c.static() && !c.header() {
 				// dynamic executable and shared libs get shared runtime libs
 				mctx.AddFarVariationDependencies(append(mctx.Target().Variations(), []blueprint.Variation{
 					{Mutator: "link", Variation: "shared"},
-					{Mutator: "image", Variation: c.imageVariation()},
+					c.ImageVariation(),
 				}...), earlySharedDepTag, runtimeLibrary)
 			}
 			// static lib does not have dependency to the runtime library. The

@@ -75,7 +75,6 @@ func GetConfig(name string) PathConfig {
 
 var Configuration = map[string]PathConfig{
 	"bash":     Allowed,
-	"bc":       Allowed,
 	"dd":       Allowed,
 	"diff":     Allowed,
 	"dlv":      Allowed,
@@ -120,9 +119,6 @@ var Configuration = map[string]PathConfig{
 	"pgrep": LinuxOnlyPrebuilt,
 	"pkill": LinuxOnlyPrebuilt,
 	"ps":    LinuxOnlyPrebuilt,
-
-	// The toybox xargs is currently breaking the mac build.
-	"xargs": LinuxOnlyPrebuilt,
 }
 
 func init() {

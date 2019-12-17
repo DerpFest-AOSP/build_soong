@@ -448,7 +448,7 @@ func (a *AndroidApp) generateAndroidBuildActions(ctx android.ModuleContext) {
 	} else if a.Privileged() {
 		a.installDir = android.PathForModuleInstall(ctx, "priv-app", a.installApkName)
 	} else if ctx.InstallInTestcases() {
-		a.installDir = android.PathForModuleInstall(ctx, a.installApkName)
+		a.installDir = android.PathForModuleInstall(ctx, a.installApkName, ctx.DeviceConfig().DeviceArch())
 	} else {
 		a.installDir = android.PathForModuleInstall(ctx, "app", a.installApkName)
 	}
@@ -632,6 +632,17 @@ func (a *AndroidTest) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 
 	a.testConfig = tradefed.AutoGenInstrumentationTestConfig(ctx, a.testProperties.Test_config,
 		a.testProperties.Test_config_template, a.manifestPath, a.testProperties.Test_suites, a.testProperties.Auto_gen_config)
+	if a.overridableAppProperties.Package_name != nil {
+		fixedConfig := android.PathForModuleOut(ctx, "test_config_fixer", "AndroidTest.xml")
+		rule := android.NewRuleBuilder()
+		rule.Command().BuiltTool(ctx, "test_config_fixer").
+			FlagWithArg("--manifest ", a.manifestPath.String()).
+			FlagWithArg("--package-name ", *a.overridableAppProperties.Package_name).
+			Input(a.testConfig).
+			Output(fixedConfig)
+		rule.Build(pctx, ctx, "fix_test_config", "fix test config")
+		a.testConfig = fixedConfig
+	}
 	a.data = android.PathsForModuleSrc(ctx, a.testProperties.Data)
 }
 
@@ -695,6 +706,10 @@ type AndroidTestHelperApp struct {
 	AndroidApp
 
 	appTestHelperAppProperties appTestHelperAppProperties
+}
+
+func (a *AndroidTestHelperApp) InstallInTestcases() bool {
+	return true
 }
 
 // android_test_helper_app compiles sources and Android resources into an Android application package `.apk` file that
@@ -970,7 +985,13 @@ func (a *AndroidAppImport) generateAndroidBuildActions(ctx android.ModuleContext
 	jnisUncompressed := android.PathForModuleOut(ctx, "jnis-uncompressed", ctx.ModuleName()+".apk")
 	a.uncompressEmbeddedJniLibs(ctx, srcApk, jnisUncompressed.OutputPath)
 
-	installDir := android.PathForModuleInstall(ctx, "app", a.BaseModuleName())
+	var installDir android.InstallPath
+	if Bool(a.properties.Privileged) {
+		installDir = android.PathForModuleInstall(ctx, "priv-app", a.BaseModuleName())
+	} else {
+		installDir = android.PathForModuleInstall(ctx, "app", a.BaseModuleName())
+	}
+
 	a.dexpreopter.installPath = installDir.Join(ctx, a.BaseModuleName()+".apk")
 	a.dexpreopter.isInstallable = true
 	a.dexpreopter.isPresignedPrebuilt = Bool(a.properties.Presigned)

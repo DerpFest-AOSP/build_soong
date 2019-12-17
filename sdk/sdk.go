@@ -16,6 +16,8 @@ package sdk
 
 import (
 	"fmt"
+	"io"
+	"reflect"
 	"strconv"
 
 	"github.com/google/blueprint"
@@ -25,11 +27,12 @@ import (
 	// This package doesn't depend on the apex package, but import it to make its mutators to be
 	// registered before mutators in this package. See RegisterPostDepsMutators for more details.
 	_ "android/soong/apex"
-	"android/soong/cc"
 )
 
 func init() {
 	pctx.Import("android/soong/android")
+	pctx.Import("android/soong/java/config")
+
 	android.RegisterModuleType("sdk", ModuleFactory)
 	android.RegisterModuleType("sdk_snapshot", SnapshotModuleFactory)
 	android.PreDepsMutators(RegisterPreDepsMutators)
@@ -40,25 +43,157 @@ type sdk struct {
 	android.ModuleBase
 	android.DefaultableModuleBase
 
+	// The dynamically generated information about the registered SdkMemberType
+	dynamicSdkMemberTypes *dynamicSdkMemberTypes
+
+	// The dynamically created instance of the properties struct containing the sdk member
+	// list properties, e.g. java_libs.
+	dynamicMemberTypeListProperties interface{}
+
 	properties sdkProperties
 
 	snapshotFile android.OptionalPath
+
+	// The builder, preserved for testing.
+	builderForTests *snapshotBuilder
 }
 
 type sdkProperties struct {
-	// The list of java libraries in this SDK
-	Java_libs []string
-	// The list of native libraries in this SDK
-	Native_shared_libs []string
-
 	Snapshot bool `blueprint:"mutated"`
+}
+
+type sdkMemberDependencyTag struct {
+	blueprint.BaseDependencyTag
+	memberType android.SdkMemberType
+}
+
+// Contains information about the sdk properties that list sdk members, e.g.
+// Java_header_libs.
+type sdkMemberListProperty struct {
+	// getter for the list of member names
+	getter func(properties interface{}) []string
+
+	// the type of member referenced in the list
+	memberType android.SdkMemberType
+
+	// the dependency tag used for items in this list that can be used to determine the memberType
+	// for a resolved dependency.
+	dependencyTag *sdkMemberDependencyTag
+}
+
+func (p *sdkMemberListProperty) propertyName() string {
+	return p.memberType.SdkPropertyName()
+}
+
+// Cache of dynamically generated dynamicSdkMemberTypes objects. The key is the pointer
+// to a slice of SdkMemberType instances held in android.SdkMemberTypes.
+var dynamicSdkMemberTypesMap android.OncePer
+
+// A dynamically generated set of member list properties and associated structure type.
+type dynamicSdkMemberTypes struct {
+	// The dynamically generated structure type.
+	//
+	// Contains one []string exported field for each android.SdkMemberTypes. The name of the field
+	// is the exported form of the value returned by SdkMemberType.SdkPropertyName().
+	propertiesStructType reflect.Type
+
+	// Information about each of the member type specific list properties.
+	memberListProperties []*sdkMemberListProperty
+}
+
+func (d *dynamicSdkMemberTypes) createMemberListProperties() interface{} {
+	return reflect.New(d.propertiesStructType).Interface()
+}
+
+func getDynamicSdkMemberTypes(registry *android.SdkMemberTypesRegistry) *dynamicSdkMemberTypes {
+
+	// Get a key that uniquely identifies the registry contents.
+	key := registry.UniqueOnceKey()
+
+	// Get the registered types.
+	registeredTypes := registry.RegisteredTypes()
+
+	// Get the cached value, creating new instance if necessary.
+	return dynamicSdkMemberTypesMap.Once(key, func() interface{} {
+		return createDynamicSdkMemberTypes(registeredTypes)
+	}).(*dynamicSdkMemberTypes)
+}
+
+// Create the dynamicSdkMemberTypes from the list of registered member types.
+//
+// A struct is created which contains one exported field per member type corresponding to
+// the SdkMemberType.SdkPropertyName() value.
+//
+// A list of sdkMemberListProperty instances is created, one per member type that provides:
+// * a reference to the member type.
+// * a getter for the corresponding field in the properties struct.
+// * a dependency tag that identifies the member type of a resolved dependency.
+//
+func createDynamicSdkMemberTypes(sdkMemberTypes []android.SdkMemberType) *dynamicSdkMemberTypes {
+	var listProperties []*sdkMemberListProperty
+	var fields []reflect.StructField
+
+	// Iterate over the member types creating StructField and sdkMemberListProperty objects.
+	for f, memberType := range sdkMemberTypes {
+		p := memberType.SdkPropertyName()
+
+		// Create a dynamic exported field for the member type's property.
+		fields = append(fields, reflect.StructField{
+			Name: proptools.FieldNameForProperty(p),
+			Type: reflect.TypeOf([]string{}),
+		})
+
+		// Copy the field index for use in the getter func as using the loop variable directly will
+		// cause all funcs to use the last value.
+		fieldIndex := f
+
+		// Create an sdkMemberListProperty for the member type.
+		memberListProperty := &sdkMemberListProperty{
+			getter: func(properties interface{}) []string {
+				// The properties is expected to be of the following form (where
+				// <Module_types> is the name of an SdkMemberType.SdkPropertyName().
+				//     properties *struct {<Module_types> []string, ....}
+				//
+				// Although it accesses the field by index the following reflection code is equivalent to:
+				//    *properties.<Module_types>
+				//
+				list := reflect.ValueOf(properties).Elem().Field(fieldIndex).Interface().([]string)
+				return list
+			},
+
+			memberType: memberType,
+
+			dependencyTag: &sdkMemberDependencyTag{
+				memberType: memberType,
+			},
+		}
+
+		listProperties = append(listProperties, memberListProperty)
+	}
+
+	// Create a dynamic struct from the collated fields.
+	propertiesStructType := reflect.StructOf(fields)
+
+	return &dynamicSdkMemberTypes{
+		memberListProperties: listProperties,
+		propertiesStructType: propertiesStructType,
+	}
 }
 
 // sdk defines an SDK which is a logical group of modules (e.g. native libs, headers, java libs, etc.)
 // which Mainline modules like APEX can choose to build with.
 func ModuleFactory() android.Module {
 	s := &sdk{}
-	s.AddProperties(&s.properties)
+
+	// Get the dynamic sdk member type data for the currently registered sdk member types.
+	s.dynamicSdkMemberTypes = getDynamicSdkMemberTypes(android.SdkMemberTypes)
+
+	// Create an instance of the dynamically created struct that contains all the
+	// properties for the member type specific list properties.
+	s.dynamicMemberTypeListProperties = s.dynamicSdkMemberTypes.createMemberListProperties()
+
+	s.AddProperties(&s.properties, s.dynamicMemberTypeListProperties)
+
 	android.InitAndroidMultiTargetsArchModule(s, android.HostAndDeviceSupported, android.MultilibCommon)
 	android.InitDefaultableModule(s)
 	android.AddLoadHook(s, func(ctx android.LoadHookContext) {
@@ -82,27 +217,6 @@ func (s *sdk) snapshot() bool {
 	return s.properties.Snapshot
 }
 
-func (s *sdk) frozenVersions(ctx android.BaseModuleContext) []string {
-	if s.snapshot() {
-		panic(fmt.Errorf("frozenVersions() called for sdk_snapshot %q", ctx.ModuleName()))
-	}
-	versions := []string{}
-	ctx.WalkDeps(func(child android.Module, parent android.Module) bool {
-		depTag := ctx.OtherModuleDependencyTag(child)
-		if depTag == sdkMemberDepTag {
-			return true
-		}
-		if versionedDepTag, ok := depTag.(sdkMemberVesionedDepTag); ok {
-			v := versionedDepTag.version
-			if v != "current" && !android.InList(v, versions) {
-				versions = append(versions, versionedDepTag.version)
-			}
-		}
-		return false
-	})
-	return android.SortedUniqueStrings(versions)
-}
-
 func (s *sdk) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 	if !s.snapshot() {
 		// We don't need to create a snapshot out of sdk_snapshot.
@@ -111,17 +225,24 @@ func (s *sdk) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 	}
 }
 
-func (s *sdk) AndroidMkEntries() android.AndroidMkEntries {
+func (s *sdk) AndroidMkEntries() []android.AndroidMkEntries {
 	if !s.snapshotFile.Valid() {
-		return android.AndroidMkEntries{}
+		return []android.AndroidMkEntries{}
 	}
 
-	return android.AndroidMkEntries{
+	return []android.AndroidMkEntries{android.AndroidMkEntries{
 		Class:      "FAKE",
 		OutputFile: s.snapshotFile,
 		DistFile:   s.snapshotFile,
 		Include:    "$(BUILD_PHONY_PACKAGE)",
-	}
+		ExtraFooters: []android.AndroidMkExtraFootersFunc{
+			func(w io.Writer, name, prefix, moduleDir string, entries *android.AndroidMkEntries) {
+				// Allow the sdk to be built by simply passing its name on the command line.
+				fmt.Fprintln(w, ".PHONY:", s.Name())
+				fmt.Fprintln(w, s.Name()+":", s.snapshotFile.String())
+			},
+		},
+	}}
 }
 
 // RegisterPreDepsMutators registers pre-deps mutators to support modules implementing SdkAware
@@ -151,10 +272,6 @@ type dependencyTag struct {
 	blueprint.BaseDependencyTag
 }
 
-// For dependencies from an SDK module to its members
-// e.g. mysdk -> libfoo and libbar
-var sdkMemberDepTag dependencyTag
-
 // For dependencies from an in-development version of an SDK member to frozen versions of the same member
 // e.g. libfoo -> libfoo.mysdk.11 and libfoo.mysdk.12
 type sdkMemberVesionedDepTag struct {
@@ -165,22 +282,11 @@ type sdkMemberVesionedDepTag struct {
 
 // Step 1: create dependencies from an SDK module to its members.
 func memberMutator(mctx android.BottomUpMutatorContext) {
-	if m, ok := mctx.Module().(*sdk); ok {
-		mctx.AddVariationDependencies(nil, sdkMemberDepTag, m.properties.Java_libs...)
-
-		targets := mctx.MultiTargets()
-		for _, target := range targets {
-			for _, lib := range m.properties.Native_shared_libs {
-				name, version := cc.StubsLibNameAndVersion(lib)
-				if version == "" {
-					version = cc.LatestStubsVersionFor(mctx.Config(), name)
-				}
-				mctx.AddFarVariationDependencies(append(target.Variations(), []blueprint.Variation{
-					{Mutator: "image", Variation: "core"},
-					{Mutator: "link", Variation: "shared"},
-					{Mutator: "version", Variation: version},
-				}...), sdkMemberDepTag, name)
-			}
+	if s, ok := mctx.Module().(*sdk); ok {
+		for _, memberListProperty := range s.dynamicSdkMemberTypes.memberListProperties {
+			names := memberListProperty.getter(s.dynamicMemberTypeListProperties)
+			tag := memberListProperty.dependencyTag
+			memberListProperty.memberType.AddDependencies(mctx, tag, names)
 		}
 	}
 }

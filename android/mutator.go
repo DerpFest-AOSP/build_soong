@@ -78,17 +78,18 @@ var preArch = []RegisterMutatorFunc{
 	registerLoadHookMutator,
 	RegisterNamespaceMutator,
 	// Rename package module types.
-	registerPackageRenamer,
+	RegisterPackageRenamer,
 	RegisterPrebuiltsPreArchMutators,
-	registerVisibilityRuleChecker,
+	RegisterVisibilityRuleChecker,
 	RegisterDefaultsPreArchMutators,
-	registerVisibilityRuleGatherer,
+	RegisterVisibilityRuleGatherer,
 }
 
 func registerArchMutator(ctx RegisterMutatorsContext) {
 	ctx.BottomUp("os", osMutator).Parallel()
 	ctx.BottomUp("arch", archMutator).Parallel()
 	ctx.TopDown("arch_hooks", archHookMutator).Parallel()
+	ctx.BottomUp("image", imageMutator).Parallel()
 }
 
 var preDeps = []RegisterMutatorFunc{
@@ -98,7 +99,7 @@ var preDeps = []RegisterMutatorFunc{
 var postDeps = []RegisterMutatorFunc{
 	registerPathDepsMutator,
 	RegisterPrebuiltsPostDepsMutators,
-	registerVisibilityRuleEnforcer,
+	RegisterVisibilityRuleEnforcer,
 	registerNeverallowMutator,
 	RegisterOverridePostDepsMutators,
 }
@@ -143,8 +144,8 @@ type BottomUpMutatorContext interface {
 
 	AddDependency(module blueprint.Module, tag blueprint.DependencyTag, name ...string)
 	AddReverseDependency(module blueprint.Module, tag blueprint.DependencyTag, name string)
-	CreateVariations(...string) []blueprint.Module
-	CreateLocalVariations(...string) []blueprint.Module
+	CreateVariations(...string) []Module
+	CreateLocalVariations(...string) []Module
 	SetDependencyVariation(string)
 	SetDefaultDependencyVariation(*string)
 	AddVariationDependencies([]blueprint.Variation, blueprint.DependencyTag, ...string)
@@ -285,28 +286,32 @@ func (b *bottomUpMutatorContext) AddReverseDependency(module blueprint.Module, t
 	b.bp.AddReverseDependency(module, tag, name)
 }
 
-func (b *bottomUpMutatorContext) CreateVariations(variations ...string) []blueprint.Module {
+func (b *bottomUpMutatorContext) CreateVariations(variations ...string) []Module {
 	modules := b.bp.CreateVariations(variations...)
 
+	aModules := make([]Module, len(modules))
 	for i := range variations {
-		base := modules[i].(Module).base()
+		aModules[i] = modules[i].(Module)
+		base := aModules[i].base()
 		base.commonProperties.DebugMutators = append(base.commonProperties.DebugMutators, b.MutatorName())
 		base.commonProperties.DebugVariations = append(base.commonProperties.DebugVariations, variations[i])
 	}
 
-	return modules
+	return aModules
 }
 
-func (b *bottomUpMutatorContext) CreateLocalVariations(variations ...string) []blueprint.Module {
+func (b *bottomUpMutatorContext) CreateLocalVariations(variations ...string) []Module {
 	modules := b.bp.CreateLocalVariations(variations...)
 
+	aModules := make([]Module, len(modules))
 	for i := range variations {
-		base := modules[i].(Module).base()
+		aModules[i] = modules[i].(Module)
+		base := aModules[i].base()
 		base.commonProperties.DebugMutators = append(base.commonProperties.DebugMutators, b.MutatorName())
 		base.commonProperties.DebugVariations = append(base.commonProperties.DebugVariations, variations[i])
 	}
 
-	return modules
+	return aModules
 }
 
 func (b *bottomUpMutatorContext) SetDependencyVariation(variation string) {

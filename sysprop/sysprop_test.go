@@ -56,9 +56,9 @@ func testContext(config android.Config, bp string,
 	fs map[string][]byte) *android.TestContext {
 
 	ctx := android.NewTestArchContext()
-	ctx.RegisterModuleType("android_app", android.ModuleFactoryAdaptor(java.AndroidAppFactory))
-	ctx.RegisterModuleType("java_library", android.ModuleFactoryAdaptor(java.LibraryFactory))
-	ctx.RegisterModuleType("java_system_modules", android.ModuleFactoryAdaptor(java.SystemModulesFactory))
+	ctx.RegisterModuleType("android_app", java.AndroidAppFactory)
+	ctx.RegisterModuleType("java_library", java.LibraryFactory)
+	ctx.RegisterModuleType("java_system_modules", java.SystemModulesFactory)
 	ctx.PreArchMutators(android.RegisterPrebuiltsPreArchMutators)
 	ctx.PreArchMutators(android.RegisterPrebuiltsPostDepsMutators)
 	ctx.PreArchMutators(android.RegisterDefaultsPreArchMutators)
@@ -66,14 +66,13 @@ func testContext(config android.Config, bp string,
 		ctx.BottomUp("sysprop_deps", syspropDepsMutator).Parallel()
 	})
 
-	ctx.RegisterModuleType("cc_library", android.ModuleFactoryAdaptor(cc.LibraryFactory))
-	ctx.RegisterModuleType("cc_library_headers", android.ModuleFactoryAdaptor(cc.LibraryHeaderFactory))
-	ctx.RegisterModuleType("cc_library_static", android.ModuleFactoryAdaptor(cc.LibraryFactory))
-	ctx.RegisterModuleType("cc_object", android.ModuleFactoryAdaptor(cc.ObjectFactory))
-	ctx.RegisterModuleType("llndk_library", android.ModuleFactoryAdaptor(cc.LlndkLibraryFactory))
-	ctx.RegisterModuleType("toolchain_library", android.ModuleFactoryAdaptor(cc.ToolchainLibraryFactory))
+	ctx.RegisterModuleType("cc_library", cc.LibraryFactory)
+	ctx.RegisterModuleType("cc_library_headers", cc.LibraryHeaderFactory)
+	ctx.RegisterModuleType("cc_library_static", cc.LibraryFactory)
+	ctx.RegisterModuleType("cc_object", cc.ObjectFactory)
+	ctx.RegisterModuleType("llndk_library", cc.LlndkLibraryFactory)
+	ctx.RegisterModuleType("toolchain_library", cc.ToolchainLibraryFactory)
 	ctx.PreDepsMutators(func(ctx android.RegisterMutatorsContext) {
-		ctx.BottomUp("image", cc.ImageMutator).Parallel()
 		ctx.BottomUp("link", cc.LinkageMutator).Parallel()
 		ctx.BottomUp("vndk", cc.VndkMutator).Parallel()
 		ctx.BottomUp("version", cc.VersionMutator).Parallel()
@@ -81,7 +80,7 @@ func testContext(config android.Config, bp string,
 		ctx.BottomUp("sysprop", cc.SyspropMutator).Parallel()
 	})
 
-	ctx.RegisterModuleType("sysprop_library", android.ModuleFactoryAdaptor(syspropLibraryFactory))
+	ctx.RegisterModuleType("sysprop_library", syspropLibraryFactory)
 
 	ctx.Register()
 
@@ -296,10 +295,10 @@ func TestSyspropLibrary(t *testing.T) {
 	}
 
 	for _, variant := range []string{
-		"android_arm_armv7-a-neon_core_shared",
-		"android_arm_armv7-a-neon_core_static",
-		"android_arm64_armv8-a_core_shared",
-		"android_arm64_armv8-a_core_static",
+		"android_arm_armv7-a-neon_shared",
+		"android_arm_armv7-a-neon_static",
+		"android_arm64_armv8-a_shared",
+		"android_arm64_armv8-a_static",
 	} {
 		ctx.ModuleForTests("libsysprop-platform", variant)
 
@@ -311,17 +310,17 @@ func TestSyspropLibrary(t *testing.T) {
 	ctx.ModuleForTests("sysprop-vendor", "android_common")
 
 	// Check for exported includes
-	coreVariant := "android_arm64_armv8-a_core_static"
+	coreVariant := "android_arm64_armv8-a_static"
 	vendorVariant := "android_arm64_armv8-a_vendor.VER_static"
 
-	platformInternalPath := "libsysprop-platform/android_arm64_armv8-a_core_static/gen/sysprop/include"
-	platformPublicCorePath := "libsysprop-platform/android_arm64_armv8-a_core_static/gen/sysprop/public/include"
+	platformInternalPath := "libsysprop-platform/android_arm64_armv8-a_static/gen/sysprop/include"
+	platformPublicCorePath := "libsysprop-platform/android_arm64_armv8-a_static/gen/sysprop/public/include"
 	platformPublicVendorPath := "libsysprop-platform/android_arm64_armv8-a_vendor.VER_static/gen/sysprop/public/include"
 
-	platformOnProductPath := "libsysprop-platform-on-product/android_arm64_armv8-a_core_static/gen/sysprop/public/include"
+	platformOnProductPath := "libsysprop-platform-on-product/android_arm64_armv8-a_static/gen/sysprop/public/include"
 
 	vendorInternalPath := "libsysprop-vendor/android_arm64_armv8-a_vendor.VER_static/gen/sysprop/include"
-	vendorPublicPath := "libsysprop-vendor/android_arm64_armv8-a_core_static/gen/sysprop/public/include"
+	vendorPublicPath := "libsysprop-vendor/android_arm64_armv8-a_static/gen/sysprop/public/include"
 
 	platformClient := ctx.ModuleForTests("cc-client-platform", coreVariant)
 	platformFlags := platformClient.Rule("cc").Args["cFlags"]

@@ -87,8 +87,8 @@ func testPackage(fs map[string][]byte) (*TestContext, []error) {
 	config := TestArchConfig(buildDir, nil)
 
 	ctx := NewTestArchContext()
-	ctx.RegisterModuleType("package", ModuleFactoryAdaptor(PackageFactory))
-	ctx.PreArchMutators(registerPackageRenamer)
+	ctx.RegisterModuleType("package", PackageFactory)
+	ctx.PreArchMutators(RegisterPackageRenamer)
 	ctx.Register()
 
 	ctx.MockFileSystem(fs)
