@@ -52,15 +52,10 @@ func TestMain(m *testing.M) {
 	os.Exit(run())
 }
 
-func testCcWithConfig(t *testing.T, bp string, config android.Config) *android.TestContext {
+func testCcWithConfig(t *testing.T, config android.Config) *android.TestContext {
 	t.Helper()
-	return testCcWithConfigForOs(t, bp, config, android.Android)
-}
-
-func testCcWithConfigForOs(t *testing.T, bp string, config android.Config, os android.OsType) *android.TestContext {
-	t.Helper()
-	ctx := CreateTestContext(bp, nil, os)
-	ctx.Register()
+	ctx := CreateTestContext()
+	ctx.Register(config)
 
 	_, errs := ctx.ParseFileList(".", []string{"Android.bp"})
 	android.FailIfErrored(t, errs)
@@ -72,29 +67,29 @@ func testCcWithConfigForOs(t *testing.T, bp string, config android.Config, os an
 
 func testCc(t *testing.T, bp string) *android.TestContext {
 	t.Helper()
-	config := android.TestArchConfig(buildDir, nil)
+	config := TestConfig(buildDir, android.Android, nil, bp, nil)
 	config.TestProductVariables.DeviceVndkVersion = StringPtr("current")
 	config.TestProductVariables.Platform_vndk_version = StringPtr("VER")
 
-	return testCcWithConfig(t, bp, config)
+	return testCcWithConfig(t, config)
 }
 
 func testCcNoVndk(t *testing.T, bp string) *android.TestContext {
 	t.Helper()
-	config := android.TestArchConfig(buildDir, nil)
+	config := TestConfig(buildDir, android.Android, nil, bp, nil)
 	config.TestProductVariables.Platform_vndk_version = StringPtr("VER")
 
-	return testCcWithConfig(t, bp, config)
+	return testCcWithConfig(t, config)
 }
 
 func testCcError(t *testing.T, pattern string, bp string) {
 	t.Helper()
-	config := android.TestArchConfig(buildDir, nil)
+	config := TestConfig(buildDir, android.Android, nil, bp, nil)
 	config.TestProductVariables.DeviceVndkVersion = StringPtr("current")
 	config.TestProductVariables.Platform_vndk_version = StringPtr("VER")
 
-	ctx := CreateTestContext(bp, nil, android.Android)
-	ctx.Register()
+	ctx := CreateTestContext()
+	ctx.Register(config)
 
 	_, errs := ctx.ParseFileList(".", []string{"Android.bp"})
 	if len(errs) > 0 {
@@ -113,8 +108,8 @@ func testCcError(t *testing.T, pattern string, bp string) {
 
 const (
 	coreVariant     = "android_arm64_armv8-a_shared"
-	vendorVariant   = "android_arm64_armv8-a_vendor.VER_shared"
-	recoveryVariant = "android_arm64_armv8-a_recovery_shared"
+	vendorVariant   = "android_vendor.VER_arm64_armv8-a_shared"
+	recoveryVariant = "android_recovery_arm64_armv8-a_shared"
 )
 
 func TestFuchsiaDeps(t *testing.T) {
@@ -131,8 +126,8 @@ func TestFuchsiaDeps(t *testing.T) {
 			},
 		}`
 
-	config := android.TestArchConfigFuchsia(buildDir, nil)
-	ctx := testCcWithConfigForOs(t, bp, config, android.Fuchsia)
+	config := TestConfig(buildDir, android.Fuchsia, nil, bp, nil)
+	ctx := testCcWithConfig(t, config)
 
 	rt := false
 	fb := false
@@ -168,8 +163,8 @@ func TestFuchsiaTargetDecl(t *testing.T) {
 			},
 		}`
 
-	config := android.TestArchConfigFuchsia(buildDir, nil)
-	ctx := testCcWithConfigForOs(t, bp, config, android.Fuchsia)
+	config := TestConfig(buildDir, android.Fuchsia, nil, bp, nil)
+	ctx := testCcWithConfig(t, config)
 	ld := ctx.ModuleForTests("libTest", "fuchsia_arm64_shared").Rule("ld")
 	var objs []string
 	for _, o := range ld.Inputs {
@@ -290,11 +285,7 @@ func checkVndkLibrariesOutput(t *testing.T, ctx *android.TestContext, module str
 }
 
 func TestVndk(t *testing.T) {
-	config := android.TestArchConfig(buildDir, nil)
-	config.TestProductVariables.DeviceVndkVersion = StringPtr("current")
-	config.TestProductVariables.Platform_vndk_version = StringPtr("VER")
-
-	ctx := testCcWithConfig(t, `
+	bp := `
 		cc_library {
 			name: "libvndk",
 			vendor_available: true,
@@ -354,7 +345,13 @@ func TestVndk(t *testing.T) {
 		vndk_libraries_txt {
 			name: "vndkcorevariant.libraries.txt",
 		}
-	`, config)
+	`
+
+	config := TestConfig(buildDir, android.Android, nil, bp, nil)
+	config.TestProductVariables.DeviceVndkVersion = StringPtr("current")
+	config.TestProductVariables.Platform_vndk_version = StringPtr("VER")
+
+	ctx := testCcWithConfig(t, config)
 
 	checkVndkModule(t, ctx, "libvndk", "vndk-VER", false, "")
 	checkVndkModule(t, ctx, "libvndk_private", "vndk-VER", false, "")
@@ -376,8 +373,8 @@ func TestVndk(t *testing.T) {
 	vndkCoreLib2ndPath := filepath.Join(vndkLib2ndPath, "shared", "vndk-core")
 	vndkSpLib2ndPath := filepath.Join(vndkLib2ndPath, "shared", "vndk-sp")
 
-	variant := "android_arm64_armv8-a_vendor.VER_shared"
-	variant2nd := "android_arm_armv7-a-neon_vendor.VER_shared"
+	variant := "android_vendor.VER_arm64_armv8-a_shared"
+	variant2nd := "android_vendor.VER_arm_armv7-a-neon_shared"
 
 	checkVndkSnapshot(t, ctx, "libvndk", "libvndk.so", vndkCoreLibPath, variant)
 	checkVndkSnapshot(t, ctx, "libvndk", "libvndk.so", vndkCoreLib2ndPath, variant2nd)
@@ -412,13 +409,14 @@ func TestVndk(t *testing.T) {
 }
 
 func TestVndkLibrariesTxtAndroidMk(t *testing.T) {
-	config := android.TestArchConfig(buildDir, nil)
-	config.TestProductVariables.DeviceVndkVersion = StringPtr("current")
-	config.TestProductVariables.Platform_vndk_version = StringPtr("VER")
-	ctx := testCcWithConfig(t, `
+	bp := `
 		vndk_libraries_txt {
 			name: "llndk.libraries.txt",
-		}`, config)
+		}`
+	config := TestConfig(buildDir, android.Android, nil, bp, nil)
+	config.TestProductVariables.DeviceVndkVersion = StringPtr("current")
+	config.TestProductVariables.Platform_vndk_version = StringPtr("VER")
+	ctx := testCcWithConfig(t, config)
 
 	module := ctx.ModuleForTests("llndk.libraries.txt", "")
 	entries := android.AndroidMkEntriesForTest(t, config, "", module.Module())[0]
@@ -426,14 +424,7 @@ func TestVndkLibrariesTxtAndroidMk(t *testing.T) {
 }
 
 func TestVndkUsingCoreVariant(t *testing.T) {
-	config := android.TestArchConfig(buildDir, nil)
-	config.TestProductVariables.DeviceVndkVersion = StringPtr("current")
-	config.TestProductVariables.Platform_vndk_version = StringPtr("VER")
-	config.TestProductVariables.VndkUseCoreVariant = BoolPtr(true)
-
-	setVndkMustUseVendorVariantListForTest(config, []string{"libvndk"})
-
-	ctx := testCcWithConfig(t, `
+	bp := `
 		cc_library {
 			name: "libvndk",
 			vendor_available: true,
@@ -465,7 +456,16 @@ func TestVndkUsingCoreVariant(t *testing.T) {
 		vndk_libraries_txt {
 			name: "vndkcorevariant.libraries.txt",
 		}
-	`, config)
+	`
+
+	config := TestConfig(buildDir, android.Android, nil, bp, nil)
+	config.TestProductVariables.DeviceVndkVersion = StringPtr("current")
+	config.TestProductVariables.Platform_vndk_version = StringPtr("VER")
+	config.TestProductVariables.VndkUseCoreVariant = BoolPtr(true)
+
+	setVndkMustUseVendorVariantListForTest(config, []string{"libvndk"})
+
+	ctx := testCcWithConfig(t, config)
 
 	checkVndkLibrariesOutput(t, ctx, "vndkcorevariant.libraries.txt", []string{"libc++.so", "libvndk2.so", "libvndk_sp.so"})
 }
@@ -1446,75 +1446,77 @@ func TestVndkUseVndkExtError(t *testing.T) {
 }
 
 func TestMakeLinkType(t *testing.T) {
-	config := android.TestArchConfig(buildDir, nil)
+	bp := `
+		cc_library {
+			name: "libvndk",
+			vendor_available: true,
+			vndk: {
+				enabled: true,
+			},
+		}
+		cc_library {
+			name: "libvndksp",
+			vendor_available: true,
+			vndk: {
+				enabled: true,
+				support_system_process: true,
+			},
+		}
+		cc_library {
+			name: "libvndkprivate",
+			vendor_available: false,
+			vndk: {
+				enabled: true,
+			},
+		}
+		cc_library {
+			name: "libvendor",
+			vendor: true,
+		}
+		cc_library {
+			name: "libvndkext",
+			vendor: true,
+			vndk: {
+				enabled: true,
+				extends: "libvndk",
+			},
+		}
+		vndk_prebuilt_shared {
+			name: "prevndk",
+			version: "27",
+			target_arch: "arm",
+			binder32bit: true,
+			vendor_available: true,
+			vndk: {
+				enabled: true,
+			},
+			arch: {
+				arm: {
+					srcs: ["liba.so"],
+				},
+			},
+		}
+		cc_library {
+			name: "libllndk",
+		}
+		llndk_library {
+			name: "libllndk",
+			symbol_file: "",
+		}
+		cc_library {
+			name: "libllndkprivate",
+		}
+		llndk_library {
+			name: "libllndkprivate",
+			vendor_available: false,
+			symbol_file: "",
+		}`
+
+	config := TestConfig(buildDir, android.Android, nil, bp, nil)
 	config.TestProductVariables.DeviceVndkVersion = StringPtr("current")
 	config.TestProductVariables.Platform_vndk_version = StringPtr("VER")
 	// native:vndk
-	ctx := testCcWithConfig(t, `
-	cc_library {
-		name: "libvndk",
-		vendor_available: true,
-		vndk: {
-			enabled: true,
-		},
-	}
-	cc_library {
-		name: "libvndksp",
-		vendor_available: true,
-		vndk: {
-			enabled: true,
-			support_system_process: true,
-		},
-	}
-	cc_library {
-		name: "libvndkprivate",
-		vendor_available: false,
-		vndk: {
-			enabled: true,
-		},
-	}
-	cc_library {
-		name: "libvendor",
-		vendor: true,
-	}
-	cc_library {
-		name: "libvndkext",
-		vendor: true,
-		vndk: {
-			enabled: true,
-			extends: "libvndk",
-		},
-	}
-	vndk_prebuilt_shared {
-		name: "prevndk",
-		version: "27",
-		target_arch: "arm",
-		binder32bit: true,
-		vendor_available: true,
-		vndk: {
-			enabled: true,
-		},
-		arch: {
-			arm: {
-				srcs: ["liba.so"],
-			},
-		},
-	}
-	cc_library {
-		name: "libllndk",
-	}
-	llndk_library {
-		name: "libllndk",
-		symbol_file: "",
-	}
-	cc_library {
-		name: "libllndkprivate",
-	}
-	llndk_library {
-		name: "libllndkprivate",
-		vendor_available: false,
-		symbol_file: "",
-	}`, config)
+	ctx := testCcWithConfig(t, config)
 
 	assertMapKeys(t, vndkCoreLibraries(config),
 		[]string{"libvndk", "libvndkprivate"})
@@ -1525,7 +1527,7 @@ func TestMakeLinkType(t *testing.T) {
 	assertMapKeys(t, vndkPrivateLibraries(config),
 		[]string{"libft2", "libllndkprivate", "libvndkprivate"})
 
-	vendorVariant27 := "android_arm64_armv8-a_vendor.27_shared"
+	vendorVariant27 := "android_vendor.27_arm64_armv8-a_shared"
 
 	tests := []struct {
 		variant  string
@@ -1976,7 +1978,7 @@ func TestLlndkHeaders(t *testing.T) {
 	`)
 
 	// _static variant is used since _shared reuses *.o from the static variant
-	cc := ctx.ModuleForTests("libvendor", "android_arm_armv7-a-neon_vendor.VER_static").Rule("cc")
+	cc := ctx.ModuleForTests("libvendor", "android_vendor.VER_arm_armv7-a-neon_static").Rule("cc")
 	cflags := cc.Args["cFlags"]
 	if !strings.Contains(cflags, "-Imy_include") {
 		t.Errorf("cflags for libvendor must contain -Imy_include, but was %#v.", cflags)
@@ -2062,7 +2064,7 @@ func TestRuntimeLibs(t *testing.T) {
 
 	// runtime_libs for vendor variants have '.vendor' suffixes if the modules have both core
 	// and vendor variants.
-	variant = "android_arm64_armv8-a_vendor.VER_shared"
+	variant = "android_vendor.VER_arm64_armv8-a_shared"
 
 	module = ctx.ModuleForTests("libvendor_available2", variant).Module().(*Module)
 	checkRuntimeLibs(t, []string{"libvendor_available1.vendor"}, module)
@@ -2078,7 +2080,7 @@ func TestExcludeRuntimeLibs(t *testing.T) {
 	module := ctx.ModuleForTests("libvendor_available3", variant).Module().(*Module)
 	checkRuntimeLibs(t, []string{"libvendor_available1"}, module)
 
-	variant = "android_arm64_armv8-a_vendor.VER_shared"
+	variant = "android_vendor.VER_arm64_armv8-a_shared"
 	module = ctx.ModuleForTests("libvendor_available3", variant).Module().(*Module)
 	checkRuntimeLibs(t, nil, module)
 }
@@ -2257,7 +2259,7 @@ func TestVendorPublicLibraries(t *testing.T) {
 	`)
 
 	coreVariant := "android_arm64_armv8-a_shared"
-	vendorVariant := "android_arm64_armv8-a_vendor.VER_shared"
+	vendorVariant := "android_vendor.VER_arm64_armv8-a_shared"
 
 	// test if header search paths are correctly added
 	// _static variant is used since _shared reuses *.o from the static variant
@@ -2304,7 +2306,7 @@ func TestRecovery(t *testing.T) {
 	`)
 
 	variants := ctx.ModuleVariantsForTests("librecovery")
-	const arm64 = "android_arm64_armv8-a_recovery_shared"
+	const arm64 = "android_recovery_arm64_armv8-a_shared"
 	if len(variants) != 1 || !android.InList(arm64, variants) {
 		t.Errorf("variants of librecovery must be \"%s\" only, but was %#v", arm64, variants)
 	}

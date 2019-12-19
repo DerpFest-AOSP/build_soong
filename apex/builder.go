@@ -138,7 +138,6 @@ var (
 		Command: `${zip2zip} -i $in -o $out ` +
 			`apex_payload.img:apex/${abi}.img ` +
 			`apex_manifest.json:root/apex_manifest.json ` +
-			`apex_pubkey:root/apex_pubkey ` +
 			`apex_manifest.pb:root/apex_manifest.pb ` +
 			`AndroidManifest.xml:manifest/AndroidManifest.xml ` +
 			`assets/NOTICE.html.gz:assets/NOTICE.html.gz`,
@@ -350,8 +349,8 @@ func (a *apexBundle) buildUnflattenedApex(ctx android.ModuleContext) {
 		implicitInputs = append(implicitInputs, cannedFsConfig, a.fileContexts, a.private_key_file, a.public_key_file)
 		optFlags = append(optFlags, "--pubkey "+a.public_key_file.String())
 
-		manifestPackageName, overridden := ctx.DeviceConfig().OverrideManifestPackageNameFor(a.Name())
-		if overridden {
+		manifestPackageName := a.getOverrideManifestPackageName(ctx)
+		if manifestPackageName != "" {
 			optFlags = append(optFlags, "--override_apk_package_name "+manifestPackageName)
 		}
 
@@ -495,15 +494,17 @@ func (a *apexBundle) buildFlattenedApex(ctx android.ModuleContext) {
 }
 
 func (a *apexBundle) setCertificateAndPrivateKey(ctx android.ModuleContext) {
-	cert := String(a.properties.Certificate)
-	if cert != "" && android.SrcIsModule(cert) == "" {
-		defaultDir := ctx.Config().DefaultAppCertificateDir(ctx)
-		a.container_certificate_file = defaultDir.Join(ctx, cert+".x509.pem")
-		a.container_private_key_file = defaultDir.Join(ctx, cert+".pk8")
-	} else if cert == "" {
-		pem, key := ctx.Config().DefaultAppCertificate(ctx)
-		a.container_certificate_file = pem
-		a.container_private_key_file = key
+	if a.container_certificate_file == nil {
+		cert := String(a.properties.Certificate)
+		if cert == "" {
+			pem, key := ctx.Config().DefaultAppCertificate(ctx)
+			a.container_certificate_file = pem
+			a.container_private_key_file = key
+		} else {
+			defaultDir := ctx.Config().DefaultAppCertificateDir(ctx)
+			a.container_certificate_file = defaultDir.Join(ctx, cert+".x509.pem")
+			a.container_private_key_file = defaultDir.Join(ctx, cert+".pk8")
+		}
 	}
 }
 
@@ -533,4 +534,22 @@ func (a *apexBundle) buildFilesInfo(ctx android.ModuleContext) {
 			}
 		}
 	}
+}
+
+func (a *apexBundle) getOverrideManifestPackageName(ctx android.ModuleContext) string {
+	// For VNDK APEXes, check "com.android.vndk" in PRODUCT_MANIFEST_PACKAGE_NAME_OVERRIDES
+	// to see if it should be overridden because their <apex name> is dynamically generated
+	// according to its VNDK version.
+	if a.vndkApex {
+		overrideName, overridden := ctx.DeviceConfig().OverrideManifestPackageNameFor(vndkApexName)
+		if overridden {
+			return strings.Replace(*a.properties.Apex_name, vndkApexName, overrideName, 1)
+		}
+		return ""
+	}
+	manifestPackageName, overridden := ctx.DeviceConfig().OverrideManifestPackageNameFor(a.Name())
+	if overridden {
+		return manifestPackageName
+	}
+	return ""
 }

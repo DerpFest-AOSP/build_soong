@@ -29,7 +29,36 @@ import (
 )
 
 func testSdkContext(bp string, fs map[string][]byte) (*android.TestContext, android.Config) {
-	config := android.TestArchConfig(buildDir, nil)
+	bp = bp + `
+		apex_key {
+			name: "myapex.key",
+			public_key: "myapex.avbpubkey",
+			private_key: "myapex.pem",
+		}
+
+		android_app_certificate {
+			name: "myapex.cert",
+			certificate: "myapex",
+		}
+	` + cc.GatherRequiredDepsForTest(android.Android)
+
+	mockFS := map[string][]byte{
+		"build/make/target/product/security":         nil,
+		"apex_manifest.json":                         nil,
+		"system/sepolicy/apex/myapex-file_contexts":  nil,
+		"system/sepolicy/apex/myapex2-file_contexts": nil,
+		"myapex.avbpubkey":                           nil,
+		"myapex.pem":                                 nil,
+		"myapex.x509.pem":                            nil,
+		"myapex.pk8":                                 nil,
+	}
+
+	for k, v := range fs {
+		mockFS[k] = v
+	}
+
+	config := android.TestArchConfig(buildDir, nil, bp, mockFS)
+
 	ctx := android.NewTestArchContext()
 
 	// from android package
@@ -49,20 +78,16 @@ func testSdkContext(bp string, fs map[string][]byte) (*android.TestContext, andr
 	ctx.RegisterModuleType("package", android.PackageFactory)
 
 	// from java package
-	ctx.RegisterModuleType("android_app_certificate", java.AndroidAppCertificateFactory)
-	ctx.RegisterModuleType("java_defaults", java.DefaultsFactory)
-	ctx.RegisterModuleType("java_library", java.LibraryFactory)
-	ctx.RegisterModuleType("java_import", java.ImportFactory)
-	ctx.RegisterModuleType("droidstubs", java.DroidstubsFactory)
-	ctx.RegisterModuleType("prebuilt_stubs_sources", java.PrebuiltStubsSourcesFactory)
+	java.RegisterJavaBuildComponents(ctx)
+	java.RegisterAppBuildComponents(ctx)
+	java.RegisterStubsBuildComponents(ctx)
 
 	// from cc package
 	ctx.RegisterModuleType("cc_library", cc.LibraryFactory)
 	ctx.RegisterModuleType("cc_library_shared", cc.LibrarySharedFactory)
 	ctx.RegisterModuleType("cc_library_static", cc.LibraryStaticFactory)
 	ctx.RegisterModuleType("cc_object", cc.ObjectFactory)
-	ctx.RegisterModuleType("cc_prebuilt_library_shared", cc.PrebuiltSharedLibraryFactory)
-	ctx.RegisterModuleType("cc_prebuilt_library_static", cc.PrebuiltStaticLibraryFactory)
+	cc.RegisterPrebuiltBuildComponents(ctx)
 	ctx.RegisterModuleType("llndk_library", cc.LlndkLibraryFactory)
 	ctx.RegisterModuleType("toolchain_library", cc.ToolchainLibraryFactory)
 	ctx.PreDepsMutators(func(ctx android.RegisterMutatorsContext) {
@@ -84,38 +109,7 @@ func testSdkContext(bp string, fs map[string][]byte) (*android.TestContext, andr
 	ctx.PreDepsMutators(RegisterPreDepsMutators)
 	ctx.PostDepsMutators(RegisterPostDepsMutators)
 
-	ctx.Register()
-
-	bp = bp + `
-		apex_key {
-			name: "myapex.key",
-			public_key: "myapex.avbpubkey",
-			private_key: "myapex.pem",
-		}
-
-		android_app_certificate {
-			name: "myapex.cert",
-			certificate: "myapex",
-		}
-	` + cc.GatherRequiredDepsForTest(android.Android)
-
-	mockFS := map[string][]byte{
-		"Android.bp":                                 []byte(bp),
-		"build/make/target/product/security":         nil,
-		"apex_manifest.json":                         nil,
-		"system/sepolicy/apex/myapex-file_contexts":  nil,
-		"system/sepolicy/apex/myapex2-file_contexts": nil,
-		"myapex.avbpubkey":                           nil,
-		"myapex.pem":                                 nil,
-		"myapex.x509.pem":                            nil,
-		"myapex.pk8":                                 nil,
-	}
-
-	for k, v := range fs {
-		mockFS[k] = v
-	}
-
-	ctx.MockFileSystem(mockFS)
+	ctx.Register(config)
 
 	return ctx, config
 }

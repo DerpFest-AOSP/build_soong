@@ -89,6 +89,15 @@ func reportPathErrorf(ctx PathContext, format string, args ...interface{}) {
 	}
 }
 
+func pathContextName(ctx PathContext, module blueprint.Module) string {
+	if x, ok := ctx.(interface{ ModuleName(blueprint.Module) string }); ok {
+		return x.ModuleName(module)
+	} else if x, ok := ctx.(interface{ OtherModuleName(blueprint.Module) string }); ok {
+		return x.OtherModuleName(module)
+	}
+	return "unknown"
+}
+
 type Path interface {
 	// Returns the path in string form
 	String() string
@@ -1353,19 +1362,17 @@ func WritablePathsForTesting(strs ...string) WritablePaths {
 
 type testPathContext struct {
 	config Config
-	fs     pathtools.FileSystem
 }
 
-func (x *testPathContext) Fs() pathtools.FileSystem   { return x.fs }
+func (x *testPathContext) Fs() pathtools.FileSystem   { return x.config.fs }
 func (x *testPathContext) Config() Config             { return x.config }
 func (x *testPathContext) AddNinjaFileDeps(...string) {}
 
 // PathContextForTesting returns a PathContext that can be used in tests, for example to create an OutputPath with
 // PathForOutput.
-func PathContextForTesting(config Config, fs map[string][]byte) PathContext {
+func PathContextForTesting(config Config) PathContext {
 	return &testPathContext{
 		config: config,
-		fs:     pathtools.MockFs(fs),
 	}
 }
 

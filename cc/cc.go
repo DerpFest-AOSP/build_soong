@@ -42,7 +42,7 @@ func init() {
 		ctx.BottomUp("test_per_src", TestPerSrcMutator).Parallel()
 		ctx.BottomUp("version", VersionMutator).Parallel()
 		ctx.BottomUp("begin", BeginMutator).Parallel()
-		ctx.BottomUp("sysprop", SyspropMutator).Parallel()
+		ctx.BottomUp("sysprop_cc", SyspropMutator).Parallel()
 	})
 
 	android.PostDepsMutators(func(ctx android.RegisterMutatorsContext) {
@@ -755,7 +755,7 @@ func (c *Module) isCoverageVariant() bool {
 	return c.coverage.Properties.IsCoverageVariant
 }
 
-func (c *Module) isNdk() bool {
+func (c *Module) IsNdk() bool {
 	return inList(c.Name(), ndkMigratedLibs)
 }
 
@@ -995,7 +995,7 @@ func (ctx *moduleContextImpl) useVndk() bool {
 }
 
 func (ctx *moduleContextImpl) isNdk() bool {
-	return ctx.mod.isNdk()
+	return ctx.mod.IsNdk()
 }
 
 func (ctx *moduleContextImpl) isLlndk(config android.Config) bool {
@@ -2572,9 +2572,6 @@ func (m *Module) ImageMutatorBegin(mctx android.BaseModuleContext) {
 		// If the device isn't compiling against the VNDK, we always
 		// use the core mode.
 		coreVariantNeeded = true
-	} else if m.Target().NativeBridge == android.NativeBridgeEnabled {
-		// Skip creating vendor variants for natvie bridge modules
-		coreVariantNeeded = true
 	} else if _, ok := m.linker.(*llndkStubDecorator); ok {
 		// LL-NDK stubs only exist in the vendor variant, since the
 		// real libraries will be used in the core variant.
@@ -2621,14 +2618,6 @@ func (m *Module) ImageMutatorBegin(mctx android.BaseModuleContext) {
 	if m.ModuleBase.InstallInRecovery() {
 		recoveryVariantNeeded = true
 		coreVariantNeeded = false
-	}
-
-	if recoveryVariantNeeded {
-		primaryArch := mctx.Config().DevicePrimaryArchType()
-		moduleArch := m.Target().Arch.ArchType
-		if moduleArch != primaryArch {
-			recoveryVariantNeeded = false
-		}
 	}
 
 	for _, variant := range android.FirstUniqueStrings(vendorVariants) {
