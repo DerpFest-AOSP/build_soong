@@ -40,12 +40,8 @@ type dexpreopter struct {
 
 type DexpreoptProperties struct {
 	Dex_preopt struct {
-		// If false, prevent dexpreopting and stripping the dex file from the final jar.  Defaults to
-		// true.
+		// If false, prevent dexpreopting.  Defaults to true.
 		Enabled *bool
-
-		// If true, never strip the dex files from the final jar when dexpreopting.  Defaults to false.
-		No_stripping *bool
 
 		// If true, generate an app image (.art file) for this module.
 		App_image *bool
@@ -89,6 +85,11 @@ func (d *dexpreopter) dexpreoptDisabled(ctx android.ModuleContext) bool {
 		return true
 	}
 
+	// Don't preopt APEX variant module
+	if am, ok := ctx.Module().(android.ApexModule); ok && !am.IsForPlatform() {
+		return true
+	}
+
 	// TODO: contains no java code
 
 	return false
@@ -105,9 +106,10 @@ func (d *dexpreopter) dexpreopt(ctx android.ModuleContext, dexJarFile android.Mo
 
 	global := dexpreoptGlobalConfig(ctx)
 	bootImage := defaultBootImageConfig(ctx)
-	defaultBootImage := bootImage
-	if global.UseApexImage {
-		bootImage = apexBootImageConfig(ctx)
+	dexFiles := bootImage.dexPathsDeps.Paths()
+	dexLocations := bootImage.dexLocationsDeps
+	if global.UseArtImage {
+		bootImage = artBootImageConfig(ctx)
 	}
 
 	var archs []android.ArchType
@@ -128,15 +130,13 @@ func (d *dexpreopter) dexpreopt(ctx android.ModuleContext, dexJarFile android.Mo
 	}
 
 	var images android.Paths
-	var imagesDeps []android.Paths
+	var imagesDeps []android.OutputPaths
 	for _, arch := range archs {
 		images = append(images, bootImage.images[arch])
 		imagesDeps = append(imagesDeps, bootImage.imagesDeps[arch])
 	}
 
 	dexLocation := android.InstallPathToOnDevicePath(ctx, d.installPath)
-
-	strippedDexJarFile := android.PathForModuleOut(ctx, "dexpreopt", dexJarFile.Base())
 
 	var profileClassListing android.OptionalPath
 	var profileBootListing android.OptionalPath
@@ -175,15 +175,13 @@ func (d *dexpreopter) dexpreopt(ctx android.ModuleContext, dexJarFile android.Mo
 		UsesLibraries:                d.usesLibs,
 		LibraryPaths:                 d.libraryPaths,
 
-		Archs:               archs,
-		DexPreoptImages:     images,
-		DexPreoptImagesDeps: imagesDeps,
+		Archs:                   archs,
+		DexPreoptImages:         images,
+		DexPreoptImagesDeps:     imagesDeps,
+		DexPreoptImageLocations: bootImage.imageLocations,
 
-		// We use the dex paths and dex locations of the default boot image, as it
-		// contains the full dexpreopt boot classpath. Other images may just contain a subset of
-		// the dexpreopt boot classpath.
-		PreoptBootClassPathDexFiles:     defaultBootImage.dexPaths.Paths(),
-		PreoptBootClassPathDexLocations: defaultBootImage.dexLocations,
+		PreoptBootClassPathDexFiles:     dexFiles,
+		PreoptBootClassPathDexLocations: dexLocations,
 
 		PreoptExtractedApk: false,
 
@@ -191,10 +189,6 @@ func (d *dexpreopter) dexpreopt(ctx android.ModuleContext, dexJarFile android.Mo
 		ForceCreateAppImage: BoolDefault(d.dexpreoptProperties.Dex_preopt.App_image, false),
 
 		PresignedPrebuilt: d.isPresignedPrebuilt,
-
-		NoStripping:     Bool(d.dexpreoptProperties.Dex_preopt.No_stripping),
-		StripInputPath:  dexJarFile,
-		StripOutputPath: strippedDexJarFile.OutputPath,
 	}
 
 	dexpreoptRule, err := dexpreopt.GenerateDexpreoptRule(ctx, global, dexpreoptConfig)
@@ -207,13 +201,5 @@ func (d *dexpreopter) dexpreopt(ctx android.ModuleContext, dexJarFile android.Mo
 
 	d.builtInstalled = dexpreoptRule.Installs().String()
 
-	stripRule, err := dexpreopt.GenerateStripRule(global, dexpreoptConfig)
-	if err != nil {
-		ctx.ModuleErrorf("error generating dexpreopt strip rule: %s", err.Error())
-		return dexJarFile
-	}
-
-	stripRule.Build(pctx, ctx, "dexpreopt_strip", "dexpreopt strip")
-
-	return strippedDexJarFile
+	return dexJarFile
 }

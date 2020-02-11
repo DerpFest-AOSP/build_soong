@@ -25,7 +25,9 @@ import (
 
 var (
 	nativeBridgeSuffix = ".native_bridge"
+	productSuffix      = ".product"
 	vendorSuffix       = ".vendor"
+	ramdiskSuffix      = ".ramdisk"
 	recoverySuffix     = ".recovery"
 )
 
@@ -36,10 +38,11 @@ type AndroidMkContext interface {
 	Arch() android.Arch
 	Os() android.OsType
 	Host() bool
-	useVndk() bool
-	vndkVersion() string
+	UseVndk() bool
+	VndkVersion() string
 	static() bool
-	inRecovery() bool
+	InRamdisk() bool
+	InRecovery() bool
 }
 
 type subAndroidMkProvider interface {
@@ -89,10 +92,15 @@ func (c *Module) AndroidMk() android.AndroidMkData {
 					fmt.Fprintln(w, "LOCAL_WHOLE_STATIC_LIBRARIES := "+strings.Join(c.Properties.AndroidMkWholeStaticLibs, " "))
 				}
 				fmt.Fprintln(w, "LOCAL_SOONG_LINK_TYPE :=", c.makeLinkType)
-				if c.useVndk() {
+				if c.UseVndk() {
 					fmt.Fprintln(w, "LOCAL_USE_VNDK := true")
-					if c.isVndk() && !c.static() {
-						fmt.Fprintln(w, "LOCAL_SOONG_VNDK_VERSION := "+c.vndkVersion())
+					if c.IsVndk() && !c.static() {
+						fmt.Fprintln(w, "LOCAL_SOONG_VNDK_VERSION := "+c.VndkVersion())
+						// VNDK libraries available to vendor are not installed because
+						// they are packaged in VNDK APEX and installed by APEX packages (apex/apex.go)
+						if !c.isVndkExt() {
+							fmt.Fprintln(w, "LOCAL_UNINSTALLABLE_MODULE := true")
+						}
 					}
 				}
 			},
@@ -148,10 +156,10 @@ func makeOverrideModuleNames(ctx AndroidMkContext, overrides []string) []string 
 func (library *libraryDecorator) androidMkWriteExportedFlags(w io.Writer) {
 	exportedFlags := library.exportedFlags()
 	for _, dir := range library.exportedDirs() {
-		exportedFlags = append(exportedFlags, "-I"+dir)
+		exportedFlags = append(exportedFlags, "-I"+dir.String())
 	}
 	for _, dir := range library.exportedSystemDirs() {
-		exportedFlags = append(exportedFlags, "-isystem "+dir)
+		exportedFlags = append(exportedFlags, "-isystem "+dir.String())
 	}
 	if len(exportedFlags) > 0 {
 		fmt.Fprintln(w, "LOCAL_EXPORT_CFLAGS :=", strings.Join(exportedFlags, " "))
@@ -211,6 +219,9 @@ func (library *libraryDecorator) AndroidMk(ctx AndroidMkContext, ret *android.An
 			fmt.Fprintln(w, "LOCAL_NO_NOTICE_FILE := true")
 			fmt.Fprintln(w, "LOCAL_VNDK_DEPEND_ON_CORE_VARIANT := true")
 		}
+		if library.checkSameCoreVariant {
+			fmt.Fprintln(w, "LOCAL_CHECK_SAME_VNDK_VARIANTS := true")
+		}
 	})
 
 	if library.shared() && !library.buildStubs() {
@@ -224,7 +235,7 @@ func (library *libraryDecorator) AndroidMk(ctx AndroidMkContext, ret *android.An
 		})
 	}
 	if len(library.Properties.Stubs.Versions) > 0 &&
-		android.DirectlyInAnyApex(ctx, ctx.Name()) && !ctx.inRecovery() && !ctx.useVndk() &&
+		android.DirectlyInAnyApex(ctx, ctx.Name()) && !ctx.InRamdisk() && !ctx.InRecovery() && !ctx.UseVndk() &&
 		!ctx.static() {
 		if !library.buildStubs() {
 			ret.SubName = ".bootstrap"
@@ -278,6 +289,9 @@ func (benchmark *benchmarkDecorator) AndroidMk(ctx AndroidMkContext, ret *androi
 			fmt.Fprintln(w, "LOCAL_FULL_TEST_CONFIG :=", benchmark.testConfig.String())
 		}
 		fmt.Fprintln(w, "LOCAL_NATIVE_BENCHMARK := true")
+		if !BoolDefault(benchmark.Properties.Auto_gen_config, true) {
+			fmt.Fprintln(w, "LOCAL_DISABLE_AUTO_GENERATE_TEST_CONFIG := true")
+		}
 	})
 
 	androidMkWriteTestData(benchmark.data, ctx, ret)
@@ -298,6 +312,9 @@ func (test *testBinary) AndroidMk(ctx AndroidMkContext, ret *android.AndroidMkDa
 		if test.testConfig != nil {
 			fmt.Fprintln(w, "LOCAL_FULL_TEST_CONFIG :=", test.testConfig.String())
 		}
+		if !BoolDefault(test.Properties.Auto_gen_config, true) {
+			fmt.Fprintln(w, "LOCAL_DISABLE_AUTO_GENERATE_TEST_CONFIG := true")
+		}
 	})
 
 	androidMkWriteTestData(test.data, ctx, ret)
@@ -308,25 +325,34 @@ func (fuzz *fuzzBinary) AndroidMk(ctx AndroidMkContext, ret *android.AndroidMkDa
 
 	var fuzzFiles []string
 	for _, d := range fuzz.corpus {
-		rel := d.Rel()
-		path := d.String()
-		path = strings.TrimSuffix(path, rel)
-		fuzzFiles = append(fuzzFiles, path+":corpus/"+d.Base())
+		fuzzFiles = append(fuzzFiles,
+			filepath.Dir(fuzz.corpusIntermediateDir.String())+":corpus/"+d.Base())
+	}
+
+	for _, d := range fuzz.data {
+		fuzzFiles = append(fuzzFiles,
+			filepath.Dir(fuzz.dataIntermediateDir.String())+":data/"+d.Rel())
 	}
 
 	if fuzz.dictionary != nil {
-		path := strings.TrimSuffix(fuzz.dictionary.String(), fuzz.dictionary.Rel())
-		fuzzFiles = append(fuzzFiles, path+":"+fuzz.dictionary.Base())
+		fuzzFiles = append(fuzzFiles,
+			filepath.Dir(fuzz.dictionary.String())+":"+fuzz.dictionary.Base())
 	}
 
-	if len(fuzzFiles) > 0 {
-		ret.Extra = append(ret.Extra, func(w io.Writer, outputFile android.Path) {
-			fmt.Fprintln(w, "LOCAL_TEST_DATA := "+strings.Join(fuzzFiles, " "))
-		})
+	if fuzz.config != nil {
+		fuzzFiles = append(fuzzFiles,
+			filepath.Dir(fuzz.config.String())+":config.json")
 	}
 
 	ret.Extra = append(ret.Extra, func(w io.Writer, outputFile android.Path) {
 		fmt.Fprintln(w, "LOCAL_IS_FUZZ_TARGET := true")
+		if len(fuzzFiles) > 0 {
+			fmt.Fprintln(w, "LOCAL_TEST_DATA := "+strings.Join(fuzzFiles, " "))
+		}
+		if fuzz.installedSharedDeps != nil {
+			fmt.Fprintln(w, "LOCAL_FUZZ_INSTALLED_SHARED_DEPS :="+
+				strings.Join(fuzz.installedSharedDeps, " "))
+		}
 	})
 }
 

@@ -15,6 +15,7 @@
 package android
 
 import (
+	"reflect"
 	"testing"
 
 	"github.com/google/blueprint/proptools"
@@ -40,8 +41,8 @@ func (d *defaultsTestModule) GenerateAndroidBuildActions(ctx ModuleContext) {
 func defaultsTestModuleFactory() Module {
 	module := &defaultsTestModule{}
 	module.AddProperties(&module.properties)
-	InitDefaultableModule(module)
 	InitAndroidModule(module)
+	InitDefaultableModule(module)
 	return module
 }
 
@@ -57,20 +58,50 @@ func defaultsTestDefaultsFactory() Module {
 	return defaults
 }
 
-func TestDefaultsAllowMissingDependencies(t *testing.T) {
-	config := TestConfig(buildDir, nil)
-	config.TestProductVariables.Allow_missing_dependencies = proptools.BoolPtr(true)
+func TestDefaults(t *testing.T) {
+	bp := `
+		defaults {
+			name: "transitive",
+			foo: ["transitive"],
+		}
+
+		defaults {
+			name: "defaults",
+			defaults: ["transitive"],
+			foo: ["defaults"],
+		}
+
+		test {
+			name: "foo",
+			defaults: ["defaults"],
+			foo: ["module"],
+		}
+	`
+
+	config := TestConfig(buildDir, nil, bp, nil)
 
 	ctx := NewTestContext()
-	ctx.SetAllowMissingDependencies(true)
 
-	ctx.RegisterModuleType("test", ModuleFactoryAdaptor(defaultsTestModuleFactory))
-	ctx.RegisterModuleType("defaults", ModuleFactoryAdaptor(defaultsTestDefaultsFactory))
+	ctx.RegisterModuleType("test", defaultsTestModuleFactory)
+	ctx.RegisterModuleType("defaults", defaultsTestDefaultsFactory)
 
 	ctx.PreArchMutators(RegisterDefaultsPreArchMutators)
 
-	ctx.Register()
+	ctx.Register(config)
 
+	_, errs := ctx.ParseFileList(".", []string{"Android.bp"})
+	FailIfErrored(t, errs)
+	_, errs = ctx.PrepareBuildActions(config)
+	FailIfErrored(t, errs)
+
+	foo := ctx.ModuleForTests("foo", "").Module().(*defaultsTestModule)
+
+	if g, w := foo.properties.Foo, []string{"transitive", "defaults", "module"}; !reflect.DeepEqual(g, w) {
+		t.Errorf("expected foo %q, got %q", w, g)
+	}
+}
+
+func TestDefaultsAllowMissingDependencies(t *testing.T) {
 	bp := `
 		defaults {
 			name: "defaults",
@@ -91,9 +122,18 @@ func TestDefaultsAllowMissingDependencies(t *testing.T) {
 		}
 	`
 
-	ctx.MockFileSystem(map[string][]byte{
-		"Android.bp": []byte(bp),
-	})
+	config := TestConfig(buildDir, nil, bp, nil)
+	config.TestProductVariables.Allow_missing_dependencies = proptools.BoolPtr(true)
+
+	ctx := NewTestContext()
+	ctx.SetAllowMissingDependencies(true)
+
+	ctx.RegisterModuleType("test", defaultsTestModuleFactory)
+	ctx.RegisterModuleType("defaults", defaultsTestDefaultsFactory)
+
+	ctx.PreArchMutators(RegisterDefaultsPreArchMutators)
+
+	ctx.Register(config)
 
 	_, errs := ctx.ParseFileList(".", []string{"Android.bp"})
 	FailIfErrored(t, errs)

@@ -190,7 +190,7 @@ func stubFlagsRule(ctx android.SingletonContext) {
 	rule.MissingDeps(missingDeps)
 
 	rule.Command().
-		Tool(pctx.HostBinToolPath(ctx, "hiddenapi")).
+		Tool(ctx.Config().HostToolPath(ctx, "hiddenapi")).
 		Text("list").
 		FlagForEachInput("--boot-dex=", bootDexJars).
 		FlagWithInputList("--public-stub-classpath=", publicStubPaths, ":").
@@ -241,6 +241,8 @@ func flagsRule(ctx android.SingletonContext) android.Path {
 			android.PathForSource(ctx, "frameworks/base/config/hiddenapi-greylist.txt")).
 		FlagWithInput("--greylist-ignore-conflicts ",
 			greylistIgnoreConflicts).
+		FlagWithInput("--greylist-max-q ",
+			android.PathForSource(ctx, "frameworks/base/config/hiddenapi-greylist-max-q.txt")).
 		FlagWithInput("--greylist-max-p ",
 			android.PathForSource(ctx, "frameworks/base/config/hiddenapi-greylist-max-p.txt")).
 		FlagWithInput("--greylist-max-o-ignore-conflicts ",
@@ -291,7 +293,7 @@ func metadataRule(ctx android.SingletonContext) android.Path {
 	outputPath := hiddenAPISingletonPaths(ctx).metadata
 
 	rule.Command().
-		Tool(android.PathForSource(ctx, "frameworks/base/tools/hiddenapi/merge_csv.py")).
+		BuiltTool(ctx, "merge_csv").
 		Inputs(metadataCSV).
 		Text(">").
 		Output(outputPath)

@@ -53,7 +53,7 @@ func NewProcMacro(hod android.HostOrDeviceSupported) (*Module, *procMacroDecorat
 	module := newModule(hod, android.MultilibFirst)
 
 	procMacro := &procMacroDecorator{
-		baseCompiler: NewBaseCompiler("lib", "lib64"),
+		baseCompiler: NewBaseCompiler("lib", "lib64", InstallInSystem),
 	}
 
 	module.compiler = procMacro
@@ -76,4 +76,11 @@ func (procMacro *procMacroDecorator) compile(ctx ModuleContext, flags Flags, dep
 
 	TransformSrctoProcMacro(ctx, srcPath, deps, flags, outputFile, deps.linkDirs)
 	return outputFile
+}
+
+func (procMacro *procMacroDecorator) getStem(ctx ModuleContext) string {
+	stem := procMacro.baseCompiler.getStemWithoutSuffix(ctx)
+	validateLibraryStem(ctx, stem, procMacro.crateName())
+
+	return stem + String(procMacro.baseCompiler.Properties.Suffix)
 }

@@ -30,10 +30,18 @@ import (
 )
 
 func init() {
-	android.RegisterModuleType("genrule_defaults", defaultsFactory)
+	registerGenruleBuildComponents(android.InitRegistrationContext)
+}
 
-	android.RegisterModuleType("gensrcs", GenSrcsFactory)
-	android.RegisterModuleType("genrule", GenRuleFactory)
+func registerGenruleBuildComponents(ctx android.RegistrationContext) {
+	ctx.RegisterModuleType("genrule_defaults", defaultsFactory)
+
+	ctx.RegisterModuleType("gensrcs", GenSrcsFactory)
+	ctx.RegisterModuleType("genrule", GenRuleFactory)
+
+	ctx.FinalDepsMutators(func(ctx android.RegisterMutatorsContext) {
+		ctx.BottomUp("genrule_tool_deps", toolDepsMutator).Parallel()
+	})
 }
 
 var (
@@ -118,6 +126,7 @@ type Module struct {
 	// For other packages to make their own genrules with extra
 	// properties
 	Extra interface{}
+	android.ImageInterface
 
 	properties generatorProperties
 
@@ -165,7 +174,7 @@ func (g *Module) GeneratedDeps() android.Paths {
 	return g.outputDeps
 }
 
-func (g *Module) DepsMutator(ctx android.BottomUpMutatorContext) {
+func toolDepsMutator(ctx android.BottomUpMutatorContext) {
 	if g, ok := ctx.Module().(*Module); ok {
 		for _, tool := range g.properties.Tools {
 			tag := hostToolDependencyTag{label: tool}
@@ -532,7 +541,19 @@ func generatorFactory(taskGenerator taskFunc, props ...interface{}) *Module {
 	module.AddProperties(props...)
 	module.AddProperties(&module.properties)
 
+	module.ImageInterface = noopImageInterface{}
+
 	return module
+}
+
+type noopImageInterface struct{}
+
+func (x noopImageInterface) ImageMutatorBegin(android.BaseModuleContext)                 {}
+func (x noopImageInterface) CoreVariantNeeded(android.BaseModuleContext) bool            { return false }
+func (x noopImageInterface) RamdiskVariantNeeded(android.BaseModuleContext) bool         { return false }
+func (x noopImageInterface) RecoveryVariantNeeded(android.BaseModuleContext) bool        { return false }
+func (x noopImageInterface) ExtraImageVariations(ctx android.BaseModuleContext) []string { return nil }
+func (x noopImageInterface) SetImageVariation(ctx android.BaseModuleContext, variation string, module android.Module) {
 }
 
 // replace "out" with "__SBOX_OUT_DIR__/<the value of ${out}>"

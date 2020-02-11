@@ -55,6 +55,24 @@ func TestFilterArchStruct(t *testing.T) {
 			filtered: true,
 		},
 		{
+			name: "tags",
+			in: &struct {
+				A *string `android:"arch_variant"`
+				B *string `android:"arch_variant,path"`
+				C *string `android:"arch_variant,path,variant_prepend"`
+				D *string `android:"path,variant_prepend,arch_variant"`
+				E *string `android:"path"`
+				F *string
+			}{},
+			out: &struct {
+				A *string
+				B *string
+				C *string
+				D *string
+			}{},
+			filtered: true,
+		},
+		{
 			name: "all filtered",
 			in: &struct {
 				A *string
@@ -289,10 +307,6 @@ func TestArchMutator(t *testing.T) {
 		}
 	`
 
-	mockFS := map[string][]byte{
-		"Android.bp": []byte(bp),
-	}
-
 	testCases := []struct {
 		name        string
 		config      func(Config)
@@ -337,11 +351,11 @@ func TestArchMutator(t *testing.T) {
 
 	for _, tt := range testCases {
 		t.Run(tt.name, func(t *testing.T) {
+			config := TestArchConfig(buildDir, nil, bp, nil)
+
 			ctx := NewTestArchContext()
-			ctx.RegisterModuleType("module", ModuleFactoryAdaptor(archTestModuleFactory))
-			ctx.MockFileSystem(mockFS)
-			ctx.Register()
-			config := TestArchConfig(buildDir, nil)
+			ctx.RegisterModuleType("module", archTestModuleFactory)
+			ctx.Register(config)
 			if tt.config != nil {
 				tt.config(config)
 			}

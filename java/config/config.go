@@ -29,7 +29,7 @@ var (
 
 	DefaultBootclasspathLibraries = []string{"core.platform.api.stubs", "core-lambda-stubs"}
 	DefaultSystemModules          = "core-platform-api-stubs-system-modules"
-	DefaultLibraries              = []string{"ext", "framework", "updatable_media_stubs"}
+	DefaultLibraries              = []string{"ext", "framework"}
 	DefaultLambdaStubsLibrary     = "core-lambda-stubs"
 	SdkLambdaStubsPath            = "prebuilts/sdk/tools/core-lambda-stubs.jar"
 
@@ -45,7 +45,10 @@ var (
 		"core-icu4j",
 		"core-oj",
 		"core-libart",
+		// TODO: Could this be all updatable bootclasspath jars?
 		"updatable-media",
+		"framework-sdkextensions",
+		"ike",
 	}
 )
 
@@ -87,12 +90,10 @@ func init() {
 		return ctx.Config().Getenv("ANDROID_JAVA_HOME")
 	})
 	pctx.VariableFunc("JlinkVersion", func(ctx android.PackageVarContext) string {
-		switch ctx.Config().Getenv("EXPERIMENTAL_USE_OPENJDK11_TOOLCHAIN") {
-		case "true":
-			return "11"
-		default:
-			return "9"
+		if override := ctx.Config().Getenv("OVERRIDE_JLINK_VERSION_NUMBER"); override != "" {
+			return override
 		}
+		return "11"
 	})
 
 	pctx.SourcePathVariable("JavaToolchain", "${JavaHome}/bin")
@@ -126,7 +127,7 @@ func init() {
 		if ctx.Config().UnbundledBuild() {
 			return "prebuilts/build-tools/common/framework/" + turbine
 		} else {
-			return pctx.HostJavaToolPath(ctx, turbine).String()
+			return ctx.Config().HostJavaToolPath(ctx, turbine).String()
 		}
 	})
 
@@ -142,6 +143,20 @@ func init() {
 
 	pctx.VariableFunc("JavacWrapper", func(ctx android.PackageVarContext) string {
 		if override := ctx.Config().Getenv("JAVAC_WRAPPER"); override != "" {
+			return override + " "
+		}
+		return ""
+	})
+
+	pctx.VariableFunc("R8Wrapper", func(ctx android.PackageVarContext) string {
+		if override := ctx.Config().Getenv("R8_WRAPPER"); override != "" {
+			return override + " "
+		}
+		return ""
+	})
+
+	pctx.VariableFunc("D8Wrapper", func(ctx android.PackageVarContext) string {
+		if override := ctx.Config().Getenv("D8_WRAPPER"); override != "" {
 			return override + " "
 		}
 		return ""
@@ -172,7 +187,7 @@ func hostBinToolVariableWithSdkToolsPrebuilt(name, tool string) {
 		if ctx.Config().UnbundledBuild() || ctx.Config().IsPdkBuild() {
 			return filepath.Join("prebuilts/sdk/tools", runtime.GOOS, "bin", tool)
 		} else {
-			return pctx.HostBinToolPath(ctx, tool).String()
+			return ctx.Config().HostToolPath(ctx, tool).String()
 		}
 	})
 }
@@ -182,7 +197,7 @@ func hostJavaToolVariableWithSdkToolsPrebuilt(name, tool string) {
 		if ctx.Config().UnbundledBuild() || ctx.Config().IsPdkBuild() {
 			return filepath.Join("prebuilts/sdk/tools/lib", tool+".jar")
 		} else {
-			return pctx.HostJavaToolPath(ctx, tool+".jar").String()
+			return ctx.Config().HostJavaToolPath(ctx, tool+".jar").String()
 		}
 	})
 }
@@ -196,7 +211,7 @@ func hostJNIToolVariableWithSdkToolsPrebuilt(name, tool string) {
 			}
 			return filepath.Join("prebuilts/sdk/tools", runtime.GOOS, "lib64", tool+ext)
 		} else {
-			return pctx.HostJNIToolPath(ctx, tool).String()
+			return ctx.Config().HostJNIToolPath(ctx, tool).String()
 		}
 	})
 }
@@ -206,7 +221,7 @@ func hostBinToolVariableWithBuildToolsPrebuilt(name, tool string) {
 		if ctx.Config().UnbundledBuild() || ctx.Config().IsPdkBuild() {
 			return filepath.Join("prebuilts/build-tools", ctx.Config().PrebuiltOS(), "bin", tool)
 		} else {
-			return pctx.HostBinToolPath(ctx, tool).String()
+			return ctx.Config().HostToolPath(ctx, tool).String()
 		}
 	})
 }

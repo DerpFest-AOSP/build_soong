@@ -24,12 +24,11 @@ import (
 var pctx = android.NewPackageContext("android/soong/rust/config")
 
 var (
-	RustDefaultVersion = "1.37.0"
+	RustDefaultVersion = "1.40.0"
 	RustDefaultBase    = "prebuilts/rust/"
 	DefaultEdition     = "2018"
 	Stdlibs            = []string{
 		"libstd",
-		"libterm",
 		"libtest",
 	}
 
@@ -37,6 +36,9 @@ var (
 
 	GlobalRustFlags = []string{
 		"--remap-path-prefix $$(pwd)=",
+		"-C codegen-units=1",
+		"-C opt-level=3",
+		"-C relocation-model=pic",
 	}
 
 	deviceGlobalRustFlags = []string{}
@@ -52,7 +54,6 @@ var (
 		"-Wl,--fatal-warnings",
 
 		"-Wl,--pack-dyn-relocs=android+relr",
-		"-Wl,--use-android-relr-tags",
 		"-Wl,--no-undefined",
 		"-Wl,--hash-style=gnu",
 	}

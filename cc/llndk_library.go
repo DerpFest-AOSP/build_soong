@@ -76,17 +76,12 @@ func (stub *llndkStubDecorator) compilerFlags(ctx ModuleContext, flags Flags, de
 }
 
 func (stub *llndkStubDecorator) compile(ctx ModuleContext, flags Flags, deps PathDeps) Objects {
-	vndk_ver := ctx.Module().(*Module).Properties.VndkVersion
-	if vndk_ver == "current" {
-		platform_vndk_ver := ctx.DeviceConfig().PlatformVndkVersion()
-		if !inList(platform_vndk_ver, ctx.Config().PlatformVersionCombinedCodenames()) {
-			vndk_ver = platform_vndk_ver
-		}
-	} else if vndk_ver == "" {
-		// For non-enforcing devices, use "current"
-		vndk_ver = "current"
+	vndkVer := ctx.Module().(*Module).VndkVersion()
+	if !inList(vndkVer, ctx.Config().PlatformVersionCombinedCodenames()) || vndkVer == "" {
+		// For non-enforcing devices, vndkVer is empty. Use "current" in that case, too.
+		vndkVer = "current"
 	}
-	objs, versionScript := compileStubLibrary(ctx, flags, String(stub.Properties.Symbol_file), vndk_ver, "--vndk")
+	objs, versionScript := compileStubLibrary(ctx, flags, String(stub.Properties.Symbol_file), vndkVer, "--llndk")
 	stub.versionScriptPath = versionScript
 	return objs
 }
@@ -133,7 +128,7 @@ func (stub *llndkStubDecorator) link(ctx ModuleContext, flags Flags, deps PathDe
 
 	if !Bool(stub.Properties.Unversioned) {
 		linkerScriptFlag := "-Wl,--version-script," + stub.versionScriptPath.String()
-		flags.LdFlags = append(flags.LdFlags, linkerScriptFlag)
+		flags.Local.LdFlags = append(flags.Local.LdFlags, linkerScriptFlag)
 		flags.LdFlagsDeps = append(flags.LdFlagsDeps, stub.versionScriptPath)
 	}
 
@@ -146,9 +141,9 @@ func (stub *llndkStubDecorator) link(ctx ModuleContext, flags Flags, deps PathDe
 		}
 
 		if Bool(stub.Properties.Export_headers_as_system) {
-			stub.reexportSystemDirs(genHeaderOutDir.String())
+			stub.reexportSystemDirs(genHeaderOutDir)
 		} else {
-			stub.reexportDirs(genHeaderOutDir.String())
+			stub.reexportDirs(genHeaderOutDir)
 		}
 
 		stub.reexportDeps(timestampFiles...)

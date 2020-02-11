@@ -56,8 +56,12 @@ type BinaryLinkerProperties struct {
 }
 
 func init() {
-	android.RegisterModuleType("cc_binary", BinaryFactory)
-	android.RegisterModuleType("cc_binary_host", binaryHostFactory)
+	RegisterBinaryBuildComponents(android.InitRegistrationContext)
+}
+
+func RegisterBinaryBuildComponents(ctx android.RegistrationContext) {
+	ctx.RegisterModuleType("cc_binary", BinaryFactory)
+	ctx.RegisterModuleType("cc_binary_host", binaryHostFactory)
 }
 
 // cc_binary produces a binary that is runnable on a device.
@@ -158,7 +162,7 @@ func (binary *binaryDecorator) linkerDeps(ctx DepsContext, deps Deps) Deps {
 
 		if binary.static() {
 			if ctx.selectedStl() == "libc++_static" {
-				deps.StaticLibs = append(deps.StaticLibs, "libm", "libc", "libdl")
+				deps.StaticLibs = append(deps.StaticLibs, "libm", "libc")
 			}
 			// static libraries libcompiler_rt, libc and libc_nomalloc need to be linked with
 			// --start-group/--end-group along with libgcc.  If they are in deps.StaticLibs,
@@ -227,7 +231,7 @@ func (binary *binaryDecorator) linkerFlags(ctx ModuleContext, flags Flags) Flags
 
 	if ctx.Host() && !ctx.Windows() && !binary.static() {
 		if !ctx.Config().IsEnvTrue("DISABLE_HOST_PIE") {
-			flags.LdFlags = append(flags.LdFlags, "-pie")
+			flags.Global.LdFlags = append(flags.Global.LdFlags, "-pie")
 		}
 	}
 
@@ -235,7 +239,7 @@ func (binary *binaryDecorator) linkerFlags(ctx ModuleContext, flags Flags) Flags
 	// all code is position independent, and then those warnings get promoted to
 	// errors.
 	if !ctx.Windows() {
-		flags.CFlags = append(flags.CFlags, "-fPIE")
+		flags.Global.CFlags = append(flags.Global.CFlags, "-fPIE")
 	}
 
 	if ctx.toolchain().Bionic() {
@@ -244,11 +248,11 @@ func (binary *binaryDecorator) linkerFlags(ctx ModuleContext, flags Flags) Flags
 			// However, bionic/linker uses -shared to overwrite.
 			// Linker for x86 targets does not allow coexistance of -static and -shared,
 			// so we add -static only if -shared is not used.
-			if !inList("-shared", flags.LdFlags) {
-				flags.LdFlags = append(flags.LdFlags, "-static")
+			if !inList("-shared", flags.Local.LdFlags) {
+				flags.Global.LdFlags = append(flags.Global.LdFlags, "-static")
 			}
 
-			flags.LdFlags = append(flags.LdFlags,
+			flags.Global.LdFlags = append(flags.Global.LdFlags,
 				"-nostdlib",
 				"-Bstatic",
 				"-Wl,--gc-sections",
@@ -260,7 +264,7 @@ func (binary *binaryDecorator) linkerFlags(ctx ModuleContext, flags Flags) Flags
 				} else {
 					switch ctx.Os() {
 					case android.Android:
-						if ctx.bootstrap() && !ctx.inRecovery() {
+						if ctx.bootstrap() && !ctx.inRecovery() && !ctx.inRamdisk() {
 							flags.DynamicLinker = "/system/bin/bootstrap/linker"
 						} else {
 							flags.DynamicLinker = "/system/bin/linker"
@@ -278,14 +282,14 @@ func (binary *binaryDecorator) linkerFlags(ctx ModuleContext, flags Flags) Flags
 				if ctx.Os() == android.LinuxBionic {
 					// Use the dlwrap entry point, but keep _start around so
 					// that it can be used by host_bionic_inject
-					flags.LdFlags = append(flags.LdFlags,
+					flags.Global.LdFlags = append(flags.Global.LdFlags,
 						"-Wl,--entry=__dlwrap__start",
 						"-Wl,--undefined=_start",
 					)
 				}
 			}
 
-			flags.LdFlags = append(flags.LdFlags,
+			flags.Global.LdFlags = append(flags.Global.LdFlags,
 				"-pie",
 				"-nostdlib",
 				"-Bdynamic",
@@ -295,10 +299,10 @@ func (binary *binaryDecorator) linkerFlags(ctx ModuleContext, flags Flags) Flags
 		}
 	} else {
 		if binary.static() {
-			flags.LdFlags = append(flags.LdFlags, "-static")
+			flags.Global.LdFlags = append(flags.Global.LdFlags, "-static")
 		}
 		if ctx.Darwin() {
-			flags.LdFlags = append(flags.LdFlags, "-Wl,-headerpad_max_install_names")
+			flags.Global.LdFlags = append(flags.Global.LdFlags, "-Wl,-headerpad_max_install_names")
 		}
 	}
 
@@ -315,14 +319,14 @@ func (binary *binaryDecorator) link(ctx ModuleContext,
 	var linkerDeps android.Paths
 
 	if deps.LinkerFlagsFile.Valid() {
-		flags.LdFlags = append(flags.LdFlags, "$$(cat "+deps.LinkerFlagsFile.String()+")")
+		flags.Local.LdFlags = append(flags.Local.LdFlags, "$$(cat "+deps.LinkerFlagsFile.String()+")")
 		linkerDeps = append(linkerDeps, deps.LinkerFlagsFile.Path())
 	}
 
 	if flags.DynamicLinker != "" {
-		flags.LdFlags = append(flags.LdFlags, "-Wl,-dynamic-linker,"+flags.DynamicLinker)
+		flags.Local.LdFlags = append(flags.Local.LdFlags, "-Wl,-dynamic-linker,"+flags.DynamicLinker)
 	} else if ctx.toolchain().Bionic() && !binary.static() {
-		flags.LdFlags = append(flags.LdFlags, "-Wl,--no-dynamic-linker")
+		flags.Local.LdFlags = append(flags.Local.LdFlags, "-Wl,--no-dynamic-linker")
 	}
 
 	builderFlags := flagsToBuilderFlags(flags)
@@ -454,7 +458,7 @@ func (binary *binaryDecorator) install(ctx ModuleContext, file android.Path) {
 	// The original path becomes a symlink to the corresponding file in the
 	// runtime APEX.
 	translatedArch := ctx.Target().NativeBridge == android.NativeBridgeEnabled
-	if InstallToBootstrap(ctx.baseModuleName(), ctx.Config()) && !translatedArch && ctx.apexName() == "" && !ctx.inRecovery() {
+	if InstallToBootstrap(ctx.baseModuleName(), ctx.Config()) && !translatedArch && ctx.apexName() == "" && !ctx.inRamdisk() && !ctx.inRecovery() {
 		if ctx.Device() && isBionic(ctx.baseModuleName()) {
 			binary.installSymlinkToRuntimeApex(ctx, file)
 		}

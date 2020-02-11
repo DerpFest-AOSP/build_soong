@@ -48,6 +48,8 @@ var (
 		"-fno-strict-aliasing",
 
 		"-Werror=date-time",
+		"-Werror=pragma-pack",
+		"-Werror=pragma-pack-suspicious-include",
 	}
 
 	commonGlobalConlyflags = []string{}
@@ -86,6 +88,7 @@ var (
 		"-Wl,--no-undefined-version",
 		"-Wl,--exclude-libs,libgcc.a",
 		"-Wl,--exclude-libs,libgcc_stripped.a",
+		"-Wl,--exclude-libs,libunwind_llvm.a",
 	}
 
 	deviceGlobalLldflags = append(ClangFilterUnknownLldflags(deviceGlobalLdflags),
@@ -124,8 +127,8 @@ var (
 
 	// prebuilts/clang default settings.
 	ClangDefaultBase         = "prebuilts/clang/host"
-	ClangDefaultVersion      = "clang-r365631b"
-	ClangDefaultShortVersion = "9.0.7"
+	ClangDefaultVersion      = "clang-r370808b"
+	ClangDefaultShortVersion = "10.0.2"
 
 	// Directories with warnings from Android.bp files.
 	WarningAllowedProjects = []string{
@@ -162,6 +165,11 @@ func init() {
 		if ctx.Config().IsEnvTrue("AUTO_ZERO_INITIALIZE") {
 			flags = append(flags, "-ftrivial-auto-var-init=zero -enable-trivial-auto-var-init-zero-knowing-it-will-be-removed-from-clang")
 		} else if ctx.Config().IsEnvTrue("AUTO_PATTERN_INITIALIZE") {
+			flags = append(flags, "-ftrivial-auto-var-init=pattern")
+		} else if ctx.Config().IsEnvTrue("AUTO_UNINITIALIZE") {
+			flags = append(flags, "-ftrivial-auto-var-init=uninitialized")
+		} else {
+			// Default to pattern initialization.
 			flags = append(flags, "-ftrivial-auto-var-init=pattern")
 		}
 

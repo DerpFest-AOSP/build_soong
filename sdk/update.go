@@ -16,37 +16,78 @@ package sdk
 
 import (
 	"fmt"
-	"io"
-	"path/filepath"
-	"strconv"
+	"reflect"
 	"strings"
 
+	"github.com/google/blueprint"
 	"github.com/google/blueprint/proptools"
 
 	"android/soong/android"
-	"android/soong/java"
 )
 
 var pctx = android.NewPackageContext("android/soong/sdk")
 
+var (
+	repackageZip = pctx.AndroidStaticRule("SnapshotRepackageZip",
+		blueprint.RuleParams{
+			Command: `${config.Zip2ZipCmd} -i $in -o $out -x META-INF/**/* "**/*:$destdir"`,
+			CommandDeps: []string{
+				"${config.Zip2ZipCmd}",
+			},
+		},
+		"destdir")
+
+	zipFiles = pctx.AndroidStaticRule("SnapshotZipFiles",
+		blueprint.RuleParams{
+			Command: `${config.SoongZipCmd} -C $basedir -l $out.rsp -o $out`,
+			CommandDeps: []string{
+				"${config.SoongZipCmd}",
+			},
+			Rspfile:        "$out.rsp",
+			RspfileContent: "$in",
+		},
+		"basedir")
+
+	mergeZips = pctx.AndroidStaticRule("SnapshotMergeZips",
+		blueprint.RuleParams{
+			Command: `${config.MergeZipsCmd} $out $in`,
+			CommandDeps: []string{
+				"${config.MergeZipsCmd}",
+			},
+		})
+)
+
+type generatedContents struct {
+	content     strings.Builder
+	indentLevel int
+}
+
 // generatedFile abstracts operations for writing contents into a file and emit a build rule
 // for the file.
 type generatedFile struct {
-	path    android.OutputPath
-	content strings.Builder
+	generatedContents
+	path android.OutputPath
 }
 
-func newGeneratedFile(ctx android.ModuleContext, name string) *generatedFile {
+func newGeneratedFile(ctx android.ModuleContext, path ...string) *generatedFile {
 	return &generatedFile{
-		path: android.PathForModuleOut(ctx, name).OutputPath,
+		path: android.PathForModuleOut(ctx, path...).OutputPath,
 	}
 }
 
-func (gf *generatedFile) printfln(format string, args ...interface{}) {
+func (gc *generatedContents) Indent() {
+	gc.indentLevel++
+}
+
+func (gc *generatedContents) Dedent() {
+	gc.indentLevel--
+}
+
+func (gc *generatedContents) Printfln(format string, args ...interface{}) {
 	// ninja consumes newline characters in rspfile_content. Prevent it by
-	// escaping the backslash in the newline character. The extra backshash
+	// escaping the backslash in the newline character. The extra backslash
 	// is removed when the rspfile is written to the actual script file
-	fmt.Fprintf(&(gf.content), format+"\\n", args...)
+	fmt.Fprintf(&(gc.content), strings.Repeat("    ", gc.indentLevel)+format+"\\n", args...)
 }
 
 func (gf *generatedFile) build(pctx android.PackageContext, ctx android.BuilderContext, implicits android.Paths) {
@@ -61,168 +102,459 @@ func (gf *generatedFile) build(pctx android.PackageContext, ctx android.BuilderC
 	rb.Build(pctx, ctx, gf.path.Base(), "Build "+gf.path.Base())
 }
 
-func (s *sdk) javaMemberNames(ctx android.ModuleContext) []string {
-	result := []string{}
-	ctx.VisitDirectDeps(func(m android.Module) {
-		if _, ok := m.(*java.Library); ok {
-			result = append(result, m.Name())
+// Collect all the members.
+//
+// The members are first grouped by type and then grouped by name. The order of
+// the types is the order they are referenced in android.SdkMemberTypesRegistry.
+// The names are in the order in which the dependencies were added.
+func (s *sdk) collectMembers(ctx android.ModuleContext) []*sdkMember {
+	byType := make(map[android.SdkMemberType][]*sdkMember)
+	byName := make(map[string]*sdkMember)
+
+	ctx.WalkDeps(func(child android.Module, parent android.Module) bool {
+		tag := ctx.OtherModuleDependencyTag(child)
+		if memberTag, ok := tag.(android.SdkMemberTypeDependencyTag); ok {
+			memberType := memberTag.SdkMemberType()
+
+			// Make sure that the resolved module is allowed in the member list property.
+			if !memberType.IsInstance(child) {
+				ctx.ModuleErrorf("module %q is not valid in property %s", ctx.OtherModuleName(child), memberType.SdkPropertyName())
+			}
+
+			name := ctx.OtherModuleName(child)
+
+			member := byName[name]
+			if member == nil {
+				member = &sdkMember{memberType: memberType, name: name}
+				byName[name] = member
+				byType[memberType] = append(byType[memberType], member)
+			}
+
+			// Only append new variants to the list. This is needed because a member can be both
+			// exported by the sdk and also be a transitive sdk member.
+			member.variants = appendUniqueVariants(member.variants, child.(android.SdkAware))
+
+			// If the member type supports transitive sdk members then recurse down into
+			// its dependencies, otherwise exit traversal.
+			return memberType.HasTransitiveSdkMembers()
 		}
+
+		return false
 	})
-	return result
+
+	var members []*sdkMember
+	for _, memberListProperty := range s.memberListProperties() {
+		membersOfType := byType[memberListProperty.memberType]
+		members = append(members, membersOfType...)
+	}
+
+	return members
 }
 
-// buildAndroidBp creates the blueprint file that defines prebuilt modules for each of
-// the SDK members, and the sdk_snapshot module for the specified version
-func (s *sdk) buildAndroidBp(ctx android.ModuleContext, version string) android.OutputPath {
-	bp := newGeneratedFile(ctx, "blueprint-"+version+".sh")
+func appendUniqueVariants(variants []android.SdkAware, newVariant android.SdkAware) []android.SdkAware {
+	for _, v := range variants {
+		if v == newVariant {
+			return variants
+		}
+	}
+	return append(variants, newVariant)
+}
 
-	makePrebuiltName := func(name string) string {
-		return ctx.ModuleName() + "_" + name + string(android.SdkVersionSeparator) + version
+// SDK directory structure
+// <sdk_root>/
+//     Android.bp   : definition of a 'sdk' module is here. This is a hand-made one.
+//     <api_ver>/   : below this directory are all auto-generated
+//         Android.bp   : definition of 'sdk_snapshot' module is here
+//         aidl/
+//            frameworks/base/core/..../IFoo.aidl   : an exported AIDL file
+//         java/
+//            <module_name>.jar    : the stub jar for a java library 'module_name'
+//         include/
+//            bionic/libc/include/stdlib.h   : an exported header file
+//         include_gen/
+//            <module_name>/com/android/.../IFoo.h : a generated header file
+//         <arch>/include/   : arch-specific exported headers
+//         <arch>/include_gen/   : arch-specific generated headers
+//         <arch>/lib/
+//            libFoo.so   : a stub library
+
+// A name that uniquely identifies a prebuilt SDK member for a version of SDK snapshot
+// This isn't visible to users, so could be changed in future.
+func versionedSdkMemberName(ctx android.ModuleContext, memberName string, version string) string {
+	return ctx.ModuleName() + "_" + memberName + string(android.SdkVersionSeparator) + version
+}
+
+// buildSnapshot is the main function in this source file. It creates rules to copy
+// the contents (header files, stub libraries, etc) into the zip file.
+func (s *sdk) buildSnapshot(ctx android.ModuleContext) android.OutputPath {
+	snapshotDir := android.PathForModuleOut(ctx, "snapshot")
+
+	bp := newGeneratedFile(ctx, "snapshot", "Android.bp")
+
+	bpFile := &bpFile{
+		modules: make(map[string]*bpModule),
 	}
 
-	javaLibs := s.javaMemberNames(ctx)
-	for _, name := range javaLibs {
-		prebuiltName := makePrebuiltName(name)
-		jar := filepath.Join("java", name, "stub.jar")
+	builder := &snapshotBuilder{
+		ctx:             ctx,
+		sdk:             s,
+		version:         "current",
+		snapshotDir:     snapshotDir.OutputPath,
+		copies:          make(map[string]string),
+		filesToZip:      []android.Path{bp.path},
+		bpFile:          bpFile,
+		prebuiltModules: make(map[string]*bpModule),
+	}
+	s.builderForTests = builder
 
-		bp.printfln("java_import {")
-		bp.printfln("    name: %q,", prebuiltName)
-		bp.printfln("    jars: [%q],", jar)
-		bp.printfln("    sdk_member_name: %q,", name)
-		bp.printfln("}")
-		bp.printfln("")
-
-		// This module is for the case when the source tree for the unversioned module
-		// doesn't exist (i.e. building in an unbundled tree). "prefer:" is set to false
-		// so that this module does not eclipse the unversioned module if it exists.
-		bp.printfln("java_import {")
-		bp.printfln("    name: %q,", name)
-		bp.printfln("    jars: [%q],", jar)
-		bp.printfln("    prefer: false,")
-		bp.printfln("}")
-		bp.printfln("")
-
+	for _, member := range s.collectMembers(ctx) {
+		member.memberType.BuildSnapshot(ctx, builder, member)
 	}
 
-	// TODO(jiyong): emit cc_prebuilt_library_shared for the native libs
+	// Create a transformer that will transform an unversioned module into a versioned module.
+	unversionedToVersionedTransformer := unversionedToVersionedTransformation{builder: builder}
 
-	bp.printfln("sdk_snapshot {")
-	bp.printfln("    name: %q,", ctx.ModuleName()+string(android.SdkVersionSeparator)+version)
-	bp.printfln("    java_libs: [")
-	for _, n := range javaLibs {
-		bp.printfln("        %q,", makePrebuiltName(n))
+	// Create a transformer that will transform an unversioned module by replacing any references
+	// to internal members with a unique module name and setting prefer: false.
+	unversionedTransformer := unversionedTransformation{builder: builder}
+
+	for _, unversioned := range builder.prebuiltOrder {
+		// Copy the unversioned module so it can be modified to make it versioned.
+		versioned := unversioned.deepCopy()
+
+		// Transform the unversioned module into a versioned one.
+		versioned.transform(unversionedToVersionedTransformer)
+		bpFile.AddModule(versioned)
+
+		// Transform the unversioned module to make it suitable for use in the snapshot.
+		unversioned.transform(unversionedTransformer)
+		bpFile.AddModule(unversioned)
 	}
-	bp.printfln("    ],")
-	// TODO(jiyong): emit native_shared_libs
-	bp.printfln("}")
-	bp.printfln("")
+
+	// Create the snapshot module.
+	snapshotName := ctx.ModuleName() + string(android.SdkVersionSeparator) + builder.version
+	var snapshotModuleType string
+	if s.properties.Module_exports {
+		snapshotModuleType = "module_exports_snapshot"
+	} else {
+		snapshotModuleType = "sdk_snapshot"
+	}
+	snapshotModule := bpFile.newModule(snapshotModuleType)
+	snapshotModule.AddProperty("name", snapshotName)
+
+	// Make sure that the snapshot has the same visibility as the sdk.
+	visibility := android.EffectiveVisibilityRules(ctx, s)
+	if len(visibility) != 0 {
+		snapshotModule.AddProperty("visibility", visibility)
+	}
+
+	addHostDeviceSupportedProperties(&s.ModuleBase, snapshotModule)
+	for _, memberListProperty := range s.memberListProperties() {
+		names := memberListProperty.getter(s.dynamicMemberTypeListProperties)
+		if len(names) > 0 {
+			snapshotModule.AddProperty(memberListProperty.propertyName(), builder.versionedSdkMemberNames(names))
+		}
+	}
+	bpFile.AddModule(snapshotModule)
+
+	// generate Android.bp
+	bp = newGeneratedFile(ctx, "snapshot", "Android.bp")
+	generateBpContents(&bp.generatedContents, bpFile)
 
 	bp.build(pctx, ctx, nil)
-	return bp.path
-}
 
-func (s *sdk) buildScript(ctx android.ModuleContext, version string) android.OutputPath {
-	sh := newGeneratedFile(ctx, "update_prebuilt-"+version+".sh")
+	filesToZip := builder.filesToZip
 
-	snapshotRoot := filepath.Join(ctx.ModuleDir(), version)
-	aidlIncludeDir := filepath.Join(snapshotRoot, "aidl")
-	javaStubsDir := filepath.Join(snapshotRoot, "java")
+	// zip them all
+	outputZipFile := android.PathForModuleOut(ctx, ctx.ModuleName()+"-current.zip").OutputPath
+	outputDesc := "Building snapshot for " + ctx.ModuleName()
 
-	sh.printfln("#!/bin/bash")
-	sh.printfln("echo Updating snapshot of %s in %s", ctx.ModuleName(), snapshotRoot)
-	sh.printfln("pushd $ANDROID_BUILD_TOP > /dev/null")
-	sh.printfln("rm -rf %s", snapshotRoot)
-	sh.printfln("mkdir -p %s", aidlIncludeDir)
-	sh.printfln("mkdir -p %s", javaStubsDir)
-	// TODO(jiyong): mkdir the 'native' dir
+	// If there are no zips to merge then generate the output zip directly.
+	// Otherwise, generate an intermediate zip file into which other zips can be
+	// merged.
+	var zipFile android.OutputPath
+	var desc string
+	if len(builder.zipsToMerge) == 0 {
+		zipFile = outputZipFile
+		desc = outputDesc
+	} else {
+		zipFile = android.PathForModuleOut(ctx, ctx.ModuleName()+"-current.unmerged.zip").OutputPath
+		desc = "Building intermediate snapshot for " + ctx.ModuleName()
+	}
 
-	var implicits android.Paths
-	ctx.VisitDirectDeps(func(m android.Module) {
-		if javaLib, ok := m.(*java.Library); ok {
-			headerJars := javaLib.HeaderJars()
-			if len(headerJars) != 1 {
-				panic(fmt.Errorf("there must be only one header jar from %q", m.Name()))
-			}
-			implicits = append(implicits, headerJars...)
-
-			exportedAidlIncludeDirs := javaLib.AidlIncludeDirs()
-			for _, dir := range exportedAidlIncludeDirs {
-				// Using tar to copy with the directory structure
-				// TODO(jiyong): copy parcelable declarations only
-				sh.printfln("find %s -name \"*.aidl\" | tar cf - -T - | (cd %s; tar xf -)",
-					dir.String(), aidlIncludeDir)
-			}
-
-			copiedHeaderJar := filepath.Join(javaStubsDir, m.Name(), "stub.jar")
-			sh.printfln("mkdir -p $(dirname %s) && cp %s %s",
-				copiedHeaderJar, headerJars[0].String(), copiedHeaderJar)
-		}
-		// TODO(jiyong): emit the commands for copying the headers and stub libraries for native libs
+	ctx.Build(pctx, android.BuildParams{
+		Description: desc,
+		Rule:        zipFiles,
+		Inputs:      filesToZip,
+		Output:      zipFile,
+		Args: map[string]string{
+			"basedir": builder.snapshotDir.String(),
+		},
 	})
 
-	bp := s.buildAndroidBp(ctx, version)
-	implicits = append(implicits, bp)
-	sh.printfln("cp %s %s", bp.String(), filepath.Join(snapshotRoot, "Android.bp"))
-
-	sh.printfln("popd > /dev/null")
-	sh.printfln("rm -- \"$0\"") // self deleting so that stale script is not used
-	sh.printfln("echo Done")
-
-	sh.build(pctx, ctx, implicits)
-	return sh.path
-}
-
-func (s *sdk) buildSnapshotGenerationScripts(ctx android.ModuleContext) {
-	if s.snapshot() {
-		// we don't need a script for sdk_snapshot.. as they are frozen
-		return
+	if len(builder.zipsToMerge) != 0 {
+		ctx.Build(pctx, android.BuildParams{
+			Description: outputDesc,
+			Rule:        mergeZips,
+			Input:       zipFile,
+			Inputs:      builder.zipsToMerge,
+			Output:      outputZipFile,
+		})
 	}
 
-	// script to update the 'current' snapshot
-	s.updateScript = s.buildScript(ctx, "current")
+	return outputZipFile
+}
 
-	versions := s.frozenVersions(ctx)
-	newVersion := "1"
-	if len(versions) >= 1 {
-		lastVersion := versions[len(versions)-1]
-		lastVersionNum, err := strconv.Atoi(lastVersion)
-		if err != nil {
-			panic(err)
+type propertyTag struct {
+	name string
+}
+
+var sdkMemberReferencePropertyTag = propertyTag{"sdkMemberReferencePropertyTag"}
+
+type unversionedToVersionedTransformation struct {
+	identityTransformation
+	builder *snapshotBuilder
+}
+
+func (t unversionedToVersionedTransformation) transformModule(module *bpModule) *bpModule {
+	// Use a versioned name for the module but remember the original name for the
+	// snapshot.
+	name := module.getValue("name").(string)
+	module.setProperty("name", t.builder.versionedSdkMemberName(name))
+	module.insertAfter("name", "sdk_member_name", name)
+	return module
+}
+
+func (t unversionedToVersionedTransformation) transformProperty(name string, value interface{}, tag android.BpPropertyTag) (interface{}, android.BpPropertyTag) {
+	if tag == sdkMemberReferencePropertyTag {
+		return t.builder.versionedSdkMemberNames(value.([]string)), tag
+	} else {
+		return value, tag
+	}
+}
+
+type unversionedTransformation struct {
+	identityTransformation
+	builder *snapshotBuilder
+}
+
+func (t unversionedTransformation) transformModule(module *bpModule) *bpModule {
+	// If the module is an internal member then use a unique name for it.
+	name := module.getValue("name").(string)
+	module.setProperty("name", t.builder.unversionedSdkMemberName(name))
+
+	// Set prefer: false - this is not strictly required as that is the default.
+	module.insertAfter("name", "prefer", false)
+
+	return module
+}
+
+func (t unversionedTransformation) transformProperty(name string, value interface{}, tag android.BpPropertyTag) (interface{}, android.BpPropertyTag) {
+	if tag == sdkMemberReferencePropertyTag {
+		return t.builder.unversionedSdkMemberNames(value.([]string)), tag
+	} else {
+		return value, tag
+	}
+}
+
+func generateBpContents(contents *generatedContents, bpFile *bpFile) {
+	contents.Printfln("// This is auto-generated. DO NOT EDIT.")
+	for _, bpModule := range bpFile.order {
+		contents.Printfln("")
+		contents.Printfln("%s {", bpModule.moduleType)
+		outputPropertySet(contents, bpModule.bpPropertySet)
+		contents.Printfln("}")
+	}
+}
+
+func outputPropertySet(contents *generatedContents, set *bpPropertySet) {
+	contents.Indent()
+	for _, name := range set.order {
+		value := set.getValue(name)
+
+		reflectedValue := reflect.ValueOf(value)
+		t := reflectedValue.Type()
+
+		kind := t.Kind()
+		switch kind {
+		case reflect.Slice:
+			length := reflectedValue.Len()
+			if length > 1 {
+				contents.Printfln("%s: [", name)
+				contents.Indent()
+				for i := 0; i < length; i = i + 1 {
+					contents.Printfln("%q,", reflectedValue.Index(i).Interface())
+				}
+				contents.Dedent()
+				contents.Printfln("],")
+			} else if length == 0 {
+				contents.Printfln("%s: [],", name)
+			} else {
+				contents.Printfln("%s: [%q],", name, reflectedValue.Index(0).Interface())
+			}
+		case reflect.Bool:
+			contents.Printfln("%s: %t,", name, reflectedValue.Bool())
+
+		case reflect.Ptr:
+			contents.Printfln("%s: {", name)
+			outputPropertySet(contents, reflectedValue.Interface().(*bpPropertySet))
+			contents.Printfln("},")
+
+		default:
+			contents.Printfln("%s: %q,", name, value)
+		}
+	}
+	contents.Dedent()
+}
+
+func (s *sdk) GetAndroidBpContentsForTests() string {
+	contents := &generatedContents{}
+	generateBpContents(contents, s.builderForTests.bpFile)
+	return contents.content.String()
+}
+
+type snapshotBuilder struct {
+	ctx         android.ModuleContext
+	sdk         *sdk
+	version     string
+	snapshotDir android.OutputPath
+	bpFile      *bpFile
+
+	// Map from destination to source of each copy - used to eliminate duplicates and
+	// detect conflicts.
+	copies map[string]string
+
+	filesToZip  android.Paths
+	zipsToMerge android.Paths
+
+	prebuiltModules map[string]*bpModule
+	prebuiltOrder   []*bpModule
+}
+
+func (s *snapshotBuilder) CopyToSnapshot(src android.Path, dest string) {
+	if existing, ok := s.copies[dest]; ok {
+		if existing != src.String() {
+			s.ctx.ModuleErrorf("conflicting copy, %s copied from both %s and %s", dest, existing, src)
 			return
 		}
-		newVersion = strconv.Itoa(lastVersionNum + 1)
+	} else {
+		path := s.snapshotDir.Join(s.ctx, dest)
+		s.ctx.Build(pctx, android.BuildParams{
+			Rule:   android.Cp,
+			Input:  src,
+			Output: path,
+		})
+		s.filesToZip = append(s.filesToZip, path)
+
+		s.copies[dest] = src.String()
 	}
-	// script to create a new frozen version of snapshot
-	s.freezeScript = s.buildScript(ctx, newVersion)
 }
 
-func (s *sdk) androidMkEntriesForScript() android.AndroidMkEntries {
-	if s.snapshot() {
-		// we don't need a script for sdk_snapshot.. as they are frozen
-		return android.AndroidMkEntries{}
+func (s *snapshotBuilder) UnzipToSnapshot(zipPath android.Path, destDir string) {
+	ctx := s.ctx
+
+	// Repackage the zip file so that the entries are in the destDir directory.
+	// This will allow the zip file to be merged into the snapshot.
+	tmpZipPath := android.PathForModuleOut(ctx, "tmp", destDir+".zip").OutputPath
+
+	ctx.Build(pctx, android.BuildParams{
+		Description: "Repackaging zip file " + destDir + " for snapshot " + ctx.ModuleName(),
+		Rule:        repackageZip,
+		Input:       zipPath,
+		Output:      tmpZipPath,
+		Args: map[string]string{
+			"destdir": destDir,
+		},
+	})
+
+	// Add the repackaged zip file to the files to merge.
+	s.zipsToMerge = append(s.zipsToMerge, tmpZipPath)
+}
+
+func (s *snapshotBuilder) AddPrebuiltModule(member android.SdkMember, moduleType string) android.BpModule {
+	name := member.Name()
+	if s.prebuiltModules[name] != nil {
+		panic(fmt.Sprintf("Duplicate module detected, module %s has already been added", name))
 	}
 
-	entries := android.AndroidMkEntries{
-		Class: "FAKE",
-		// TODO(jiyong): remove this? but androidmk.go expects OutputFile to be specified anyway
-		OutputFile: android.OptionalPathForPath(s.updateScript),
-		Include:    "$(BUILD_SYSTEM)/base_rules.mk",
-		ExtraEntries: []android.AndroidMkExtraEntriesFunc{
-			func(entries *android.AndroidMkEntries) {
-				entries.AddStrings("LOCAL_ADDITIONAL_DEPENDENCIES",
-					s.updateScript.String(), s.freezeScript.String())
-			},
-		},
-		ExtraFooters: []android.AndroidMkExtraFootersFunc{
-			func(w io.Writer, name, prefix, moduleDir string, entries *android.AndroidMkEntries) {
-				fmt.Fprintln(w, "$(LOCAL_BUILT_MODULE): $(LOCAL_ADDITIONAL_DEPENDENCIES)")
-				fmt.Fprintln(w, "	touch $@")
-				fmt.Fprintln(w, "	echo ##################################################")
-				fmt.Fprintln(w, "	echo To update current SDK: execute", s.updateScript.String())
-				fmt.Fprintln(w, "	echo To freeze current SDK: execute", s.freezeScript.String())
-				fmt.Fprintln(w, "	echo ##################################################")
-			},
-		},
+	m := s.bpFile.newModule(moduleType)
+	m.AddProperty("name", name)
+
+	if s.sdk.isInternalMember(name) {
+		// An internal member is only referenced from the sdk snapshot which is in the
+		// same package so can be marked as private.
+		m.AddProperty("visibility", []string{"//visibility:private"})
+	} else {
+		// Extract visibility information from a member variant. All variants have the same
+		// visibility so it doesn't matter which one is used.
+		visibility := android.EffectiveVisibilityRules(s.ctx, member.Variants()[0])
+		if len(visibility) != 0 {
+			m.AddProperty("visibility", visibility)
+		}
 	}
-	return entries
+
+	addHostDeviceSupportedProperties(&s.sdk.ModuleBase, m)
+
+	s.prebuiltModules[name] = m
+	s.prebuiltOrder = append(s.prebuiltOrder, m)
+	return m
+}
+
+func addHostDeviceSupportedProperties(module *android.ModuleBase, bpModule *bpModule) {
+	if !module.DeviceSupported() {
+		bpModule.AddProperty("device_supported", false)
+	}
+	if module.HostSupported() {
+		bpModule.AddProperty("host_supported", true)
+	}
+}
+
+func (s *snapshotBuilder) SdkMemberReferencePropertyTag() android.BpPropertyTag {
+	return sdkMemberReferencePropertyTag
+}
+
+// Get a versioned name appropriate for the SDK snapshot version being taken.
+func (s *snapshotBuilder) versionedSdkMemberName(unversionedName string) string {
+	return versionedSdkMemberName(s.ctx, unversionedName, s.version)
+}
+
+func (s *snapshotBuilder) versionedSdkMemberNames(members []string) []string {
+	var references []string = nil
+	for _, m := range members {
+		references = append(references, s.versionedSdkMemberName(m))
+	}
+	return references
+}
+
+// Get an internal name unique to the sdk.
+func (s *snapshotBuilder) unversionedSdkMemberName(unversionedName string) string {
+	if s.sdk.isInternalMember(unversionedName) {
+		return s.ctx.ModuleName() + "_" + unversionedName
+	} else {
+		return unversionedName
+	}
+}
+
+func (s *snapshotBuilder) unversionedSdkMemberNames(members []string) []string {
+	var references []string = nil
+	for _, m := range members {
+		references = append(references, s.unversionedSdkMemberName(m))
+	}
+	return references
+}
+
+var _ android.SdkMember = (*sdkMember)(nil)
+
+type sdkMember struct {
+	memberType android.SdkMemberType
+	name       string
+	variants   []android.SdkAware
+}
+
+func (m *sdkMember) Name() string {
+	return m.name
+}
+
+func (m *sdkMember) Variants() []android.SdkAware {
+	return m.variants
 }

@@ -89,6 +89,9 @@ message MetricsBase {
 
   // The metrics for calling Ninja.
   repeated PerfInfo ninja_runs = 20;
+
+  // The metrics for the whole build
+  optional PerfInfo total = 21;
 }
 
 message PerfInfo {
@@ -124,4 +127,17 @@ message ModuleTypeInfo {
 
   // The number of logical modules.
   optional uint32 num_of_modules = 3;
+}
+
+message CriticalUserJourneyMetrics {
+  // The name of a critical user journey test.
+  optional string name = 1;
+
+  // The metrics produced when running the critical user journey test.
+  optional MetricsBase metrics = 2;
+}
+
+message CriticalUserJourneysMetrics {
+  // A set of metrics from a run of the critical user journey tests.
+  repeated CriticalUserJourneyMetrics cujs = 1;
 }

@@ -165,7 +165,7 @@ func depsModuleFactory() Module {
 
 func TestErrorDependsOnDisabledModule(t *testing.T) {
 	ctx := NewTestContext()
-	ctx.RegisterModuleType("deps", ModuleFactoryAdaptor(depsModuleFactory))
+	ctx.RegisterModuleType("deps", depsModuleFactory)
 
 	bp := `
 		deps {
@@ -178,15 +178,9 @@ func TestErrorDependsOnDisabledModule(t *testing.T) {
 		}
 	`
 
-	mockFS := map[string][]byte{
-		"Android.bp": []byte(bp),
-	}
+	config := TestConfig(buildDir, nil, bp, nil)
 
-	ctx.MockFileSystem(mockFS)
-
-	ctx.Register()
-
-	config := TestConfig(buildDir, nil)
+	ctx.Register(config)
 
 	_, errs := ctx.ParseFileList(".", []string{"Android.bp"})
 	FailIfErrored(t, errs)

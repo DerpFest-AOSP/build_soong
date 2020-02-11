@@ -12,12 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package main
+package androidmk
 
 import (
-	"android/soong/android"
 	mkparser "android/soong/androidmk/parser"
 	"fmt"
+	"sort"
 	"strings"
 
 	bpparser "github.com/google/blueprint/parser"
@@ -198,6 +198,7 @@ func init() {
 			"LOCAL_EXPORT_PACKAGE_RESOURCES":   "export_package_resources",
 			"LOCAL_PRIVILEGED_MODULE":          "privileged",
 			"LOCAL_AAPT_INCLUDE_ALL_RESOURCES": "aapt_include_all_resources",
+			"LOCAL_DONT_MERGE_MANIFESTS":       "dont_merge_manifests",
 			"LOCAL_USE_EMBEDDED_NATIVE_LIBS":   "use_embedded_native_libs",
 			"LOCAL_USE_EMBEDDED_DEX":           "use_embedded_dex",
 
@@ -349,7 +350,13 @@ func splitAndAssign(ctx variableAssignmentContext, splitFunc listSplitFunc, name
 		return err
 	}
 
-	for _, nameClassification := range android.SortedStringKeys(namesByClassification) {
+	var classifications []string
+	for classification := range namesByClassification {
+		classifications = append(classifications, classification)
+	}
+	sort.Strings(classifications)
+
+	for _, nameClassification := range classifications {
 		name := namesByClassification[nameClassification]
 		if component, ok := lists[nameClassification]; ok && !emptyList(component) {
 			err = setVariable(ctx.file, ctx.append, ctx.prefix, name, component, true)

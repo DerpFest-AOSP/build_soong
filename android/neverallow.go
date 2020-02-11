@@ -64,6 +64,8 @@ func createIncludeDirsRules() []Rule {
 	// The list of paths that cannot be referenced using include_dirs
 	paths := []string{
 		"art",
+		"art/libnativebridge",
+		"art/libnativeloader",
 		"libcore",
 		"libnativehelper",
 		"external/apache-harmony",
@@ -75,8 +77,6 @@ func createIncludeDirsRules() []Rule {
 		"external/okhttp",
 		"external/vixl",
 		"external/wycheproof",
-		"system/core/libnativebridge",
-		"system/core/libnativehelper",
 	}
 
 	// Create a composite matcher that will match if the value starts with any of the restricted
@@ -136,9 +136,6 @@ func createLibcoreRules() []Rule {
 		"external/icu",
 		"external/okhttp",
 		"external/wycheproof",
-
-		// Not really a core library but still needs access to same capabilities.
-		"development",
 	}
 
 	// Core library constraints. The sdk_version: "none" can only be used in core library projects.

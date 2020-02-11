@@ -25,11 +25,19 @@ import (
 // This file implements common functionality for handling modules that may exist as prebuilts,
 // source, or both.
 
+func RegisterPrebuiltMutators(ctx RegistrationContext) {
+	ctx.PreArchMutators(RegisterPrebuiltsPreArchMutators)
+	ctx.PostDepsMutators(RegisterPrebuiltsPostDepsMutators)
+}
+
 type prebuiltDependencyTag struct {
 	blueprint.BaseDependencyTag
 }
 
 var PrebuiltDepTag prebuiltDependencyTag
+
+// Mark this tag so dependencies that use it are excluded from visibility enforcement.
+func (t prebuiltDependencyTag) ExcludeFromVisibilityEnforcement() {}
 
 type PrebuiltProperties struct {
 	// When prefer is set to true the prebuilt will be used instead of any source module with
@@ -52,6 +60,10 @@ type Prebuilt struct {
 
 func (p *Prebuilt) Name(name string) string {
 	return "prebuilt_" + name
+}
+
+func (p *Prebuilt) ForcePrefer() {
+	p.properties.Prefer = proptools.BoolPtr(true)
 }
 
 // The below source-related functions and the srcs, src fields are based on an assumption that
@@ -195,6 +207,10 @@ func (p *Prebuilt) usePrebuilt(ctx TopDownMutatorContext, source Module) bool {
 	return source == nil || !source.Enabled()
 }
 
+func (p *Prebuilt) SourceExists() bool {
+	return p.properties.SourceExists
+}
+
 func (p *Prebuilt) checkSingleSourceProperties() {
 	if !p.srcProps.IsValid() || p.srcField.Name == "" {
 		panic(fmt.Errorf("invalid single source prebuilt %+v", p))
@@ -214,8 +230,4 @@ func (p *Prebuilt) getSingleSourceFieldValue() string {
 		panic(fmt.Errorf("prebuilt src field %q should be a string or a pointer to one", p.srcField.Name))
 	}
 	return value.String()
-}
-
-func (p *Prebuilt) SourceExists() bool {
-	return p.properties.SourceExists
 }

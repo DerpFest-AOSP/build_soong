@@ -19,6 +19,8 @@ import (
 	"os"
 	"path/filepath"
 	"text/template"
+
+	"android/soong/ui/metrics"
 )
 
 // Ensures the out directory exists, and has the proper files to prevent kati
@@ -33,12 +35,24 @@ func SetupOutDir(ctx Context, config Config) {
 	// can be parsed as ninja output.
 	ensureEmptyFileExists(ctx, filepath.Join(config.OutDir(), "ninja_build"))
 	ensureEmptyFileExists(ctx, filepath.Join(config.OutDir(), ".out-dir"))
+
+	if buildDateTimeFile, ok := config.environ.Get("BUILD_DATETIME_FILE"); ok {
+		err := ioutil.WriteFile(buildDateTimeFile, []byte(config.buildDateTime), 0777)
+		if err != nil {
+			ctx.Fatalln("Failed to write BUILD_DATETIME to file:", err)
+		}
+	} else {
+		ctx.Fatalln("Missing BUILD_DATETIME_FILE")
+	}
 }
 
 var combinedBuildNinjaTemplate = template.Must(template.New("combined").Parse(`
 builddir = {{.OutDir}}
-pool local_pool
+{{if .UseRemoteBuild }}pool local_pool
  depth = {{.Parallel}}
+{{end -}}
+pool highmem_pool
+ depth = {{.HighmemParallel}}
 build _kati_always_build_: phony
 {{if .HasKatiSuffix}}subninja {{.KatiBuildNinjaFile}}
 subninja {{.KatiPackageNinjaFile}}
@@ -128,6 +142,10 @@ func help(ctx Context, config Config, what int) {
 func Build(ctx Context, config Config, what int) {
 	ctx.Verboseln("Starting build with args:", config.Arguments())
 	ctx.Verboseln("Environment:", config.Environment().Environ())
+	ctx.Verbosef("Total RAM: %dGB", config.TotalRAM()/1024/1024/1024)
+
+	ctx.BeginTrace(metrics.Total, "total")
+	defer ctx.EndTrace()
 
 	if config.SkipMake() {
 		ctx.Verboseln("Skipping Make/Kati as requested")

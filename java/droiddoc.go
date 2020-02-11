@@ -19,6 +19,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/google/blueprint"
 	"github.com/google/blueprint/proptools"
 
 	"android/soong/android"
@@ -26,17 +27,37 @@ import (
 )
 
 func init() {
-	android.RegisterModuleType("doc_defaults", DocDefaultsFactory)
-	android.RegisterModuleType("stubs_defaults", StubsDefaultsFactory)
+	RegisterDocsBuildComponents(android.InitRegistrationContext)
+	RegisterStubsBuildComponents(android.InitRegistrationContext)
 
-	android.RegisterModuleType("droiddoc", DroiddocFactory)
-	android.RegisterModuleType("droiddoc_host", DroiddocHostFactory)
-	android.RegisterModuleType("droiddoc_exported_dir", ExportedDroiddocDirFactory)
-	android.RegisterModuleType("javadoc", JavadocFactory)
-	android.RegisterModuleType("javadoc_host", JavadocHostFactory)
+	// Register sdk member type.
+	android.RegisterSdkMemberType(&droidStubsSdkMemberType{
+		SdkMemberTypeBase: android.SdkMemberTypeBase{
+			PropertyName: "stubs_sources",
+			// stubs_sources can be used with sdk to provide the source stubs for APIs provided by
+			// the APEX.
+			SupportsSdk: true,
+		},
+	})
+}
 
-	android.RegisterModuleType("droidstubs", DroidstubsFactory)
-	android.RegisterModuleType("droidstubs_host", DroidstubsHostFactory)
+func RegisterDocsBuildComponents(ctx android.RegistrationContext) {
+	ctx.RegisterModuleType("doc_defaults", DocDefaultsFactory)
+
+	ctx.RegisterModuleType("droiddoc", DroiddocFactory)
+	ctx.RegisterModuleType("droiddoc_host", DroiddocHostFactory)
+	ctx.RegisterModuleType("droiddoc_exported_dir", ExportedDroiddocDirFactory)
+	ctx.RegisterModuleType("javadoc", JavadocFactory)
+	ctx.RegisterModuleType("javadoc_host", JavadocHostFactory)
+}
+
+func RegisterStubsBuildComponents(ctx android.RegistrationContext) {
+	ctx.RegisterModuleType("stubs_defaults", StubsDefaultsFactory)
+
+	ctx.RegisterModuleType("droidstubs", DroidstubsFactory)
+	ctx.RegisterModuleType("droidstubs_host", DroidstubsHostFactory)
+
+	ctx.RegisterModuleType("prebuilt_stubs_sources", PrebuiltStubsSourcesFactory)
 }
 
 var (
@@ -202,6 +223,9 @@ type DroiddocProperties struct {
 
 	// if set to true, generate docs through Dokka instead of Doclava.
 	Dokka_enabled *bool
+
+	// Compat config XML. Generates compat change documentation if set.
+	Compat_config *string `android:"path"`
 }
 
 type DroidstubsProperties struct {
@@ -403,44 +427,35 @@ func JavadocHostFactory() android.Module {
 
 var _ android.OutputFileProducer = (*Javadoc)(nil)
 
-func (j *Javadoc) sdkVersion() string {
-	return proptools.StringDefault(j.properties.Sdk_version, defaultSdkVersion(j))
+func (j *Javadoc) sdkVersion() sdkSpec {
+	return sdkSpecFrom(String(j.properties.Sdk_version))
 }
 
 func (j *Javadoc) systemModules() string {
 	return proptools.String(j.properties.System_modules)
 }
 
-func (j *Javadoc) minSdkVersion() string {
+func (j *Javadoc) minSdkVersion() sdkSpec {
 	return j.sdkVersion()
 }
 
-func (j *Javadoc) targetSdkVersion() string {
+func (j *Javadoc) targetSdkVersion() sdkSpec {
 	return j.sdkVersion()
 }
 
 func (j *Javadoc) addDeps(ctx android.BottomUpMutatorContext) {
 	if ctx.Device() {
 		sdkDep := decodeSdkDep(ctx, sdkContext(j))
-		if sdkDep.hasStandardLibs() {
-			if sdkDep.useDefaultLibs {
-				ctx.AddVariationDependencies(nil, bootClasspathTag, config.DefaultBootclasspathLibraries...)
-				if ctx.Config().TargetOpenJDK9() {
-					ctx.AddVariationDependencies(nil, systemModulesTag, config.DefaultSystemModules)
-				}
-				if sdkDep.hasFrameworkLibs() {
-					ctx.AddVariationDependencies(nil, libTag, config.DefaultLibraries...)
-				}
-			} else if sdkDep.useModule {
-				if ctx.Config().TargetOpenJDK9() {
-					ctx.AddVariationDependencies(nil, systemModulesTag, sdkDep.systemModules)
-				}
-				ctx.AddVariationDependencies(nil, bootClasspathTag, sdkDep.modules...)
+		if sdkDep.useDefaultLibs {
+			ctx.AddVariationDependencies(nil, bootClasspathTag, config.DefaultBootclasspathLibraries...)
+			ctx.AddVariationDependencies(nil, systemModulesTag, config.DefaultSystemModules)
+			if sdkDep.hasFrameworkLibs() {
+				ctx.AddVariationDependencies(nil, libTag, config.DefaultLibraries...)
 			}
-		} else if sdkDep.systemModules != "" {
-			// Add the system modules to both the system modules and bootclasspath.
+		} else if sdkDep.useModule {
+			ctx.AddVariationDependencies(nil, bootClasspathTag, sdkDep.bootclasspath...)
 			ctx.AddVariationDependencies(nil, systemModulesTag, sdkDep.systemModules)
-			ctx.AddVariationDependencies(nil, bootClasspathTag, sdkDep.systemModules)
+			ctx.AddVariationDependencies(nil, java9LibTag, sdkDep.java9Classpath...)
 		}
 	}
 
@@ -515,9 +530,13 @@ func (j *Javadoc) collectDeps(ctx android.ModuleContext) deps {
 
 	sdkDep := decodeSdkDep(ctx, sdkContext(j))
 	if sdkDep.invalidVersion {
-		ctx.AddMissingDependencies(sdkDep.modules)
+		ctx.AddMissingDependencies(sdkDep.bootclasspath)
+		ctx.AddMissingDependencies(sdkDep.java9Classpath)
 	} else if sdkDep.useFiles {
 		deps.bootClasspath = append(deps.bootClasspath, sdkDep.jars...)
+		deps.aidlPreprocess = sdkDep.aidl
+	} else {
+		deps.aidlPreprocess = sdkDep.aidl
 	}
 
 	ctx.VisitDirectDeps(func(module android.Module) {
@@ -545,6 +564,13 @@ func (j *Javadoc) collectDeps(ctx android.ModuleContext) deps {
 			case android.SourceFileProducer:
 				checkProducesJars(ctx, dep)
 				deps.classpath = append(deps.classpath, dep.Srcs()...)
+			default:
+				ctx.ModuleErrorf("depends on non-java module %q", otherName)
+			}
+		case java9LibTag:
+			switch dep := module.(type) {
+			case Dependency:
+				deps.java9Classpath = append(deps.java9Classpath, dep.HeaderJars()...)
 			default:
 				ctx.ModuleErrorf("depends on non-java module %q", otherName)
 			}
@@ -669,7 +695,7 @@ func (j *Javadoc) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 	cmd := javadocSystemModulesCmd(ctx, rule, j.srcFiles, outDir, srcJarDir, srcJarList,
 		deps.systemModules, deps.classpath, j.sourcepaths)
 
-	cmd.FlagWithArg("-source ", javaVersion).
+	cmd.FlagWithArg("-source ", javaVersion.String()).
 		Flag("-J-Xmx1024m").
 		Flag("-XDignore.symbol.file").
 		Flag("-Xdoclint:none")
@@ -773,7 +799,7 @@ func (d *Droiddoc) doclavaDocsFlags(ctx android.ModuleContext, cmd *android.Rule
 		if t, ok := m.(*ExportedDroiddocDir); ok {
 			cmd.FlagWithArg("-templatedir ", t.dir.String()).Implicits(t.deps)
 		} else {
-			ctx.PropertyErrorf("custom_template", "module %q is not a droiddoc_template", ctx.OtherModuleName(m))
+			ctx.PropertyErrorf("custom_template", "module %q is not a droiddoc_exported_dir", ctx.OtherModuleName(m))
 		}
 	})
 
@@ -1017,6 +1043,11 @@ func (d *Droiddoc) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 
 	cmd.Flag(d.Javadoc.args).Implicits(d.Javadoc.argFiles)
 
+	if d.properties.Compat_config != nil {
+		compatConfig := android.PathForModuleSrc(ctx, String(d.properties.Compat_config))
+		cmd.FlagWithInput("-compatconfig ", compatConfig)
+	}
+
 	var desc string
 	if Bool(d.properties.Dokka_enabled) {
 		desc = "dokka"
@@ -1164,6 +1195,7 @@ func (d *Droiddoc) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 //
 type Droidstubs struct {
 	Javadoc
+	android.SdkBase
 
 	properties              DroidstubsProperties
 	apiFile                 android.WritablePath
@@ -1183,6 +1215,7 @@ type Droidstubs struct {
 	updateCurrentApiTimestamp     android.WritablePath
 	checkLastReleasedApiTimestamp android.WritablePath
 	apiLintTimestamp              android.WritablePath
+	apiLintReport                 android.WritablePath
 
 	checkNullabilityWarningsTimestamp android.WritablePath
 
@@ -1193,6 +1226,9 @@ type Droidstubs struct {
 
 	jdiffDocZip      android.WritablePath
 	jdiffStubsSrcJar android.WritablePath
+
+	metadataZip android.WritablePath
+	metadataDir android.WritablePath
 }
 
 // droidstubs passes sources files through Metalava to generate stub .java files that only contain the API to be
@@ -1205,6 +1241,7 @@ func DroidstubsFactory() android.Module {
 		&module.Javadoc.properties)
 
 	InitDroiddocModule(module, android.HostAndDeviceSupported)
+	android.InitSdkAwareModule(module)
 	return module
 }
 
@@ -1304,7 +1341,8 @@ func (d *Droidstubs) stubsFlags(ctx android.ModuleContext, cmd *android.RuleBuil
 	}
 
 	if Bool(d.properties.Write_sdk_values) {
-		cmd.FlagWithArg("--sdk-values ", android.PathForModuleOut(ctx, "out").String())
+		d.metadataDir = android.PathForModuleOut(ctx, "metadata")
+		cmd.FlagWithArg("--sdk-values ", d.metadataDir.String())
 	}
 
 	if Bool(d.properties.Create_doc_stubs) {
@@ -1321,13 +1359,8 @@ func (d *Droidstubs) annotationsFlags(ctx android.ModuleContext, cmd *android.Ru
 		validatingNullability :=
 			strings.Contains(d.Javadoc.args, "--validate-nullability-from-merged-stubs") ||
 				String(d.properties.Validate_nullability_from_list) != ""
+
 		migratingNullability := String(d.properties.Previous_api) != ""
-
-		if !(migratingNullability || validatingNullability) {
-			ctx.PropertyErrorf("previous_api",
-				"has to be non-empty if annotations was enabled (unless validating nullability)")
-		}
-
 		if migratingNullability {
 			previousApi := android.PathForModuleSrc(ctx, String(d.properties.Previous_api))
 			cmd.FlagWithInput("--migrate-nullness ", previousApi)
@@ -1432,12 +1465,14 @@ func (d *Droidstubs) apiToXmlFlags(ctx android.ModuleContext, cmd *android.RuleB
 	}
 }
 
-func metalavaCmd(ctx android.ModuleContext, rule *android.RuleBuilder, javaVersion string, srcs android.Paths,
+func metalavaCmd(ctx android.ModuleContext, rule *android.RuleBuilder, javaVersion javaVersion, srcs android.Paths,
 	srcJarList android.Path, bootclasspath, classpath classpath, sourcepaths android.Paths) *android.RuleBuilderCommand {
+	// Metalava uses lots of memory, restrict the number of metalava jobs that can run in parallel.
+	rule.HighMem()
 	cmd := rule.Command().BuiltTool(ctx, "metalava").
 		Flag(config.JavacVmFlags).
 		FlagWithArg("-encoding ", "UTF-8").
-		FlagWithArg("-source ", javaVersion).
+		FlagWithArg("-source ", javaVersion.String()).
 		FlagWithRspFileInputList("@", srcs).
 		FlagWithInput("@", srcJarList)
 
@@ -1511,6 +1546,18 @@ func (d *Droidstubs) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 		FlagWithOutput("-o ", d.Javadoc.stubsSrcJar).
 		FlagWithArg("-C ", stubsDir.String()).
 		FlagWithArg("-D ", stubsDir.String())
+
+	if Bool(d.properties.Write_sdk_values) {
+		d.metadataZip = android.PathForModuleOut(ctx, ctx.ModuleName()+"-metadata.zip")
+		rule.Command().
+			BuiltTool(ctx, "soong_zip").
+			Flag("-write_if_changed").
+			Flag("-d").
+			FlagWithOutput("-o ", d.metadataZip).
+			FlagWithArg("-C ", d.metadataDir.String()).
+			FlagWithArg("-D ", d.metadataDir.String())
+	}
+
 	rule.Restat()
 
 	zipSyncCleanupCmd(rule, srcJarDir)
@@ -1537,6 +1584,8 @@ func (d *Droidstubs) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 		} else {
 			cmd.Flag("--api-lint")
 		}
+		d.apiLintReport = android.PathForModuleOut(ctx, "api_lint_report.txt")
+		cmd.FlagWithOutput("--report-even-if-suppressed ", d.apiLintReport)
 
 		d.inclusionAnnotationsFlags(ctx, cmd)
 		d.mergeAnnoDirFlags(ctx, cmd)
@@ -1899,4 +1948,114 @@ func zipSyncCmd(ctx android.ModuleContext, rule *android.RuleBuilder,
 
 func zipSyncCleanupCmd(rule *android.RuleBuilder, srcJarDir android.ModuleOutPath) {
 	rule.Command().Text("rm -rf").Text(srcJarDir.String())
+}
+
+var _ android.PrebuiltInterface = (*PrebuiltStubsSources)(nil)
+
+type PrebuiltStubsSourcesProperties struct {
+	Srcs []string `android:"path"`
+}
+
+type PrebuiltStubsSources struct {
+	android.ModuleBase
+	android.DefaultableModuleBase
+	prebuilt android.Prebuilt
+	android.SdkBase
+
+	properties PrebuiltStubsSourcesProperties
+
+	// The source directories containing stubs source files.
+	srcDirs     android.Paths
+	stubsSrcJar android.ModuleOutPath
+}
+
+func (p *PrebuiltStubsSources) OutputFiles(tag string) (android.Paths, error) {
+	switch tag {
+	case "":
+		return android.Paths{p.stubsSrcJar}, nil
+	default:
+		return nil, fmt.Errorf("unsupported module reference tag %q", tag)
+	}
+}
+
+func (p *PrebuiltStubsSources) GenerateAndroidBuildActions(ctx android.ModuleContext) {
+	p.stubsSrcJar = android.PathForModuleOut(ctx, ctx.ModuleName()+"-"+"stubs.srcjar")
+
+	p.srcDirs = android.PathsForModuleSrc(ctx, p.properties.Srcs)
+
+	rule := android.NewRuleBuilder()
+	command := rule.Command().
+		BuiltTool(ctx, "soong_zip").
+		Flag("-write_if_changed").
+		Flag("-jar").
+		FlagWithOutput("-o ", p.stubsSrcJar)
+
+	for _, d := range p.srcDirs {
+		dir := d.String()
+		command.
+			FlagWithArg("-C ", dir).
+			FlagWithInput("-D ", d)
+	}
+
+	rule.Restat()
+
+	rule.Build(pctx, ctx, "zip src", "Create srcjar from prebuilt source")
+}
+
+func (p *PrebuiltStubsSources) Prebuilt() *android.Prebuilt {
+	return &p.prebuilt
+}
+
+func (p *PrebuiltStubsSources) Name() string {
+	return p.prebuilt.Name(p.ModuleBase.Name())
+}
+
+// prebuilt_stubs_sources imports a set of java source files as if they were
+// generated by droidstubs.
+//
+// By default, a prebuilt_stubs_sources has a single variant that expects a
+// set of `.java` files generated by droidstubs.
+//
+// Specifying `host_supported: true` will produce two variants, one for use as a dependency of device modules and one
+// for host modules.
+//
+// Intended only for use by sdk snapshots.
+func PrebuiltStubsSourcesFactory() android.Module {
+	module := &PrebuiltStubsSources{}
+
+	module.AddProperties(&module.properties)
+
+	android.InitPrebuiltModule(module, &module.properties.Srcs)
+	android.InitSdkAwareModule(module)
+	InitDroiddocModule(module, android.HostAndDeviceSupported)
+	return module
+}
+
+type droidStubsSdkMemberType struct {
+	android.SdkMemberTypeBase
+}
+
+func (mt *droidStubsSdkMemberType) AddDependencies(mctx android.BottomUpMutatorContext, dependencyTag blueprint.DependencyTag, names []string) {
+	mctx.AddVariationDependencies(nil, dependencyTag, names...)
+}
+
+func (mt *droidStubsSdkMemberType) IsInstance(module android.Module) bool {
+	_, ok := module.(*Droidstubs)
+	return ok
+}
+
+func (mt *droidStubsSdkMemberType) BuildSnapshot(sdkModuleContext android.ModuleContext, builder android.SnapshotBuilder, member android.SdkMember) {
+	variants := member.Variants()
+	if len(variants) != 1 {
+		sdkModuleContext.ModuleErrorf("sdk contains %d variants of member %q but only one is allowed", len(variants), member.Name())
+	}
+	variant := variants[0]
+	d, _ := variant.(*Droidstubs)
+	stubsSrcJar := d.stubsSrcJar
+
+	snapshotRelativeDir := filepath.Join("java", d.Name()+"_stubs_sources")
+	builder.UnzipToSnapshot(stubsSrcJar, snapshotRelativeDir)
+
+	pbm := builder.AddPrebuiltModule(member, "prebuilt_stubs_sources")
+	pbm.AddProperty("srcs", []string{snapshotRelativeDir})
 }

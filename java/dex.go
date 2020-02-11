@@ -22,10 +22,10 @@ import (
 	"android/soong/android"
 )
 
-var d8 = pctx.AndroidStaticRule("d8",
+var d8 = pctx.AndroidRemoteStaticRule("d8", android.RemoteRuleSupports{RBE: true, RBEFlag: android.RBE_D8},
 	blueprint.RuleParams{
 		Command: `rm -rf "$outDir" && mkdir -p "$outDir" && ` +
-			`${config.D8Cmd} ${config.DexFlags} --output $outDir $d8Flags $in && ` +
+			`${config.D8Wrapper}${config.D8Cmd} ${config.DexFlags} --output $outDir $d8Flags $in && ` +
 			`${config.SoongZipCmd} $zipFlags -o $outDir/classes.dex.jar -C $outDir -f "$outDir/classes*.dex" && ` +
 			`${config.MergeZipsCmd} -D -stripFile "**/*.class" $out $outDir/classes.dex.jar $in`,
 		CommandDeps: []string{
@@ -36,11 +36,11 @@ var d8 = pctx.AndroidStaticRule("d8",
 	},
 	"outDir", "d8Flags", "zipFlags")
 
-var r8 = pctx.AndroidStaticRule("r8",
+var r8 = pctx.AndroidRemoteStaticRule("r8", android.RemoteRuleSupports{RBE: true, RBEFlag: android.RBE_R8},
 	blueprint.RuleParams{
 		Command: `rm -rf "$outDir" && mkdir -p "$outDir" && ` +
 			`rm -f "$outDict" && ` +
-			`${config.R8Cmd} ${config.DexFlags} -injars $in --output $outDir ` +
+			`${config.R8Wrapper}${config.R8Cmd} ${config.DexFlags} -injars $in --output $outDir ` +
 			`--force-proguard-compatibility ` +
 			`--no-data-resources ` +
 			`-printmapping $outDict ` +
@@ -73,20 +73,20 @@ func (j *Module) dexCommonFlags(ctx android.ModuleContext) []string {
 			"--verbose")
 	}
 
-	minSdkVersion, err := sdkVersionToNumberAsString(ctx, j.minSdkVersion())
+	minSdkVersion, err := j.minSdkVersion().effectiveVersion(ctx)
 	if err != nil {
 		ctx.PropertyErrorf("min_sdk_version", "%s", err)
 	}
 
-	flags = append(flags, "--min-api "+minSdkVersion)
+	flags = append(flags, "--min-api "+minSdkVersion.asNumberString())
 	return flags
 }
 
 func (j *Module) d8Flags(ctx android.ModuleContext, flags javaBuilderFlags) ([]string, android.Paths) {
 	d8Flags := j.dexCommonFlags(ctx)
 
-	d8Flags = append(d8Flags, flags.bootClasspath.FormTurbineClasspath("--lib ")...)
-	d8Flags = append(d8Flags, flags.classpath.FormTurbineClasspath("--lib ")...)
+	d8Flags = append(d8Flags, flags.bootClasspath.FormRepeatedClassPath("--lib ")...)
+	d8Flags = append(d8Flags, flags.classpath.FormRepeatedClassPath("--lib ")...)
 
 	var d8Deps android.Paths
 	d8Deps = append(d8Deps, flags.bootClasspath...)
@@ -115,7 +115,6 @@ func (j *Module) r8Flags(ctx android.ModuleContext, flags javaBuilderFlags) (r8F
 	r8Flags = append(r8Flags, proguardRaiseDeps.FormJavaClassPath("-libraryjars"))
 	r8Flags = append(r8Flags, flags.bootClasspath.FormJavaClassPath("-libraryjars"))
 	r8Flags = append(r8Flags, flags.classpath.FormJavaClassPath("-libraryjars"))
-	r8Flags = append(r8Flags, "-forceprocessing")
 
 	r8Deps = append(r8Deps, proguardRaiseDeps...)
 	r8Deps = append(r8Deps, flags.bootClasspath...)

@@ -72,6 +72,8 @@ func (mod *Module) AndroidMk() android.AndroidMkData {
 
 	mod.subAndroidMk(&ret, mod.compiler)
 
+	ret.SubName += mod.Properties.SubName
+
 	return ret
 }
 
@@ -85,6 +87,25 @@ func (binary *binaryDecorator) AndroidMk(ctx AndroidMkContext, ret *android.Andr
 	})
 }
 
+func (test *testDecorator) AndroidMk(ctx AndroidMkContext, ret *android.AndroidMkData) {
+	test.binaryDecorator.AndroidMk(ctx, ret)
+	ret.Class = "NATIVE_TESTS"
+	ret.SubName = test.getMutatedModuleSubName(ctx.Name())
+	ret.Extra = append(ret.Extra, func(w io.Writer, outputFile android.Path) {
+		if len(test.Properties.Test_suites) > 0 {
+			fmt.Fprintln(w, "LOCAL_COMPATIBILITY_SUITE :=",
+				strings.Join(test.Properties.Test_suites, " "))
+		}
+		if test.testConfig != nil {
+			fmt.Fprintln(w, "LOCAL_FULL_TEST_CONFIG :=", test.testConfig.String())
+		}
+		if !BoolDefault(test.Properties.Auto_gen_config, true) {
+			fmt.Fprintln(w, "LOCAL_DISABLE_AUTO_GENERATE_TEST_CONFIG := true")
+		}
+	})
+	// TODO(chh): add test data with androidMkWriteTestData(test.data, ctx, ret)
+}
+
 func (library *libraryDecorator) AndroidMk(ctx AndroidMkContext, ret *android.AndroidMkData) {
 	ctx.subAndroidMk(ret, library.baseCompiler)
 
@@ -92,7 +113,12 @@ func (library *libraryDecorator) AndroidMk(ctx AndroidMkContext, ret *android.An
 		ret.Class = "RLIB_LIBRARIES"
 	} else if library.dylib() {
 		ret.Class = "DYLIB_LIBRARIES"
+	} else if library.static() {
+		ret.Class = "STATIC_LIBRARIES"
+	} else if library.shared() {
+		ret.Class = "SHARED_LIBRARIES"
 	}
+
 	ret.DistFile = library.distFile
 	ret.Extra = append(ret.Extra, func(w io.Writer, outputFile android.Path) {
 		if !library.rlib() {

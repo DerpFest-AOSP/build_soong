@@ -16,7 +16,6 @@ package android
 
 import (
 	"github.com/google/blueprint"
-	"github.com/google/blueprint/pathtools"
 )
 
 // SingletonContext
@@ -74,8 +73,6 @@ type SingletonContext interface {
 	// builder whenever a file matching the pattern as added or removed, without rerunning if a
 	// file that does not match the pattern is added to a searched directory.
 	GlobWithDeps(pattern string, excludes []string) ([]string, error)
-
-	Fs() pathtools.FileSystem
 }
 
 type singletonAdaptor struct {
@@ -131,9 +128,9 @@ func (s *singletonContextAdaptor) Variable(pctx PackageContext, name, value stri
 }
 
 func (s *singletonContextAdaptor) Rule(pctx PackageContext, name string, params blueprint.RuleParams, argNames ...string) blueprint.Rule {
-	if s.Config().UseGoma() && params.Pool == nil {
-		// When USE_GOMA=true is set and the rule is not supported by goma, restrict jobs to the
-		// local parallelism value
+	if s.Config().UseRemoteBuild() && params.Pool == nil {
+		// When USE_GOMA=true or USE_RBE=true are set and the rule is not supported by goma/RBE, restrict
+		// jobs to the local parallelism value
 		params.Pool = localPool
 	}
 	rule := s.SingletonContext.Rule(pctx.PackageContext, name, params, argNames...)

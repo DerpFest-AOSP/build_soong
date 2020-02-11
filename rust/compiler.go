@@ -18,9 +18,10 @@ import (
 	"fmt"
 	"path/filepath"
 
+	"github.com/google/blueprint/proptools"
+
 	"android/soong/android"
 	"android/soong/rust/config"
-	"github.com/google/blueprint/proptools"
 )
 
 func getEdition(compiler *baseCompiler) string {
@@ -31,13 +32,25 @@ func getDenyWarnings(compiler *baseCompiler) bool {
 	return BoolDefault(compiler.Properties.Deny_warnings, config.DefaultDenyWarnings)
 }
 
-func NewBaseCompiler(dir, dir64 string) *baseCompiler {
+func (compiler *baseCompiler) setNoStdlibs() {
+	compiler.Properties.No_stdlibs = proptools.BoolPtr(true)
+}
+
+func NewBaseCompiler(dir, dir64 string, location installLocation) *baseCompiler {
 	return &baseCompiler{
 		Properties: BaseCompilerProperties{},
 		dir:        dir,
 		dir64:      dir64,
+		location:   location,
 	}
 }
+
+type installLocation int
+
+const (
+	InstallInSystem installLocation = 0
+	InstallInData                   = iota
+)
 
 type BaseCompilerProperties struct {
 	// whether to pass "-D warnings" to rustc. Defaults to true.
@@ -64,7 +77,7 @@ type BaseCompilerProperties struct {
 	// list of C static library dependencies
 	Static_libs []string `android:"arch_variant"`
 
-	// crate name (defaults to module name); if library, this must be the expected extern crate name
+	// crate name, required for libraries. This must be the expected extern crate name used in source
 	Crate_name string `android:"arch_variant"`
 
 	// list of features to enable for this crate
@@ -81,6 +94,9 @@ type BaseCompilerProperties struct {
 
 	// install to a subdirectory of the default install path for the module
 	Relative_install_path *string `android:"arch_variant"`
+
+	// whether to suppress inclusion of standard crates - defaults to false
+	No_stdlibs *bool
 }
 
 type baseCompiler struct {
@@ -101,9 +117,14 @@ type baseCompiler struct {
 	subDir   string
 	relative string
 	path     android.InstallPath
+	location installLocation
 }
 
 var _ compiler = (*baseCompiler)(nil)
+
+func (compiler *baseCompiler) inData() bool {
+	return compiler.location == InstallInData
+}
 
 func (compiler *baseCompiler) compilerProps() []interface{} {
 	return []interface{}{&compiler.Properties}
@@ -160,6 +181,23 @@ func (compiler *baseCompiler) compilerDeps(ctx DepsContext, deps Deps) Deps {
 	deps.StaticLibs = append(deps.StaticLibs, compiler.Properties.Static_libs...)
 	deps.SharedLibs = append(deps.SharedLibs, compiler.Properties.Shared_libs...)
 
+	if !Bool(compiler.Properties.No_stdlibs) {
+		for _, stdlib := range config.Stdlibs {
+			// If we're building for host, use the compiler's stdlibs
+			if ctx.Host() {
+				stdlib = stdlib + "_" + ctx.toolchain().RustTriple()
+			}
+
+			// This check is technically insufficient - on the host, where
+			// static linking is the default, if one of our static
+			// dependencies uses a dynamic library, we need to dynamically
+			// link the stdlib as well.
+			if (len(deps.Dylibs) > 0) || (!ctx.Host()) {
+				// Dynamically linked stdlib
+				deps.Dylibs = append(deps.Dylibs, stdlib)
+			}
+		}
+	}
 	return deps
 }
 
@@ -207,6 +245,7 @@ func (compiler *baseCompiler) getStemWithoutSuffix(ctx BaseModuleContext) string
 
 	return stem
 }
+
 func (compiler *baseCompiler) relativeInstallPath() string {
 	return String(compiler.Properties.Relative_install_path)
 }

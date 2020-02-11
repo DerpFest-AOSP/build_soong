@@ -25,10 +25,6 @@ func init() {
 	RegisterModuleType("prebuilt_usr_share_host", PrebuiltUserShareHostFactory)
 	RegisterModuleType("prebuilt_font", PrebuiltFontFactory)
 	RegisterModuleType("prebuilt_firmware", PrebuiltFirmwareFactory)
-
-	PreDepsMutators(func(ctx RegisterMutatorsContext) {
-		ctx.BottomUp("prebuilt_etc", prebuiltEtcMutator).Parallel()
-	})
 }
 
 type prebuiltEtcProperties struct {
@@ -45,13 +41,20 @@ type prebuiltEtcProperties struct {
 	// is the same as the file name of the source file.
 	Filename_from_src *bool `android:"arch_variant"`
 
+	// Make this module available when building for ramdisk.
+	Ramdisk_available *bool
+
 	// Make this module available when building for recovery.
 	Recovery_available *bool
 
-	InRecovery bool `blueprint:"mutated"`
-
 	// Whether this module is directly installable to one of the partitions. Default: true.
 	Installable *bool
+}
+
+type PrebuiltEtcModule interface {
+	Module
+	SubDir() string
+	OutputFile() OutputPath
 }
 
 type PrebuiltEtc struct {
@@ -69,8 +72,20 @@ type PrebuiltEtc struct {
 	additionalDependencies *Paths
 }
 
+func (p *PrebuiltEtc) inRamdisk() bool {
+	return p.ModuleBase.InRamdisk() || p.ModuleBase.InstallInRamdisk()
+}
+
+func (p *PrebuiltEtc) onlyInRamdisk() bool {
+	return p.ModuleBase.InstallInRamdisk()
+}
+
+func (p *PrebuiltEtc) InstallInRamdisk() bool {
+	return p.inRamdisk()
+}
+
 func (p *PrebuiltEtc) inRecovery() bool {
-	return p.properties.InRecovery || p.ModuleBase.InstallInRecovery()
+	return p.ModuleBase.InRecovery() || p.ModuleBase.InstallInRecovery()
 }
 
 func (p *PrebuiltEtc) onlyInRecovery() bool {
@@ -79,6 +94,29 @@ func (p *PrebuiltEtc) onlyInRecovery() bool {
 
 func (p *PrebuiltEtc) InstallInRecovery() bool {
 	return p.inRecovery()
+}
+
+var _ ImageInterface = (*PrebuiltEtc)(nil)
+
+func (p *PrebuiltEtc) ImageMutatorBegin(ctx BaseModuleContext) {}
+
+func (p *PrebuiltEtc) CoreVariantNeeded(ctx BaseModuleContext) bool {
+	return !p.ModuleBase.InstallInRecovery() && !p.ModuleBase.InstallInRamdisk()
+}
+
+func (p *PrebuiltEtc) RamdiskVariantNeeded(ctx BaseModuleContext) bool {
+	return Bool(p.properties.Ramdisk_available) || p.ModuleBase.InstallInRamdisk()
+}
+
+func (p *PrebuiltEtc) RecoveryVariantNeeded(ctx BaseModuleContext) bool {
+	return Bool(p.properties.Recovery_available) || p.ModuleBase.InstallInRecovery()
+}
+
+func (p *PrebuiltEtc) ExtraImageVariations(ctx BaseModuleContext) []string {
+	return nil
+}
+
+func (p *PrebuiltEtc) SetImageVariation(ctx BaseModuleContext, variation string, module Module) {
 }
 
 func (p *PrebuiltEtc) DepsMutator(ctx BottomUpMutatorContext) {
@@ -146,12 +184,15 @@ func (p *PrebuiltEtc) GenerateAndroidBuildActions(ctx ModuleContext) {
 	})
 }
 
-func (p *PrebuiltEtc) AndroidMkEntries() AndroidMkEntries {
+func (p *PrebuiltEtc) AndroidMkEntries() []AndroidMkEntries {
 	nameSuffix := ""
+	if p.inRamdisk() && !p.onlyInRamdisk() {
+		nameSuffix = ".ramdisk"
+	}
 	if p.inRecovery() && !p.onlyInRecovery() {
 		nameSuffix = ".recovery"
 	}
-	return AndroidMkEntries{
+	return []AndroidMkEntries{AndroidMkEntries{
 		Class:      "ETC",
 		SubName:    nameSuffix,
 		OutputFile: OptionalPathForPath(p.outputFilePath),
@@ -168,7 +209,7 @@ func (p *PrebuiltEtc) AndroidMkEntries() AndroidMkEntries {
 				}
 			},
 		},
-	}
+	}}
 }
 
 func InitPrebuiltEtcModule(p *PrebuiltEtc, dirBase string) {
@@ -214,49 +255,6 @@ func PrebuiltUserShareHostFactory() Module {
 	// This module is host-only
 	InitAndroidArchModule(module, HostSupported, MultilibCommon)
 	return module
-}
-
-const (
-	// coreMode is the variant for modules to be installed to system.
-	coreMode = "core"
-
-	// recoveryMode means a module to be installed to recovery image.
-	recoveryMode = "recovery"
-)
-
-// prebuiltEtcMutator creates the needed variants to install the module to
-// system or recovery.
-func prebuiltEtcMutator(mctx BottomUpMutatorContext) {
-	m, ok := mctx.Module().(*PrebuiltEtc)
-	if !ok || m.Host() {
-		return
-	}
-
-	var coreVariantNeeded bool = true
-	var recoveryVariantNeeded bool = false
-	if Bool(m.properties.Recovery_available) {
-		recoveryVariantNeeded = true
-	}
-
-	if m.ModuleBase.InstallInRecovery() {
-		recoveryVariantNeeded = true
-		coreVariantNeeded = false
-	}
-
-	var variants []string
-	if coreVariantNeeded {
-		variants = append(variants, coreMode)
-	}
-	if recoveryVariantNeeded {
-		variants = append(variants, recoveryMode)
-	}
-	mod := mctx.CreateVariations(variants...)
-	for i, v := range variants {
-		if v == recoveryMode {
-			m := mod[i].(*PrebuiltEtc)
-			m.properties.InRecovery = true
-		}
-	}
 }
 
 // prebuilt_font installs a font in <partition>/fonts directory.

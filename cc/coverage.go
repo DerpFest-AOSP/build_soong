@@ -43,7 +43,7 @@ func (cov *coverage) props() []interface{} {
 	return []interface{}{&cov.Properties}
 }
 
-func getProfileLibraryName(ctx ModuleContextIntf) string {
+func getGcovProfileLibraryName(ctx ModuleContextIntf) string {
 	// This function should only ever be called for a cc.Module, so the
 	// following statement should always succeed.
 	if ctx.useSdk() {
@@ -53,28 +53,47 @@ func getProfileLibraryName(ctx ModuleContextIntf) string {
 	}
 }
 
+func getClangProfileLibraryName(ctx ModuleContextIntf) string {
+	if ctx.useSdk() {
+		return "libprofile-clang-extras_ndk"
+	} else {
+		return "libprofile-clang-extras"
+	}
+}
+
 func (cov *coverage) deps(ctx DepsContext, deps Deps) Deps {
 	if cov.Properties.NeedCoverageVariant {
 		ctx.AddVariationDependencies([]blueprint.Variation{
 			{Mutator: "link", Variation: "static"},
-		}, coverageDepTag, getProfileLibraryName(ctx))
+		}, coverageDepTag, getGcovProfileLibraryName(ctx))
+		ctx.AddVariationDependencies([]blueprint.Variation{
+			{Mutator: "link", Variation: "static"},
+		}, coverageDepTag, getClangProfileLibraryName(ctx))
 	}
 	return deps
 }
 
 func (cov *coverage) flags(ctx ModuleContext, flags Flags, deps PathDeps) (Flags, PathDeps) {
-	if !ctx.DeviceConfig().NativeCoverageEnabled() {
+	gcovCoverage := ctx.DeviceConfig().NativeCoverageEnabled()
+	clangCoverage := ctx.DeviceConfig().ClangCoverageEnabled()
+
+	if !gcovCoverage && !clangCoverage {
 		return flags, deps
 	}
 
 	if cov.Properties.CoverageEnabled {
 		flags.Coverage = true
-		flags.GlobalFlags = append(flags.GlobalFlags, "--coverage", "-O0")
 		cov.linkCoverage = true
 
-		// Override -Wframe-larger-than and non-default optimization
-		// flags that the module may use.
-		flags.CFlags = append(flags.CFlags, "-Wno-frame-larger-than=", "-O0")
+		if gcovCoverage {
+			flags.Local.CommonFlags = append(flags.Local.CommonFlags, "--coverage", "-O0")
+
+			// Override -Wframe-larger-than and non-default optimization
+			// flags that the module may use.
+			flags.Local.CFlags = append(flags.Local.CFlags, "-Wno-frame-larger-than=", "-O0")
+		} else if clangCoverage {
+			flags.Local.CommonFlags = append(flags.Local.CommonFlags, "-fprofile-instr-generate", "-fcoverage-mapping")
+		}
 	}
 
 	// Even if we don't have coverage enabled, if any of our object files were compiled
@@ -112,12 +131,19 @@ func (cov *coverage) flags(ctx ModuleContext, flags Flags, deps PathDeps) (Flags
 	}
 
 	if cov.linkCoverage {
-		flags.LdFlags = append(flags.LdFlags, "--coverage")
+		if gcovCoverage {
+			flags.Local.LdFlags = append(flags.Local.LdFlags, "--coverage")
 
-		coverage := ctx.GetDirectDepWithTag(getProfileLibraryName(ctx), coverageDepTag).(*Module)
-		deps.WholeStaticLibs = append(deps.WholeStaticLibs, coverage.OutputFile().Path())
+			coverage := ctx.GetDirectDepWithTag(getGcovProfileLibraryName(ctx), coverageDepTag).(*Module)
+			deps.WholeStaticLibs = append(deps.WholeStaticLibs, coverage.OutputFile().Path())
 
-		flags.LdFlags = append(flags.LdFlags, "-Wl,--wrap,getenv")
+			flags.Local.LdFlags = append(flags.Local.LdFlags, "-Wl,--wrap,getenv")
+		} else if clangCoverage {
+			flags.Local.LdFlags = append(flags.Local.LdFlags, "-fprofile-instr-generate")
+
+			coverage := ctx.GetDirectDepWithTag(getClangProfileLibraryName(ctx), coverageDepTag).(*Module)
+			deps.WholeStaticLibs = append(deps.WholeStaticLibs, coverage.OutputFile().Path())
+		}
 	}
 
 	return flags, deps
@@ -125,7 +151,7 @@ func (cov *coverage) flags(ctx ModuleContext, flags Flags, deps PathDeps) (Flags
 
 func (cov *coverage) begin(ctx BaseModuleContext) {
 	// Coverage is disabled globally
-	if !ctx.DeviceConfig().NativeCoverageEnabled() {
+	if !ctx.DeviceConfig().NativeCoverageEnabled() && !ctx.DeviceConfig().ClangCoverageEnabled() {
 		return
 	}
 
@@ -163,6 +189,7 @@ type Coverage interface {
 	IsNativeCoverageNeeded(ctx android.BaseModuleContext) bool
 	PreventInstall()
 	HideFromMake()
+	MarkAsCoverageVariant(bool)
 }
 
 func coverageMutator(mctx android.BottomUpMutatorContext) {
@@ -191,6 +218,7 @@ func coverageMutator(mctx android.BottomUpMutatorContext) {
 		// module which are split into "" and "cov" variants. e.g. when cc_test refers
 		// to an APEX via 'data' property.
 		m := mctx.CreateVariations("", "cov")
+		m[0].(Coverage).MarkAsCoverageVariant(true)
 		m[0].(Coverage).PreventInstall()
 		m[0].(Coverage).HideFromMake()
 	}

@@ -36,13 +36,28 @@ all Android.bp files.
 For a list of valid module types and their properties see
 [$OUT_DIR/soong/docs/soong_build.html](https://ci.android.com/builds/latest/branches/aosp-build-tools/targets/linux/view/soong_build.html).
 
-### Globs
+### File lists
 
-Properties that take a list of files can also take glob patterns.  Glob
-patterns can contain the normal Unix wildcard `*`, for example "*.java". Glob
-patterns can also contain a single `**` wildcard as a path element, which will
-match zero or more path elements.  For example, `java/**/*.java` will match
-`java/Main.java` and `java/com/android/Main.java`.
+Properties that take a list of files can also take glob patterns and output path
+expansions.
+
+* Glob patterns can contain the normal Unix wildcard `*`, for example `"*.java"`.
+
+  Glob patterns can also contain a single `**` wildcard as a path element, which
+  will match zero or more path elements. For example, `java/**/*.java` will match
+  `java/Main.java` and `java/com/android/Main.java`.
+
+* Output path expansions take the format `:module` or `:module{.tag}`, where
+  `module` is the name of a module that produces output files, and it expands to
+  a list of those output files. With the optional `{.tag}` suffix, the module
+  may produce a different list of outputs according to `tag`.
+
+  For example, a `droiddoc` module with the name "my-docs" would return its
+  `.stubs.srcjar` output with `":my-docs"`, and its `.doc.zip` file with
+  `":my-docs{.doc.zip}"`.
+
+  This is commonly used to reference `filegroup` modules, whose output files
+  consist of their `srcs`.
 
 ### Variables
 
@@ -59,11 +74,12 @@ cc_binary {
 ```
 
 Variables are scoped to the remainder of the file they are declared in, as well
-as any child blueprint files.  Variables are immutable with one exception - they
+as any child Android.bp files.  Variables are immutable with one exception - they
 can be appended to with a += assignment, but only before they have been
 referenced.
 
 ### Comments
+
 Android.bp files can contain C-style multiline `/* */` and C++ style single-line
 `//` comments.
 
@@ -152,37 +168,114 @@ package {
 }
 ```
 
-### Name resolution
+### Referencing Modules
 
-Soong provides the ability for modules in different directories to specify
-the same name, as long as each module is declared within a separate namespace.
-A namespace can be declared like this:
+A module `libfoo` can be referenced by its name
 
 ```
-soong_namespace {
-    imports: ["path/to/otherNamespace1", "path/to/otherNamespace2"],
+cc_binary {
+    name: "app",
+    shared_libs: ["libfoo"],
 }
 ```
 
-Each Soong module is assigned a namespace based on its location in the tree.
-Each Soong module is considered to be in the namespace defined by the
-soong_namespace found in an Android.bp in the current directory or closest
-ancestor directory, unless no such soong_namespace module is found, in which
-case the module is considered to be in the implicit root namespace.
+Obviously, this works only if there is only one `libfoo` module in the source
+tree. Ensuring such name uniqueness for larger trees may become problematic. We
+might also want to use the same name in multiple mutually exclusive subtrees
+(for example, implementing different devices) deliberately in order to describe
+a functionally equivalent module. Enter Soong namespaces.
 
-When Soong attempts to resolve dependency D declared my module M in namespace
-N which imports namespaces I1, I2, I3..., then if D is a fully-qualified name
-of the form "//namespace:module", only the specified namespace will be searched
-for the specified module name. Otherwise, Soong will first look for a module
-named D declared in namespace N. If that module does not exist, Soong will look
-for a module named D in namespaces I1, I2, I3... Lastly, Soong will look in the
-root namespace.
+#### Namespaces
 
-Until we have fully converted from Make to Soong, it will be necessary for the
-Make product config to specify a value of PRODUCT_SOONG_NAMESPACES. Its value
-should be a space-separated list of namespaces that Soong export to Make to be
-built by the `m` command. After we have fully converted from Make to Soong, the
-details of enabling namespaces could potentially change.
+A presense of the `soong_namespace {..}` in an Android.bp file defines a
+**namespace**. For instance, having
+
+```
+soong_namespace {
+    ...
+}
+...
+```
+
+in `device/google/bonito/Android.bp` informs Soong that within the
+`device/google/bonito` package the module names are unique, that is, all the
+modules defined in the Android.bp files in the `device/google/bonito/` tree have
+unique names. However, there may be modules with the same names outside
+`device/google/bonito` tree. Indeed, there is a module `"pixelstats-vendor"`
+both in `device/google/bonito/pixelstats` and in
+`device/google/coral/pixelstats`.
+
+The name of a namespace is the path of its directory. The name of the namespace
+in the example above is thus `device/google/bonito`.
+
+An implicit **global namespace** corresponds to the source tree as a whole. It
+has empty name.
+
+A module name's **scope** is the smallest namespace containing it. Suppose a
+source tree has `device/my` and `device/my/display` namespaces. If `libfoo`
+module is defined in `device/co/display/lib/Android.bp`, its namespace is
+`device/co/display`.
+
+The name uniqueness thus means that module's name is unique within its scope. In
+other words, "//_scope_:_name_" is globally unique module reference, e.g,
+`"//device/google/bonito:pixelstats-vendor"`. _Note_ that the name of the
+namespace for a module may be different from module's package name: `libfoo`
+belongs to `device/my/display` namespace but is contained in
+`device/my/display/lib` package.
+
+#### Name Resolution
+
+The form of a module reference determines how Soong locates the module.
+
+For a **global reference** of the "//_scope_:_name_" form, Soong verifies there
+is a namespace called "_scope_", then verifies it contains a "_name_" module and
+uses it. Soong verifies there is only one "_name_" in "_scope_" at the beginning
+when it parses Android.bp files.
+
+A **local reference** has "_name_" form, and resolving it involves looking for a
+module "_name_" in one or more namespaces. By default only the global namespace
+is searched for "_name_" (in other words, only the modules not belonging to an
+explicitly defined scope are considered). The `imports` attribute of the
+`soong_namespaces` allows to specify where to look for modules . For instance,
+with `device/google/bonito/Android.bp` containing
+
+```
+soong_namespace {
+    imports: [
+        "hardware/google/interfaces",
+        "hardware/google/pixel",
+        "hardware/qcom/bootctrl",
+    ],
+}
+```
+
+a reference to `"libpixelstats"` will resolve to the module defined in
+`hardware/google/pixel/pixelstats/Android.bp` because this module is in
+`hardware/google/pixel` namespace.
+
+**TODO**: Conventionally, languages with similar concepts provide separate
+constructs for namespace definition and name resolution (`namespace` and `using`
+in C++, for instance). Should Soong do that, too?
+
+#### Referencing modules in makefiles
+
+While we are gradually converting makefiles to Android.bp files, Android build
+is described by a mixture of Android.bp and Android.mk files, and a module
+defined in an Android.mk file can reference a module defined in Android.bp file.
+For instance, a binary still defined in an Android.mk file may have a library
+defined in already converted Android.bp as a dependency.
+
+A module defined in an Android.bp file and belonging to the global namespace can
+be referenced from a makefile without additional effort. If a module belongs to
+an explicit namespace, it can be referenced from a makefile only after after the
+name of the namespace has been added to the value of PRODUCT_SOONG_NAMESPACES
+variable.
+
+Note that makefiles have no notion of namespaces and exposing namespaces with
+the same modules via PRODUCT_SOONG_NAMESPACES may cause Make failure. For
+instance, exposing both `device/google/bonito` and `device/google/coral`
+namespaces will cause Make failure because it will see two targets for the
+`pixelstats-vendor` module.
 
 ### Visibility
 
@@ -250,7 +343,7 @@ owner's responsibility to replace that with a more appropriate visibility.
 
 ### Formatter
 
-Soong includes a canonical formatter for blueprint files, similar to
+Soong includes a canonical formatter for Android.bp files, similar to
 [gofmt](https://golang.org/cmd/gofmt/).  To recursively reformat all Android.bp files
 in the current directory:
 ```
@@ -283,32 +376,17 @@ The androidmk converter will produce multiple conflicting modules, which must
 be resolved by hand to a single module with any differences inside
 `target: { android: { }, host: { } }` blocks.
 
-## Build logic
+### Conditionals
 
-The build logic is written in Go using the
-[blueprint](http://godoc.org/github.com/google/blueprint) framework.  Build
-logic receives module definitions parsed into Go structures using reflection
-and produces build rules.  The build rules are collected by blueprint and
-written to a [ninja](http://ninja-build.org) build file.
+Soong deliberately does not support most conditionals in Android.bp files.  We
+suggest removing most conditionals from the build.  See
+[Best Practices](docs/best_practices.md#removing-conditionals) for some
+examples on how to remove conditionals.
 
-## Other documentation
-
-* [Best Practices](docs/best_practices.md)
-* [Build Performance](docs/perf.md)
-* [Generating CLion Projects](docs/clion.md)
-* [Generating YouCompleteMe/VSCode compile\_commands.json file](docs/compdb.md)
-* Make-specific documentation: [build/make/README.md](https://android.googlesource.com/platform/build/+/master/README.md)
-
-## FAQ
-
-### How do I write conditionals?
-
-Soong deliberately does not support conditionals in Android.bp files.
-Instead, complexity in build rules that would require conditionals are handled
-in Go, where high level language features can be used and implicit dependencies
-introduced by conditionals can be tracked.  Most conditionals are converted
-to a map property, where one of the values in the map will be selected and
-appended to the top level properties.
+Most conditionals supported natively by Soong are converted to a map
+property.  When building the module one of the properties in the map will be
+selected, and its values appended to the property with the same name at the
+top level of the module.
 
 For example, to support architecture specific files:
 ```
@@ -326,9 +404,109 @@ cc_library {
 }
 ```
 
-See [art/build/art.go](https://android.googlesource.com/platform/art/+/master/build/art.go)
-or [external/llvm/soong/llvm.go](https://android.googlesource.com/platform/external/llvm/+/master/soong/llvm.go)
-for examples of more complex conditionals on product variables or environment variables.
+When building the module for arm the `generic.cpp` and `arm.cpp` sources will
+be built.  When building for x86 the `generic.cpp` and 'x86.cpp' sources will
+be built.
+
+#### Soong Config Variables
+
+When converting vendor modules that contain conditionals, simple conditionals
+can be supported through Soong config variables using `soong_config_*`
+modules that describe the module types, variables and possible values:
+
+```
+soong_config_module_type {
+    name: "acme_cc_defaults",
+    module_type: "cc_defaults",
+    config_namespace: "acme",
+    variables: ["board", "feature"],
+    properties: ["cflags", "srcs"],
+}
+
+soong_config_string_variable {
+    name: "board",
+    values: ["soc_a", "soc_b"],
+}
+
+soong_config_bool_variable {
+    name: "feature",
+}
+```
+
+This example describes a new `acme_cc_defaults` module type that extends the
+`cc_defaults` module type, with two additional conditionals based on variables
+`board` and `feature`, which can affect properties `cflags` and `srcs`.
+
+The values of the variables can be set from a product's `BoardConfig.mk` file:
+```
+SOONG_CONFIG_NAMESPACES += acme
+SOONG_CONFIG_acme += \
+    board \
+    feature \
+
+SOONG_CONFIG_acme_board := soc_a
+SOONG_CONFIG_acme_feature := true
+```
+
+The `acme_cc_defaults` module type can be used anywhere after the definition in
+the file where it is defined, or can be imported into another file with:
+```
+soong_config_module_type_import {
+    from: "device/acme/Android.bp",
+    module_types: ["acme_cc_defaults"],
+}
+```
+
+It can used like any other module type:
+```
+acme_cc_defaults {
+    name: "acme_defaults",
+    cflags: ["-DGENERIC"],
+    soong_config_variables: {
+        board: {
+            soc_a: {
+                cflags: ["-DSOC_A"],
+            },
+            soc_b: {
+                cflags: ["-DSOC_B"],
+            },
+        },
+        feature: {
+            cflags: ["-DFEATURE"],
+        },
+    },
+}
+
+cc_library {
+    name: "libacme_foo",
+    defaults: ["acme_defaults"],
+    srcs: ["*.cpp"],
+}
+```
+
+With the `BoardConfig.mk` snippet above, libacme_foo would build with
+cflags "-DGENERIC -DSOC_A -DFEATURE".
+
+`soong_config_module_type` modules will work best when used to wrap defaults
+modules (`cc_defaults`, `java_defaults`, etc.), which can then be referenced
+by all of the vendor's other modules using the normal namespace and visibility
+rules.
+
+## Build logic
+
+The build logic is written in Go using the
+[blueprint](http://godoc.org/github.com/google/blueprint) framework.  Build
+logic receives module definitions parsed into Go structures using reflection
+and produces build rules.  The build rules are collected by blueprint and
+written to a [ninja](http://ninja-build.org) build file.
+
+## Other documentation
+
+* [Best Practices](docs/best_practices.md)
+* [Build Performance](docs/perf.md)
+* [Generating CLion Projects](docs/clion.md)
+* [Generating YouCompleteMe/VSCode compile\_commands.json file](docs/compdb.md)
+* Make-specific documentation: [build/make/README.md](https://android.googlesource.com/platform/build/+/master/README.md)
 
 ## Developing for Soong
 
@@ -346,7 +524,7 @@ the IDE.
 
 To run the soong_build process in a debugger, install `dlv` and then start the build with
 `SOONG_DELVE=<listen addr>` in the environment.
-For examle:
+For example:
 ```bash
 SOONG_DELVE=:1234 m nothing
 ```

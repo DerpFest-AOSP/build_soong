@@ -75,34 +75,27 @@ func GetConfig(name string) PathConfig {
 
 var Configuration = map[string]PathConfig{
 	"bash":     Allowed,
-	"bc":       Allowed,
 	"dd":       Allowed,
 	"diff":     Allowed,
 	"dlv":      Allowed,
 	"expr":     Allowed,
-	"find":     Allowed,
 	"fuser":    Allowed,
 	"getopt":   Allowed,
 	"git":      Allowed,
-	"gzcat":    Allowed,
-	"gzip":     Allowed,
 	"hexdump":  Allowed,
 	"jar":      Allowed,
 	"java":     Allowed,
 	"javap":    Allowed,
 	"lsof":     Allowed,
-	"m4":       Log,
 	"openssl":  Allowed,
 	"patch":    Allowed,
 	"pstree":   Allowed,
 	"python3":  Allowed,
-	"realpath": Allowed,
 	"rsync":    Allowed,
 	"sh":       Allowed,
 	"tr":       Allowed,
 	"unzip":    Allowed,
 	"zip":      Allowed,
-	"zipinfo":  Allowed,
 
 	// Host toolchain is removed. In-tree toolchain should be used instead.
 	// GCC also can't find cc1 with this implementation.
@@ -122,9 +115,6 @@ var Configuration = map[string]PathConfig{
 	"pgrep": LinuxOnlyPrebuilt,
 	"pkill": LinuxOnlyPrebuilt,
 	"ps":    LinuxOnlyPrebuilt,
-
-	// The toybox xargs is currently breaking the mac build.
-	"xargs": LinuxOnlyPrebuilt,
 }
 
 func init() {

@@ -162,8 +162,16 @@ func (d *DeviceHostConverter) ExportedSdkLibs() []string {
 	return nil
 }
 
+func (d *DeviceHostConverter) ExportedPlugins() (android.Paths, []string) {
+	return nil, nil
+}
+
 func (d *DeviceHostConverter) SrcJarArgs() ([]string, android.Paths) {
 	return d.srcJarArgs, d.srcJarDeps
+}
+
+func (d *DeviceHostConverter) JacocoReportClassesFile() android.Path {
+	return nil
 }
 
 func (d *DeviceHostConverter) AndroidMk() android.AndroidMkData {

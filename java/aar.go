@@ -15,10 +15,11 @@
 package java
 
 import (
-	"android/soong/android"
 	"fmt"
 	"path/filepath"
 	"strings"
+
+	"android/soong/android"
 
 	"github.com/google/blueprint"
 	"github.com/google/blueprint/proptools"
@@ -31,11 +32,16 @@ type AndroidLibraryDependency interface {
 	ExportedRRODirs() []rroDir
 	ExportedStaticPackages() android.Paths
 	ExportedManifests() android.Paths
+	ExportedAssets() android.OptionalPath
 }
 
 func init() {
-	android.RegisterModuleType("android_library_import", AARImportFactory)
-	android.RegisterModuleType("android_library", AndroidLibraryFactory)
+	RegisterAARBuildComponents(android.InitRegistrationContext)
+}
+
+func RegisterAARBuildComponents(ctx android.RegistrationContext) {
+	ctx.RegisterModuleType("android_library_import", AARImportFactory)
+	ctx.RegisterModuleType("android_library", AndroidLibraryFactory)
 }
 
 //
@@ -72,6 +78,9 @@ type aaptProperties struct {
 
 	// paths to additional manifest files to merge with main manifest.
 	Additional_manifests []string `android:"path"`
+
+	// do not include AndroidManifest from dependent libraries
+	Dont_merge_manifests *bool
 }
 
 type aapt struct {
@@ -85,6 +94,7 @@ type aapt struct {
 	extraAaptPackagesFile   android.Path
 	mergedManifestFile      android.Path
 	noticeFile              android.OptionalPath
+	assetPackage            android.OptionalPath
 	isLibrary               bool
 	useEmbeddedNativeLibs   bool
 	useEmbeddedDex          bool
@@ -114,6 +124,10 @@ func (a *aapt) ExportedRRODirs() []rroDir {
 
 func (a *aapt) ExportedManifests() android.Paths {
 	return a.transitiveManifestPaths
+}
+
+func (a *aapt) ExportedAssets() android.OptionalPath {
+	return a.assetPackage
 }
 
 func (a *aapt) aapt2Flags(ctx android.ModuleContext, sdkContext sdkContext,
@@ -169,7 +183,10 @@ func (a *aapt) aapt2Flags(ctx android.ModuleContext, sdkContext sdkContext,
 	linkDeps = append(linkDeps, assetFiles...)
 
 	// SDK version flags
-	minSdkVersion := sdkVersionOrDefault(ctx, sdkContext.minSdkVersion())
+	minSdkVersion, err := sdkContext.minSdkVersion().effectiveVersionString(ctx)
+	if err != nil {
+		ctx.ModuleErrorf("invalid minSdkVersion: %s", err)
+	}
 
 	linkFlags = append(linkFlags, "--min-sdk-version "+minSdkVersion)
 	linkFlags = append(linkFlags, "--target-sdk-version "+minSdkVersion)
@@ -208,9 +225,15 @@ func (a *aapt) deps(ctx android.BottomUpMutatorContext, sdkDep sdkDep) {
 	}
 }
 
+var extractAssetsRule = pctx.AndroidStaticRule("extractAssets",
+	blueprint.RuleParams{
+		Command:     `${config.Zip2ZipCmd} -i ${in} -o ${out} "assets/**/*"`,
+		CommandDeps: []string{"${config.Zip2ZipCmd}"},
+	})
+
 func (a *aapt) buildActions(ctx android.ModuleContext, sdkContext sdkContext, extraLinkFlags ...string) {
 
-	transitiveStaticLibs, transitiveStaticLibManifests, staticRRODirs, libDeps, libFlags, sdkLibraries :=
+	transitiveStaticLibs, transitiveStaticLibManifests, staticRRODirs, assetPackages, libDeps, libFlags, sdkLibraries :=
 		aaptLibs(ctx, sdkContext)
 
 	// App manifest file
@@ -225,7 +248,7 @@ func (a *aapt) buildActions(ctx android.ModuleContext, sdkContext sdkContext, ex
 	a.transitiveManifestPaths = append(android.Paths{manifestPath}, additionalManifests...)
 	a.transitiveManifestPaths = append(a.transitiveManifestPaths, transitiveStaticLibManifests...)
 
-	if len(a.transitiveManifestPaths) > 1 {
+	if len(a.transitiveManifestPaths) > 1 && !Bool(a.aaptProperties.Dont_merge_manifests) {
 		a.mergedManifestFile = manifestMerger(ctx, a.transitiveManifestPaths[0], a.transitiveManifestPaths[1:], a.isLibrary)
 		if !a.isLibrary {
 			// Only use the merged manifest for applications.  For libraries, the transitive closure of manifests
@@ -310,7 +333,20 @@ func (a *aapt) buildActions(ctx android.ModuleContext, sdkContext sdkContext, ex
 	}
 
 	aapt2Link(ctx, packageRes, srcJar, proguardOptionsFile, rTxt, extraPackages,
-		linkFlags, linkDeps, compiledRes, compiledOverlay, splitPackages)
+		linkFlags, linkDeps, compiledRes, compiledOverlay, assetPackages, splitPackages)
+
+	// Extract assets from the resource package output so that they can be used later in aapt2link
+	// for modules that depend on this one.
+	if android.PrefixedStringInList(linkFlags, "-A ") || len(assetPackages) > 0 {
+		assets := android.PathForModuleOut(ctx, "assets.zip")
+		ctx.Build(pctx, android.BuildParams{
+			Rule:        extractAssetsRule,
+			Input:       packageRes,
+			Output:      assets,
+			Description: "extract assets from built resource file",
+		})
+		a.assetPackage = android.OptionalPathForPath(assets)
+	}
 
 	a.aaptSrcJar = srcJar
 	a.exportPackage = packageRes
@@ -324,7 +360,7 @@ func (a *aapt) buildActions(ctx android.ModuleContext, sdkContext sdkContext, ex
 
 // aaptLibs collects libraries from dependencies and sdk_version and converts them into paths
 func aaptLibs(ctx android.ModuleContext, sdkContext sdkContext) (transitiveStaticLibs, transitiveStaticLibManifests android.Paths,
-	staticRRODirs []rroDir, deps android.Paths, flags []string, sdkLibraries []string) {
+	staticRRODirs []rroDir, assets, deps android.Paths, flags []string, sdkLibraries []string) {
 
 	var sharedLibs android.Paths
 
@@ -362,6 +398,9 @@ func aaptLibs(ctx android.ModuleContext, sdkContext sdkContext) (transitiveStati
 				transitiveStaticLibs = append(transitiveStaticLibs, exportPackage)
 				transitiveStaticLibManifests = append(transitiveStaticLibManifests, aarDep.ExportedManifests()...)
 				sdkLibraries = append(sdkLibraries, aarDep.ExportedSdkLibs()...)
+				if aarDep.ExportedAssets().Valid() {
+					assets = append(assets, aarDep.ExportedAssets().Path())
+				}
 
 			outer:
 				for _, d := range aarDep.ExportedRRODirs() {
@@ -391,7 +430,7 @@ func aaptLibs(ctx android.ModuleContext, sdkContext sdkContext) (transitiveStati
 	transitiveStaticLibManifests = android.FirstUniquePaths(transitiveStaticLibManifests)
 	sdkLibraries = android.FirstUniqueStrings(sdkLibraries)
 
-	return transitiveStaticLibs, transitiveStaticLibManifests, staticRRODirs, deps, flags, sdkLibraries
+	return transitiveStaticLibs, transitiveStaticLibManifests, staticRRODirs, assets, deps, flags, sdkLibraries
 }
 
 type AndroidLibrary struct {
@@ -516,23 +555,27 @@ type AARImport struct {
 	exportedStaticPackages android.Paths
 }
 
-func (a *AARImport) sdkVersion() string {
-	return proptools.StringDefault(a.properties.Sdk_version, defaultSdkVersion(a))
+func (a *AARImport) sdkVersion() sdkSpec {
+	return sdkSpecFrom(String(a.properties.Sdk_version))
 }
 
 func (a *AARImport) systemModules() string {
 	return ""
 }
 
-func (a *AARImport) minSdkVersion() string {
+func (a *AARImport) minSdkVersion() sdkSpec {
 	if a.properties.Min_sdk_version != nil {
-		return *a.properties.Min_sdk_version
+		return sdkSpecFrom(*a.properties.Min_sdk_version)
 	}
 	return a.sdkVersion()
 }
 
-func (a *AARImport) targetSdkVersion() string {
+func (a *AARImport) targetSdkVersion() sdkSpec {
 	return a.sdkVersion()
+}
+
+func (a *AARImport) javaVersion() string {
+	return ""
 }
 
 var _ AndroidLibraryDependency = (*AARImport)(nil)
@@ -557,12 +600,21 @@ func (a *AARImport) ExportedManifests() android.Paths {
 	return android.Paths{a.manifest}
 }
 
+// TODO(jungjw): Decide whether we want to implement this.
+func (a *AARImport) ExportedAssets() android.OptionalPath {
+	return android.OptionalPath{}
+}
+
 func (a *AARImport) Prebuilt() *android.Prebuilt {
 	return &a.prebuilt
 }
 
 func (a *AARImport) Name() string {
 	return a.prebuilt.Name(a.ModuleBase.Name())
+}
+
+func (a *AARImport) JacocoReportClassesFile() android.Path {
+	return nil
 }
 
 func (a *AARImport) DepsMutator(ctx android.BottomUpMutatorContext) {
@@ -641,7 +693,7 @@ func (a *AARImport) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 	linkFlags = append(linkFlags, "--manifest "+a.manifest.String())
 	linkDeps = append(linkDeps, a.manifest)
 
-	transitiveStaticLibs, staticLibManifests, staticRRODirs, libDeps, libFlags, sdkLibraries :=
+	transitiveStaticLibs, staticLibManifests, staticRRODirs, transitiveAssets, libDeps, libFlags, sdkLibraries :=
 		aaptLibs(ctx, sdkContext(a))
 
 	_ = staticLibManifests
@@ -654,7 +706,7 @@ func (a *AARImport) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 	overlayRes := append(android.Paths{flata}, transitiveStaticLibs...)
 
 	aapt2Link(ctx, a.exportPackage, srcJar, proguardOptionsFile, rTxt, a.extraAaptPackagesFile,
-		linkFlags, linkDeps, nil, overlayRes, nil)
+		linkFlags, linkDeps, nil, overlayRes, transitiveAssets, nil)
 }
 
 var _ Dependency = (*AARImport)(nil)
@@ -685,6 +737,10 @@ func (a *AARImport) AidlIncludeDirs() android.Paths {
 
 func (a *AARImport) ExportedSdkLibs() []string {
 	return nil
+}
+
+func (d *AARImport) ExportedPlugins() (android.Paths, []string) {
+	return nil, nil
 }
 
 func (a *AARImport) SrcJarArgs() ([]string, android.Paths) {

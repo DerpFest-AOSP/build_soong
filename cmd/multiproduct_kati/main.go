@@ -37,18 +37,7 @@ import (
 	"android/soong/zip"
 )
 
-// We default to number of cpus / 4, which seems to be the sweet spot for my
-// system. I suspect this is mostly due to memory or disk bandwidth though, and
-// may depend on the size ofthe source tree, so this probably isn't a great
-// default.
-func detectNumJobs() int {
-	if runtime.NumCPU() < 4 {
-		return 1
-	}
-	return runtime.NumCPU() / 4
-}
-
-var numJobs = flag.Int("j", detectNumJobs(), "number of parallel kati jobs")
+var numJobs = flag.Int("j", 0, "number of parallel jobs [0=autodetect]")
 
 var keepArtifacts = flag.Bool("keep", false, "keep archives of artifacts")
 var incremental = flag.Bool("incremental", false, "run in incremental mode (saving intermediates)")
@@ -63,6 +52,9 @@ var buildVariant = flag.String("variant", "eng", "build variant to use")
 
 var skipProducts = flag.String("skip-products", "", "comma-separated list of products to skip (known failures, etc)")
 var includeProducts = flag.String("products", "", "comma-separated list of products to build")
+
+var shardCount = flag.Int("shard-count", 1, "split the products into multiple shards (to spread the build onto multiple machines, etc)")
+var shard = flag.Int("shard", 1, "1-indexed shard to execute")
 
 const errorLeadingLines = 20
 const errorTrailingLines = 20
@@ -230,6 +222,21 @@ func main() {
 		trace.SetOutput(filepath.Join(config.OutDir(), "build.trace"))
 	}
 
+	var jobs = *numJobs
+	if jobs < 1 {
+		jobs = runtime.NumCPU() / 4
+
+		ramGb := int(config.TotalRAM() / 1024 / 1024 / 1024)
+		if ramJobs := ramGb / 20; ramGb > 0 && jobs > ramJobs {
+			jobs = ramJobs
+		}
+
+		if jobs < 1 {
+			jobs = 1
+		}
+	}
+	log.Verbosef("Using %d parallel jobs", jobs)
+
 	setMaxFiles(log)
 
 	finder := build.NewSourceFinder(buildCtx, config)
@@ -278,6 +285,17 @@ func main() {
 		}
 	}
 
+	if *shard < 1 {
+		log.Fatalf("--shard value must be >= 1, not %d\n", *shard)
+	} else if *shardCount < 1 {
+		log.Fatalf("--shard-count value must be >= 1, not %d\n", *shardCount)
+	} else if *shard > *shardCount {
+		log.Fatalf("--shard (%d) must not be greater than --shard-count (%d)\n", *shard,
+			*shardCount)
+	} else if *shardCount > 1 {
+		finalProductsList = splitList(finalProductsList, *shardCount)[*shard-1]
+	}
+
 	log.Verbose("Got product list: ", finalProductsList)
 
 	s := buildCtx.Status.StartTool()
@@ -304,7 +322,7 @@ func main() {
 	}()
 
 	var wg sync.WaitGroup
-	for i := 0; i < *numJobs; i++ {
+	for i := 0; i < jobs; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -471,4 +489,19 @@ func (f *failureCount) Flush() {}
 func (f *failureCount) Write(p []byte) (int, error) {
 	// discard writes
 	return len(p), nil
+}
+
+func splitList(list []string, shardCount int) (ret [][]string) {
+	each := len(list) / shardCount
+	extra := len(list) % shardCount
+	for i := 0; i < shardCount; i++ {
+		count := each
+		if extra > 0 {
+			count += 1
+			extra -= 1
+		}
+		ret = append(ret, list[:count])
+		list = list[count:]
+	}
+	return
 }

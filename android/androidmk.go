@@ -61,7 +61,7 @@ type AndroidMkExtraFunc func(w io.Writer, outputFile Path)
 
 // Allows modules to customize their Android*.mk output.
 type AndroidMkEntriesProvider interface {
-	AndroidMkEntries() AndroidMkEntries
+	AndroidMkEntries() []AndroidMkEntries
 	BaseModuleName() string
 }
 
@@ -230,9 +230,6 @@ func (a *AndroidMkEntries) fillInEntries(config Config, bpPath string, mod bluep
 		}
 		a.SetBoolIfTrue("LOCAL_ODM_MODULE", Bool(amod.commonProperties.Device_specific))
 		a.SetBoolIfTrue("LOCAL_PRODUCT_MODULE", Bool(amod.commonProperties.Product_specific))
-		// TODO(b/135957588) product_services_specific is matched to LOCAL_PRODUCT_MODULE
-		// as a workaround. Remove this after clearing all Android.bp
-		a.SetBoolIfTrue("LOCAL_PRODUCT_MODULE", Bool(amod.commonProperties.Product_services_specific))
 		a.SetBoolIfTrue("LOCAL_SYSTEM_EXT_MODULE", Bool(amod.commonProperties.System_ext_specific))
 		if amod.commonProperties.Owner != nil {
 			a.SetString("LOCAL_MODULE_OWNER", *amod.commonProperties.Owner)
@@ -326,7 +323,7 @@ func (c *androidMkSingleton) GenerateBuildActions(ctx SingletonContext) {
 		return
 	}
 
-	err := translateAndroidMk(ctx, transMk.String(), androidMkModulesList)
+	err := translateAndroidMk(ctx, absolutePath(transMk.String()), androidMkModulesList)
 	if err != nil {
 		ctx.Errorf(err.Error())
 	}
@@ -367,8 +364,8 @@ func translateAndroidMk(ctx SingletonContext, mkFile string, mods []blueprint.Mo
 	}
 
 	// Don't write to the file if it hasn't changed
-	if _, err := os.Stat(mkFile); !os.IsNotExist(err) {
-		if data, err := ioutil.ReadFile(mkFile); err == nil {
+	if _, err := os.Stat(absolutePath(mkFile)); !os.IsNotExist(err) {
+		if data, err := ioutil.ReadFile(absolutePath(mkFile)); err == nil {
 			matches := buf.Len() == len(data)
 
 			if matches {
@@ -386,7 +383,7 @@ func translateAndroidMk(ctx SingletonContext, mkFile string, mods []blueprint.Mo
 		}
 	}
 
-	return ioutil.WriteFile(mkFile, buf.Bytes(), 0666)
+	return ioutil.WriteFile(absolutePath(mkFile), buf.Bytes(), 0666)
 }
 
 func translateAndroidMkModule(ctx SingletonContext, w io.Writer, mod blueprint.Module) error {
@@ -513,10 +510,10 @@ func translateAndroidMkEntriesModule(ctx SingletonContext, w io.Writer, mod blue
 		return nil
 	}
 
-	entries := provider.AndroidMkEntries()
-	entries.fillInEntries(ctx.Config(), ctx.BlueprintFile(mod), mod)
-
-	entries.write(w)
+	for _, entries := range provider.AndroidMkEntries() {
+		entries.fillInEntries(ctx.Config(), ctx.BlueprintFile(mod), mod)
+		entries.write(w)
+	}
 
 	return nil
 }

@@ -228,7 +228,7 @@ func generateStubApiVariants(mctx android.BottomUpMutatorContext, c *stubDecorat
 	}
 }
 
-func ndkApiMutator(mctx android.BottomUpMutatorContext) {
+func NdkApiMutator(mctx android.BottomUpMutatorContext) {
 	if m, ok := mctx.Module().(*Module); ok {
 		if m.Enabled() {
 			if compiler, ok := m.compiler.(*stubDecorator); ok {
@@ -257,10 +257,11 @@ func (c *stubDecorator) compilerInit(ctx BaseModuleContext) {
 }
 
 func addStubLibraryCompilerFlags(flags Flags) Flags {
-	flags.CFlags = append(flags.CFlags,
+	flags.Global.CFlags = append(flags.Global.CFlags,
 		// We're knowingly doing some otherwise unsightly things with builtin
 		// functions here. We're just generating stub libraries, so ignore it.
 		"-Wno-incompatible-library-redeclaration",
+		"-Wno-incomplete-setjmp-declaration",
 		"-Wno-builtin-requires-header",
 		"-Wno-invalid-noreturn",
 		"-Wall",
@@ -269,6 +270,10 @@ func addStubLibraryCompilerFlags(flags Flags) Flags {
 		// (avoids the need to link an unwinder into a fake library).
 		"-fno-unwind-tables",
 	)
+	// All symbols in the stubs library should be visible.
+	if inList("-fvisibility=hidden", flags.Local.CFlags) {
+		flags.Local.CFlags = append(flags.Local.CFlags, "-fvisibility=default")
+	}
 	return flags
 }
 
@@ -337,7 +342,7 @@ func (stub *stubDecorator) link(ctx ModuleContext, flags Flags, deps PathDeps,
 
 	if useVersionScript {
 		linkerScriptFlag := "-Wl,--version-script," + stub.versionScriptPath.String()
-		flags.LdFlags = append(flags.LdFlags, linkerScriptFlag)
+		flags.Local.LdFlags = append(flags.Local.LdFlags, linkerScriptFlag)
 		flags.LdFlagsDeps = append(flags.LdFlagsDeps, stub.versionScriptPath)
 	}
 
@@ -385,7 +390,7 @@ func newStubLibrary() *Module {
 
 // ndk_library creates a stub library that exposes dummy implementation
 // of functions and variables for use at build time only.
-func ndkLibraryFactory() android.Module {
+func NdkLibraryFactory() android.Module {
 	module := newStubLibrary()
 	android.InitAndroidArchModule(module, android.DeviceSupported, android.MultilibBoth)
 	module.ModuleBase.EnableNativeBridgeSupportByDefault()

@@ -101,9 +101,6 @@ func init() {
 		// not emit the table by default on Android since NDK still uses GNU binutils.
 		"-faddrsig",
 
-		// -Wimplicit-fallthrough is not enabled by -Wall.
-		"-Wimplicit-fallthrough",
-
 		// Help catch common 32/64-bit errors.
 		"-Werror=int-conversion",
 
@@ -135,13 +132,18 @@ func init() {
 		// Disable -Winconsistent-missing-override until we can clean up the existing
 		// codebase for it.
 		"-Wno-inconsistent-missing-override",
+
+		// Warnings from clang-10
+		// Nested and array designated initialization is nice to have.
+		"-Wno-c99-designator",
 	}, " "))
 
 	pctx.StaticVariable("ClangExtraCppflags", strings.Join([]string{
+		// -Wimplicit-fallthrough is not enabled by -Wall.
+		"-Wimplicit-fallthrough",
+
 		// Enable clang's thread-safety annotations in libcxx.
-		// Turn off -Wthread-safety-negative, to avoid breaking projects that use -Weverything.
 		"-D_LIBCPP_ENABLE_THREAD_SAFETY_ANNOTATIONS",
-		"-Wno-thread-safety-negative",
 
 		// libc++'s math.h has an #include_next outside of system_headers.
 		"-Wno-gnu-include-next",
@@ -163,10 +165,14 @@ func init() {
 		// new warnings are fixed.
 		"-Wno-tautological-constant-compare",
 		"-Wno-tautological-type-limit-compare",
+		// http://b/145210666
+		"-Wno-reorder-init-list",
+		// http://b/145211066
+		"-Wno-implicit-int-float-conversion",
 	}, " "))
 
-	// Extra cflags for projects under external/ directory to disable warnings that are infeasible
-	// to fix in all the external projects and their upstream repos.
+	// Extra cflags for external third-party projects to disable warnings that
+	// are infeasible to fix in all the external projects and their upstream repos.
 	pctx.StaticVariable("ClangExtraExternalCflags", strings.Join([]string{
 		"-Wno-enum-compare",
 		"-Wno-enum-compare-switch",
@@ -178,6 +184,13 @@ func init() {
 		// Bug: http://b/29823425 Disable -Wnull-dereference until the
 		// new instances detected by this warning are fixed.
 		"-Wno-null-dereference",
+
+		// http://b/145211477
+		"-Wno-pointer-compare",
+		// http://b/145211022
+		"-Wno-xor-used-as-pow",
+		// http://b/145211022
+		"-Wno-final-dtor-non-final-class",
 	}, " "))
 }
 

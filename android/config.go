@@ -25,13 +25,18 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/google/blueprint"
 	"github.com/google/blueprint/bootstrap"
+	"github.com/google/blueprint/pathtools"
 	"github.com/google/blueprint/proptools"
+
+	"android/soong/android/soongconfig"
 )
 
 var Bool = proptools.Bool
 var String = proptools.String
-var FutureApiLevel = 10000
+
+const FutureApiLevel = 10000
 
 // The configuration file name
 const configFileName = "soong.config"
@@ -64,19 +69,7 @@ type DeviceConfig struct {
 	*deviceConfig
 }
 
-type VendorConfig interface {
-	// Bool interprets the variable named `name` as a boolean, returning true if, after
-	// lowercasing, it matches one of "1", "y", "yes", "on", or "true". Unset, or any other
-	// value will return false.
-	Bool(name string) bool
-
-	// String returns the string value of `name`. If the variable was not set, it will
-	// return the empty string.
-	String(name string) string
-
-	// IsSet returns whether the variable `name` was set by Make.
-	IsSet(name string) bool
-}
+type VendorConfig soongconfig.SoongConfig
 
 type config struct {
 	FileConfigurableOptions
@@ -113,9 +106,10 @@ type config struct {
 	captureBuild      bool // true for tests, saves build parameters for each module
 	ignoreEnvironment bool // true for tests, returns empty from all Getenv calls
 
-	targetOpenJDK9 bool // Target 1.9
-
 	stopBefore bootstrap.StopBefore
+
+	fs         pathtools.FileSystem
+	mockBpList string
 
 	OncePer
 }
@@ -125,19 +119,17 @@ type deviceConfig struct {
 	OncePer
 }
 
-type vendorConfig map[string]string
-
 type jsonConfigurable interface {
 	SetDefaultConfig()
 }
 
 func loadConfig(config *config) error {
-	err := loadFromConfigFile(&config.FileConfigurableOptions, config.ConfigFileName)
+	err := loadFromConfigFile(&config.FileConfigurableOptions, absolutePath(config.ConfigFileName))
 	if err != nil {
 		return err
 	}
 
-	return loadFromConfigFile(&config.productVariables, config.ProductVariablesFileName)
+	return loadFromConfigFile(&config.productVariables, absolutePath(config.ProductVariablesFileName))
 }
 
 // loads configuration options from a JSON file in the cwd.
@@ -201,8 +193,19 @@ func saveToConfigFile(config jsonConfigurable, filename string) error {
 	return nil
 }
 
+// NullConfig returns a mostly empty Config for use by standalone tools like dexpreopt_gen that
+// use the android package.
+func NullConfig(buildDir string) Config {
+	return Config{
+		config: &config{
+			buildDir: buildDir,
+			fs:       pathtools.OsFs,
+		},
+	}
+}
+
 // TestConfig returns a Config object suitable for using for tests
-func TestConfig(buildDir string, env map[string]string) Config {
+func TestConfig(buildDir string, env map[string]string, bp string, fs map[string][]byte) Config {
 	envCopy := make(map[string]string)
 	for k, v := range env {
 		envCopy[k] = v
@@ -214,9 +217,9 @@ func TestConfig(buildDir string, env map[string]string) Config {
 	config := &config{
 		productVariables: productVariables{
 			DeviceName:                  stringPtr("test_device"),
-			Platform_sdk_version:        intPtr(26),
+			Platform_sdk_version:        intPtr(30),
 			DeviceSystemSdkVersions:     []string{"14", "15"},
-			Platform_systemsdk_versions: []string{"25", "26"},
+			Platform_systemsdk_versions: []string{"29", "30"},
 			AAPTConfig:                  []string{"normal", "large", "xlarge", "hdpi", "xhdpi", "xxhdpi"},
 			AAPTPreferredConfig:         stringPtr("xhdpi"),
 			AAPTCharacteristics:         stringPtr("nosdcard"),
@@ -233,6 +236,8 @@ func TestConfig(buildDir string, env map[string]string) Config {
 	}
 	config.TestProductVariables = &config.productVariables
 
+	config.mockFileSystem(bp, fs)
+
 	if err := config.fromEnv(); err != nil {
 		panic(err)
 	}
@@ -240,8 +245,8 @@ func TestConfig(buildDir string, env map[string]string) Config {
 	return Config{config}
 }
 
-func TestArchConfigNativeBridge(buildDir string, env map[string]string) Config {
-	testConfig := TestArchConfig(buildDir, env)
+func TestArchConfigNativeBridge(buildDir string, env map[string]string, bp string, fs map[string][]byte) Config {
+	testConfig := TestArchConfig(buildDir, env, bp, fs)
 	config := testConfig.config
 
 	config.Targets[Android] = []Target{
@@ -254,8 +259,8 @@ func TestArchConfigNativeBridge(buildDir string, env map[string]string) Config {
 	return testConfig
 }
 
-func TestArchConfigFuchsia(buildDir string, env map[string]string) Config {
-	testConfig := TestConfig(buildDir, env)
+func TestArchConfigFuchsia(buildDir string, env map[string]string, bp string, fs map[string][]byte) Config {
+	testConfig := TestConfig(buildDir, env, bp, fs)
 	config := testConfig.config
 
 	config.Targets = map[OsType][]Target{
@@ -271,8 +276,8 @@ func TestArchConfigFuchsia(buildDir string, env map[string]string) Config {
 }
 
 // TestConfig returns a Config object suitable for using for tests that need to run the arch mutator
-func TestArchConfig(buildDir string, env map[string]string) Config {
-	testConfig := TestConfig(buildDir, env)
+func TestArchConfig(buildDir string, env map[string]string, bp string, fs map[string][]byte) Config {
+	testConfig := TestConfig(buildDir, env, bp, fs)
 	config := testConfig.config
 
 	config.Targets = map[OsType][]Target{
@@ -314,6 +319,8 @@ func NewConfig(srcDir, buildDir string) (Config, error) {
 		srcDir:            srcDir,
 		buildDir:          buildDir,
 		multilibConflicts: make(map[ArchType]bool),
+
+		fs: pathtools.NewOsFs(absSrcDir),
 	}
 
 	config.deviceConfig = &deviceConfig{
@@ -343,7 +350,7 @@ func NewConfig(srcDir, buildDir string) (Config, error) {
 	}
 
 	inMakeFile := filepath.Join(buildDir, ".soong.in_make")
-	if _, err := os.Stat(inMakeFile); err == nil {
+	if _, err := os.Stat(absolutePath(inMakeFile)); err == nil {
 		config.inMake = true
 	}
 
@@ -357,6 +364,8 @@ func NewConfig(srcDir, buildDir string) (Config, error) {
 		archConfig = getMegaDeviceConfig()
 	} else if config.NdkAbis() {
 		archConfig = getNdkAbisConfig()
+	} else if config.AmlAbis() {
+		archConfig = getAmlAbisConfig()
 	}
 
 	if archConfig != nil {
@@ -389,16 +398,44 @@ func NewConfig(srcDir, buildDir string) (Config, error) {
 	return Config{config}, nil
 }
 
+var TestConfigOsFs = map[string][]byte{}
+
+// mockFileSystem replaces all reads with accesses to the provided map of
+// filenames to contents stored as a byte slice.
+func (c *config) mockFileSystem(bp string, fs map[string][]byte) {
+	mockFS := map[string][]byte{}
+
+	if _, exists := mockFS["Android.bp"]; !exists {
+		mockFS["Android.bp"] = []byte(bp)
+	}
+
+	for k, v := range fs {
+		mockFS[k] = v
+	}
+
+	// no module list file specified; find every file named Blueprints or Android.bp
+	pathsToParse := []string{}
+	for candidate := range mockFS {
+		base := filepath.Base(candidate)
+		if base == "Blueprints" || base == "Android.bp" {
+			pathsToParse = append(pathsToParse, candidate)
+		}
+	}
+	if len(pathsToParse) < 1 {
+		panic(fmt.Sprintf("No Blueprint or Android.bp files found in mock filesystem: %v\n", mockFS))
+	}
+	mockFS[blueprint.MockModuleListFile] = []byte(strings.Join(pathsToParse, "\n"))
+
+	c.fs = pathtools.MockFs(mockFS)
+	c.mockBpList = blueprint.MockModuleListFile
+}
+
 func (c *config) fromEnv() error {
 	switch c.Getenv("EXPERIMENTAL_JAVA_LANGUAGE_LEVEL_9") {
 	case "", "true":
-		// Use -source 9 -target 9. This is the default.
-		c.targetOpenJDK9 = true
-	case "false":
-		// Use -source 8 -target 8. This is the legacy behaviour.
-		c.targetOpenJDK9 = false
+		// Do nothing
 	default:
-		return fmt.Errorf(`Invalid value for EXPERIMENTAL_JAVA_LANGUAGE_LEVEL_9, should be "", "true", or "false"`)
+		return fmt.Errorf("The environment variable EXPERIMENTAL_JAVA_LANGUAGE_LEVEL_9 is no longer supported. Java language level 9 is now the global default.")
 	}
 
 	return nil
@@ -422,6 +459,18 @@ var _ bootstrap.ConfigBlueprintToolLocation = (*config)(nil)
 
 func (c *config) HostToolPath(ctx PathContext, tool string) Path {
 	return PathForOutput(ctx, "host", c.PrebuiltOS(), "bin", tool)
+}
+
+func (c *config) HostJNIToolPath(ctx PathContext, path string) Path {
+	ext := ".so"
+	if runtime.GOOS == "darwin" {
+		ext = ".dylib"
+	}
+	return PathForOutput(ctx, "host", c.PrebuiltOS(), "lib64", path+ext)
+}
+
+func (c *config) HostJavaToolPath(ctx PathContext, path string) Path {
+	return PathForOutput(ctx, "host", c.PrebuiltOS(), "framework", path)
 }
 
 // HostSystemTool looks for non-hermetic tools from the system we're running on.
@@ -767,6 +816,22 @@ func (c *config) UseRBE() bool {
 	return Bool(c.productVariables.UseRBE)
 }
 
+func (c *config) UseRBEJAVAC() bool {
+	return Bool(c.productVariables.UseRBEJAVAC)
+}
+
+func (c *config) UseRBER8() bool {
+	return Bool(c.productVariables.UseRBER8)
+}
+
+func (c *config) UseRBED8() bool {
+	return Bool(c.productVariables.UseRBED8)
+}
+
+func (c *config) UseRemoteBuild() bool {
+	return c.UseGoma() || c.UseRBE()
+}
+
 func (c *config) RunErrorProne() bool {
 	return c.IsEnvTrue("RUN_ERROR_PRONE")
 }
@@ -775,13 +840,16 @@ func (c *config) XrefCorpusName() string {
 	return c.Getenv("XREF_CORPUS")
 }
 
-func (c *config) EmitXrefRules() bool {
-	return c.XrefCorpusName() != ""
+// Returns Compilation Unit encoding to use. Can be 'json' (default), 'proto' or 'all'.
+func (c *config) XrefCuEncoding() string {
+	if enc := c.Getenv("KYTHE_KZIP_ENCODING"); enc != "" {
+		return enc
+	}
+	return "json"
 }
 
-// Returns true if -source 1.9 -target 1.9 is being passed to javac
-func (c *config) TargetOpenJDK9() bool {
-	return c.targetOpenJDK9
+func (c *config) EmitXrefRules() bool {
+	return c.XrefCorpusName() != ""
 }
 
 func (c *config) ClangTidy() bool {
@@ -859,8 +927,13 @@ func (c *config) BootJars() []string {
 	return c.productVariables.BootJars
 }
 
-func (c *config) DexpreoptGlobalConfig() string {
-	return String(c.productVariables.DexpreoptGlobalConfig)
+func (c *config) DexpreoptGlobalConfig(ctx PathContext) ([]byte, error) {
+	if c.productVariables.DexpreoptGlobalConfig == nil {
+		return nil, nil
+	}
+	path := absolutePath(*c.productVariables.DexpreoptGlobalConfig)
+	ctx.AddNinjaFileDeps(path)
+	return ioutil.ReadFile(path)
 }
 
 func (c *config) FrameworksBaseDirExists(ctx PathContext) bool {
@@ -904,6 +977,10 @@ func (c *deviceConfig) VndkVersion() string {
 
 func (c *deviceConfig) PlatformVndkVersion() string {
 	return String(c.config.productVariables.Platform_vndk_version)
+}
+
+func (c *deviceConfig) ProductVndkVersion() string {
+	return String(c.config.productVariables.ProductVndkVersion)
 }
 
 func (c *deviceConfig) ExtraVndkVersions() []string {
@@ -951,8 +1028,16 @@ func (c *deviceConfig) DeviceKernelHeaderDirs() []string {
 	return c.config.productVariables.DeviceKernelHeaders
 }
 
+func (c *config) NativeLineCoverage() bool {
+	return Bool(c.productVariables.NativeLineCoverage)
+}
+
 func (c *deviceConfig) NativeCoverageEnabled() bool {
-	return Bool(c.config.productVariables.NativeCoverage)
+	return Bool(c.config.productVariables.Native_coverage) || Bool(c.config.productVariables.NativeLineCoverage)
+}
+
+func (c *deviceConfig) ClangCoverageEnabled() bool {
+	return Bool(c.config.productVariables.ClangCoverage)
 }
 
 func (c *deviceConfig) CoverageEnabledForPath(path string) bool {
@@ -1061,25 +1146,15 @@ func (c *config) XOMDisabledForPath(path string) bool {
 }
 
 func (c *config) VendorConfig(name string) VendorConfig {
-	return vendorConfig(c.productVariables.VendorVars[name])
-}
-
-func (c vendorConfig) Bool(name string) bool {
-	v := strings.ToLower(c[name])
-	return v == "1" || v == "y" || v == "yes" || v == "on" || v == "true"
-}
-
-func (c vendorConfig) String(name string) string {
-	return c[name]
-}
-
-func (c vendorConfig) IsSet(name string) bool {
-	_, ok := c[name]
-	return ok
+	return soongconfig.Config(c.productVariables.VendorVars[name])
 }
 
 func (c *config) NdkAbis() bool {
 	return Bool(c.productVariables.Ndk_abis)
+}
+
+func (c *config) AmlAbis() bool {
+	return Bool(c.productVariables.Aml_abis)
 }
 
 func (c *config) ExcludeDraftNdkApis() bool {
@@ -1096,6 +1171,14 @@ func (c *config) EnforceSystemCertificate() bool {
 
 func (c *config) EnforceSystemCertificateWhitelist() []string {
 	return c.productVariables.EnforceSystemCertificateWhitelist
+}
+
+func (c *config) EnforceProductPartitionInterface() bool {
+	return Bool(c.productVariables.EnforceProductPartitionInterface)
+}
+
+func (c *config) InstallExtraFlattenedApexes() bool {
+	return Bool(c.productVariables.InstallExtraFlattenedApexes)
 }
 
 func (c *config) ProductHiddenAPIStubs() []string {
@@ -1148,4 +1231,8 @@ func (c *deviceConfig) DeviceSecondaryArch() string {
 
 func (c *deviceConfig) DeviceSecondaryArchVariant() string {
 	return String(c.config.productVariables.DeviceSecondaryArchVariant)
+}
+
+func (c *deviceConfig) BoardUsesRecoveryAsBoot() bool {
+	return Bool(c.config.productVariables.BoardUsesRecoveryAsBoot)
 }
