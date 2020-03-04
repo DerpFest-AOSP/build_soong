@@ -52,6 +52,7 @@ type dependencyTag struct {
 
 var (
 	sharedLibTag   = dependencyTag{name: "sharedLib", payload: true}
+	jniLibTag      = dependencyTag{name: "jniLib", payload: true}
 	executableTag  = dependencyTag{name: "executable", payload: true}
 	javaLibTag     = dependencyTag{name: "javaLib", payload: true}
 	prebuiltTag    = dependencyTag{name: "prebuilt", payload: true}
@@ -94,7 +95,6 @@ func makeApexAvailableWhitelist() map[string][]string {
 		"libcutils",
 		"libcutils_headers",
 		"libdiagnose_usb",
-		"liblog",
 		"liblog_headers",
 		"libmdnssd",
 		"libminijail",
@@ -170,7 +170,6 @@ func makeApexAvailableWhitelist() map[string][]string {
 		"libicuuc_headers",
 		"libicuuc_stubdata",
 		"libjdwp_headers",
-		"liblog",
 		"liblog_headers",
 		"liblz4",
 		"liblzma",
@@ -285,7 +284,6 @@ func makeApexAvailableWhitelist() map[string][]string {
 		"libsystem_headers",
 		"libtinyxml2",
 		"libudrv-uipc",
-		"libutils",
 		"libutils_headers",
 		"libz",
 		"media_plugin_headers",
@@ -377,7 +375,6 @@ func makeApexAvailableWhitelist() map[string][]string {
 		"libtextclassifier_hash_headers",
 		"libtextclassifier_hash_static",
 		"libtflite_kernel_utils",
-		"libutils",
 		"libutils_headers",
 		"philox_random",
 		"philox_random_headers",
@@ -522,7 +519,6 @@ func makeApexAvailableWhitelist() map[string][]string {
 		"libui",
 		"libui_headers",
 		"libunwindstack",
-		"libutils",
 		"libutils_headers",
 		"libvibrator",
 		"libvorbisidec",
@@ -693,7 +689,6 @@ func makeApexAvailableWhitelist() map[string][]string {
 		"libui",
 		"libui_headers",
 		"libunwindstack",
-		"libutils",
 		"libutils_headers",
 		"libvorbisidec",
 		"libvpx",
@@ -791,7 +786,6 @@ func makeApexAvailableWhitelist() map[string][]string {
 		"libjemalloc5",
 		"liblinker_main",
 		"liblinker_malloc",
-		"liblog",
 		"liblog_headers",
 		"liblz4",
 		"liblzma",
@@ -824,7 +818,6 @@ func makeApexAvailableWhitelist() map[string][]string {
 		"libcutils_headers",
 		"libgtest_prod",
 		"libjsoncpp",
-		"liblog",
 		"liblog_headers",
 		"libnativehelper_header_only",
 		"libnetd_client_headers",
@@ -840,7 +833,6 @@ func makeApexAvailableWhitelist() map[string][]string {
 		"libstatssocket_headers",
 		"libsystem_headers",
 		"libsysutils",
-		"libutils",
 		"libutils_headers",
 		"netd_event_listener_interface-ndk_platform",
 		"server_configurable_flags",
@@ -866,13 +858,11 @@ func makeApexAvailableWhitelist() map[string][]string {
 		"libhidltransport-impl-internal",
 		"libhwbinder-impl-internal",
 		"libjsoncpp",
-		"liblog",
 		"liblog_headers",
 		"libprocessgroup",
 		"libprocessgroup_headers",
 		"libsystem_headers",
 		"libtetherutilsjni",
-		"libutils",
 		"libutils_headers",
 		"libvndksupport",
 		"tethering-aidl-interfaces-java",
@@ -919,7 +909,6 @@ func makeApexAvailableWhitelist() map[string][]string {
 		"libprotobuf-java-lite",
 		"libprotobuf-java-nano",
 		"libsystem_headers",
-		"libutils",
 		"libutils_headers",
 		"libwifi-jni",
 		"net-utils-services-common",
@@ -1027,7 +1016,7 @@ func RegisterPreDepsMutators(ctx android.RegisterMutatorsContext) {
 }
 
 func RegisterPostDepsMutators(ctx android.RegisterMutatorsContext) {
-	ctx.BottomUp("apex_deps", apexDepsMutator)
+	ctx.TopDown("apex_deps", apexDepsMutator)
 	ctx.BottomUp("apex", apexMutator).Parallel()
 	ctx.BottomUp("apex_flattened", apexFlattenedMutator).Parallel()
 	ctx.BottomUp("apex_uses", apexUsesMutator).Parallel()
@@ -1035,29 +1024,29 @@ func RegisterPostDepsMutators(ctx android.RegisterMutatorsContext) {
 
 // Mark the direct and transitive dependencies of apex bundles so that they
 // can be built for the apex bundles.
-func apexDepsMutator(mctx android.BottomUpMutatorContext) {
+func apexDepsMutator(mctx android.TopDownMutatorContext) {
+	var apexBundles []android.ApexInfo
+	var directDep bool
 	if a, ok := mctx.Module().(*apexBundle); ok && !a.vndkApex {
-		apexBundleName := mctx.ModuleName()
-		mctx.WalkDeps(func(child, parent android.Module) bool {
-			depName := mctx.OtherModuleName(child)
-			// If the parent is apexBundle, this child is directly depended.
-			_, directDep := parent.(*apexBundle)
-			if a.installable() && !a.testApex {
-				// TODO(b/123892969): Workaround for not having any way to annotate test-apexs
-				// non-installable apex's cannot be installed and so should not prevent libraries from being
-				// installed to the system.
-				android.UpdateApexDependency(apexBundleName, depName, directDep)
-			}
-
-			if am, ok := child.(android.ApexModule); ok && am.CanHaveApexVariants() &&
-				(directDep || am.DepIsInSameApex(mctx, child)) {
-				am.BuildForApex(apexBundleName)
-				return true
-			} else {
-				return false
-			}
-		})
+		apexBundles = []android.ApexInfo{{mctx.ModuleName(), proptools.Bool(a.properties.Legacy_android10_support)}}
+		directDep = true
+	} else if am, ok := mctx.Module().(android.ApexModule); ok {
+		apexBundles = am.ApexVariations()
+		directDep = false
 	}
+
+	if len(apexBundles) == 0 {
+		return
+	}
+
+	mctx.VisitDirectDeps(func(child android.Module) {
+		depName := mctx.OtherModuleName(child)
+		if am, ok := child.(android.ApexModule); ok && am.CanHaveApexVariants() &&
+			(directDep || am.DepIsInSameApex(mctx, child)) {
+			android.UpdateApexDependency(apexBundles, depName, directDep)
+			am.BuildForApexes(apexBundles)
+		}
+	})
 }
 
 // Create apex variations if a module is included in APEX(s).
@@ -1167,9 +1156,12 @@ func setUseVendorWhitelistForTest(config android.Config, whitelist []string) {
 	})
 }
 
-type apexNativeDependencies struct {
+type ApexNativeDependencies struct {
 	// List of native libraries
 	Native_shared_libs []string
+
+	// List of JNI libraries
+	Jni_libs []string
 
 	// List of native executables
 	Binaries []string
@@ -1180,19 +1172,19 @@ type apexNativeDependencies struct {
 
 type apexMultilibProperties struct {
 	// Native dependencies whose compile_multilib is "first"
-	First apexNativeDependencies
+	First ApexNativeDependencies
 
 	// Native dependencies whose compile_multilib is "both"
-	Both apexNativeDependencies
+	Both ApexNativeDependencies
 
 	// Native dependencies whose compile_multilib is "prefer32"
-	Prefer32 apexNativeDependencies
+	Prefer32 ApexNativeDependencies
 
 	// Native dependencies whose compile_multilib is "32"
-	Lib32 apexNativeDependencies
+	Lib32 ApexNativeDependencies
 
 	// Native dependencies whose compile_multilib is "64"
-	Lib64 apexNativeDependencies
+	Lib64 ApexNativeDependencies
 }
 
 type apexBundleProperties struct {
@@ -1214,20 +1206,13 @@ type apexBundleProperties struct {
 	// Default: /system/sepolicy/apex/<module_name>_file_contexts.
 	File_contexts *string `android:"path"`
 
-	// List of native shared libs that are embedded inside this APEX bundle
-	Native_shared_libs []string
-
-	// List of executables that are embedded inside this APEX bundle
-	Binaries []string
+	ApexNativeDependencies
 
 	// List of java libraries that are embedded inside this APEX bundle
 	Java_libs []string
 
 	// List of prebuilt files that are embedded inside this APEX bundle
 	Prebuilts []string
-
-	// List of tests that are embedded inside this APEX bundle
-	Tests []string
 
 	// Name of the apex_key module that provides the private key to sign APEX
 	Key *string
@@ -1287,6 +1272,14 @@ type apexBundleProperties struct {
 	Legacy_android10_support *bool
 
 	IsCoverageVariant bool `blueprint:"mutated"`
+
+	// Whether this APEX is considered updatable or not. When set to true, this will enforce additional
+	// rules for making sure that the APEX is truely updatable. This will also disable the size optimizations
+	// like symlinking to the system libs. Default is false.
+	Updatable *bool
+
+	// The minimum SDK version that this apex must be compatibile with.
+	Min_sdk_version *string
 }
 
 type apexTargetBundleProperties struct {
@@ -1323,6 +1316,9 @@ type overridableProperties struct {
 	// binaries would be installed by default (in PRODUCT_PACKAGES) the other binary will be removed
 	// from PRODUCT_PACKAGES.
 	Overrides []string
+
+	// Logging Parent value
+	Logging_parent string
 }
 
 type apexPackaging int
@@ -1414,6 +1410,9 @@ type apexFile struct {
 
 	jacocoReportClassesFile android.Path     // only for javalibs and apps
 	certificate             java.Certificate // only for apps
+	overriddenPackageName   string           // only for apps
+
+	isJniLib bool
 }
 
 func newApexFile(ctx android.BaseModuleContext, builtFile android.Path, moduleName string, installDir string, class apexFileClass, module android.Module) apexFile {
@@ -1461,6 +1460,12 @@ func (af *apexFile) AvailableToPlatform() bool {
 	return false
 }
 
+type depInfo struct {
+	to         string
+	from       []string
+	isExternal bool
+}
+
 type apexBundle struct {
 	android.ModuleBase
 	android.DefaultableModuleBase
@@ -1494,10 +1499,8 @@ type apexBundle struct {
 	// list of module names that should be installed along with this APEX
 	requiredDeps []string
 
-	// list of module names that this APEX is depending on (to be shown via *-deps-info target)
-	externalDeps []string
 	// list of module names that this APEX is including (to be shown via *-deps-info target)
-	internalDeps []string
+	depInfos map[string]depInfo
 
 	testApex        bool
 	vndkApex        bool
@@ -1528,7 +1531,7 @@ type apexBundle struct {
 }
 
 func addDependenciesForNativeModules(ctx android.BottomUpMutatorContext,
-	native_shared_libs []string, binaries []string, tests []string,
+	nativeModules ApexNativeDependencies,
 	target android.Target, imageVariation string) {
 	// Use *FarVariation* to be able to depend on modules having
 	// conflicting variations with this module. This is required since
@@ -1538,16 +1541,22 @@ func addDependenciesForNativeModules(ctx android.BottomUpMutatorContext,
 		{Mutator: "image", Variation: imageVariation},
 		{Mutator: "link", Variation: "shared"},
 		{Mutator: "version", Variation: ""}, // "" is the non-stub variant
-	}...), sharedLibTag, native_shared_libs...)
+	}...), sharedLibTag, nativeModules.Native_shared_libs...)
+
+	ctx.AddFarVariationDependencies(append(target.Variations(), []blueprint.Variation{
+		{Mutator: "image", Variation: imageVariation},
+		{Mutator: "link", Variation: "shared"},
+		{Mutator: "version", Variation: ""}, // "" is the non-stub variant
+	}...), jniLibTag, nativeModules.Jni_libs...)
 
 	ctx.AddFarVariationDependencies(append(target.Variations(),
 		blueprint.Variation{Mutator: "image", Variation: imageVariation}),
-		executableTag, binaries...)
+		executableTag, nativeModules.Binaries...)
 
 	ctx.AddFarVariationDependencies(append(target.Variations(), []blueprint.Variation{
 		{Mutator: "image", Variation: imageVariation},
 		{Mutator: "test_per_src", Variation: ""}, // "" is the all-tests variant
-	}...), testTag, tests...)
+	}...), testTag, nativeModules.Tests...)
 }
 
 func (a *apexBundle) combineProperties(ctx android.BottomUpMutatorContext) {
@@ -1580,41 +1589,39 @@ func (a *apexBundle) DepsMutator(ctx android.BottomUpMutatorContext) {
 		}
 	}
 	for i, target := range targets {
-		// When multilib.* is omitted for native_shared_libs, it implies
-		// multilib.both.
-		ctx.AddFarVariationDependencies(append(target.Variations(), []blueprint.Variation{
-			{Mutator: "image", Variation: a.getImageVariation(config)},
-			{Mutator: "link", Variation: "shared"},
-		}...), sharedLibTag, a.properties.Native_shared_libs...)
-
-		// When multilib.* is omitted for tests, it implies
-		// multilib.both.
-		ctx.AddFarVariationDependencies(append(target.Variations(), []blueprint.Variation{
-			{Mutator: "image", Variation: a.getImageVariation(config)},
-			{Mutator: "test_per_src", Variation: ""}, // "" is the all-tests variant
-		}...), testTag, a.properties.Tests...)
+		// When multilib.* is omitted for native_shared_libs/jni_libs/tests, it implies
+		// multilib.both
+		addDependenciesForNativeModules(ctx,
+			ApexNativeDependencies{
+				Native_shared_libs: a.properties.Native_shared_libs,
+				Tests:              a.properties.Tests,
+				Jni_libs:           a.properties.Jni_libs,
+				Binaries:           nil,
+			},
+			target, a.getImageVariation(config))
 
 		// Add native modules targetting both ABIs
 		addDependenciesForNativeModules(ctx,
-			a.properties.Multilib.Both.Native_shared_libs,
-			a.properties.Multilib.Both.Binaries,
-			a.properties.Multilib.Both.Tests,
+			a.properties.Multilib.Both,
 			target,
 			a.getImageVariation(config))
 
 		isPrimaryAbi := i == 0
 		if isPrimaryAbi {
 			// When multilib.* is omitted for binaries, it implies
-			// multilib.first.
-			ctx.AddFarVariationDependencies(append(target.Variations(),
-				blueprint.Variation{Mutator: "image", Variation: a.getImageVariation(config)}),
-				executableTag, a.properties.Binaries...)
+			// multilib.first
+			addDependenciesForNativeModules(ctx,
+				ApexNativeDependencies{
+					Native_shared_libs: nil,
+					Tests:              nil,
+					Jni_libs:           nil,
+					Binaries:           a.properties.Binaries,
+				},
+				target, a.getImageVariation(config))
 
 			// Add native modules targetting the first ABI
 			addDependenciesForNativeModules(ctx,
-				a.properties.Multilib.First.Native_shared_libs,
-				a.properties.Multilib.First.Binaries,
-				a.properties.Multilib.First.Tests,
+				a.properties.Multilib.First,
 				target,
 				a.getImageVariation(config))
 		}
@@ -1623,32 +1630,24 @@ func (a *apexBundle) DepsMutator(ctx android.BottomUpMutatorContext) {
 		case "lib32":
 			// Add native modules targetting 32-bit ABI
 			addDependenciesForNativeModules(ctx,
-				a.properties.Multilib.Lib32.Native_shared_libs,
-				a.properties.Multilib.Lib32.Binaries,
-				a.properties.Multilib.Lib32.Tests,
+				a.properties.Multilib.Lib32,
 				target,
 				a.getImageVariation(config))
 
 			addDependenciesForNativeModules(ctx,
-				a.properties.Multilib.Prefer32.Native_shared_libs,
-				a.properties.Multilib.Prefer32.Binaries,
-				a.properties.Multilib.Prefer32.Tests,
+				a.properties.Multilib.Prefer32,
 				target,
 				a.getImageVariation(config))
 		case "lib64":
 			// Add native modules targetting 64-bit ABI
 			addDependenciesForNativeModules(ctx,
-				a.properties.Multilib.Lib64.Native_shared_libs,
-				a.properties.Multilib.Lib64.Binaries,
-				a.properties.Multilib.Lib64.Tests,
+				a.properties.Multilib.Lib64,
 				target,
 				a.getImageVariation(config))
 
 			if !has32BitTarget {
 				addDependenciesForNativeModules(ctx,
-					a.properties.Multilib.Prefer32.Native_shared_libs,
-					a.properties.Multilib.Prefer32.Binaries,
-					a.properties.Multilib.Prefer32.Tests,
+					a.properties.Multilib.Prefer32,
 					target,
 					a.getImageVariation(config))
 			}
@@ -1657,8 +1656,8 @@ func (a *apexBundle) DepsMutator(ctx android.BottomUpMutatorContext) {
 				for _, sanitizer := range ctx.Config().SanitizeDevice() {
 					if sanitizer == "hwaddress" {
 						addDependenciesForNativeModules(ctx,
-							[]string{"libclang_rt.hwasan-aarch64-android"},
-							nil, nil, target, a.getImageVariation(config))
+							ApexNativeDependencies{[]string{"libclang_rt.hwasan-aarch64-android"}, nil, nil, nil},
+							target, a.getImageVariation(config))
 						break
 					}
 				}
@@ -1919,6 +1918,12 @@ func apexFileForAndroidApp(ctx android.BaseModuleContext, aapp interface {
 	af := newApexFile(ctx, fileToCopy, aapp.Name(), dirInApex, app, aapp)
 	af.jacocoReportClassesFile = aapp.JacocoReportClassesFile()
 	af.certificate = aapp.Certificate()
+
+	if app, ok := aapp.(interface {
+		OverriddenManifestPackageName() string
+	}); ok {
+		af.overriddenPackageName = app.OverriddenManifestPackageName()
+	}
 	return af
 }
 
@@ -1978,6 +1983,31 @@ func (a *apexBundle) checkApexAvailability(ctx android.ModuleContext) {
 	})
 }
 
+// Collects the list of module names that directly or indirectly contributes to the payload of this APEX
+func (a *apexBundle) collectDepsInfo(ctx android.ModuleContext) {
+	a.depInfos = make(map[string]depInfo)
+	a.walkPayloadDeps(ctx, func(ctx android.ModuleContext, from blueprint.Module, to android.ApexModule, externalDep bool) {
+		if from.Name() == to.Name() {
+			// This can happen for cc.reuseObjTag. We are not interested in tracking this.
+			return
+		}
+
+		if info, exists := a.depInfos[to.Name()]; exists {
+			if !android.InList(from.Name(), info.from) {
+				info.from = append(info.from, from.Name())
+			}
+			info.isExternal = info.isExternal && externalDep
+			a.depInfos[to.Name()] = info
+		} else {
+			a.depInfos[to.Name()] = depInfo{
+				to:         to.Name(),
+				from:       []string{from.Name()},
+				isExternal: externalDep,
+			}
+		}
+	})
+}
+
 func (a *apexBundle) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 	buildFlattenedAsDefault := ctx.Config().FlattenApex() && !ctx.Config().UnbundledBuild()
 	switch a.properties.ApexType {
@@ -2015,6 +2045,8 @@ func (a *apexBundle) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 
 	a.checkApexAvailability(ctx)
 
+	a.collectDepsInfo(ctx)
+
 	handleSpecialLibs := !android.Bool(a.properties.Ignore_system_library_special_case)
 
 	// native lib dependencies
@@ -2046,24 +2078,29 @@ func (a *apexBundle) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 	})
 
 	var filesInfo []apexFile
+	// TODO(jiyong) do this using walkPayloadDeps
 	ctx.WalkDepsBlueprint(func(child, parent blueprint.Module) bool {
 		depTag := ctx.OtherModuleDependencyTag(child)
 		depName := ctx.OtherModuleName(child)
 		if _, isDirectDep := parent.(*apexBundle); isDirectDep {
-			if depTag != keyTag && depTag != certificateTag {
-				a.internalDeps = append(a.internalDeps, depName)
-			}
 			switch depTag {
-			case sharedLibTag:
+			case sharedLibTag, jniLibTag:
+				isJniLib := depTag == jniLibTag
 				if c, ok := child.(*cc.Module); ok {
 					// bootstrap bionic libs are treated as provided by system
 					if c.HasStubsVariants() && !cc.InstallToBootstrap(c.BaseModuleName(), ctx.Config()) {
 						provideNativeLibs = append(provideNativeLibs, c.OutputFile().Path().Base())
 					}
-					filesInfo = append(filesInfo, apexFileForNativeLibrary(ctx, c, handleSpecialLibs))
+					fi := apexFileForNativeLibrary(ctx, c, handleSpecialLibs)
+					fi.isJniLib = isJniLib
+					filesInfo = append(filesInfo, fi)
 					return true // track transitive dependencies
 				} else {
-					ctx.PropertyErrorf("native_shared_libs", "%q is not a cc_library or cc_library_shared module", depName)
+					propertyName := "native_shared_libs"
+					if isJniLib {
+						propertyName = "jni_libs"
+					}
+					ctx.PropertyErrorf(propertyName, "%q is not a cc_library or cc_library_shared module", depName)
 				}
 			case executableTag:
 				if cc, ok := child.(*cc.Module); ok {
@@ -2094,13 +2131,6 @@ func (a *apexBundle) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 						return false
 					}
 					filesInfo = append(filesInfo, af)
-
-					pf := sdkLib.XmlPermissionsFile()
-					if pf == nil {
-						ctx.PropertyErrorf("java_libs", "%q failed to generate permission XML", depName)
-						return false
-					}
-					filesInfo = append(filesInfo, newApexFile(ctx, pf, pf.Base(), "etc/permissions", etc, nil))
 					return true // track transitive dependencies
 				} else {
 					ctx.PropertyErrorf("java_libs", "%q of type %q is not supported", depName, ctx.OtherModuleType(child))
@@ -2189,7 +2219,6 @@ func (a *apexBundle) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 							if !android.DirectlyInAnyApex(ctx, cc.Name()) && !android.InList(cc.Name(), a.requiredDeps) {
 								a.requiredDeps = append(a.requiredDeps, cc.Name())
 							}
-							a.externalDeps = append(a.externalDeps, depName)
 							requireNativeLibs = append(requireNativeLibs, cc.OutputFile().Path().Base())
 							// Don't track further
 							return false
@@ -2197,8 +2226,6 @@ func (a *apexBundle) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 						af := apexFileForNativeLibrary(ctx, cc, handleSpecialLibs)
 						af.transitiveDep = true
 						filesInfo = append(filesInfo, af)
-						a.internalDeps = append(a.internalDeps, depName)
-						a.internalDeps = append(a.internalDeps, cc.AllStaticDeps()...)
 						return true // track transitive dependencies
 					}
 				} else if cc.IsTestPerSrcDepTag(depTag) {
@@ -2215,10 +2242,12 @@ func (a *apexBundle) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 						return true // track transitive dependencies
 					}
 				} else if java.IsJniDepTag(depTag) {
-					a.externalDeps = append(a.externalDeps, depName)
-					return true
-				} else if java.IsStaticLibDepTag(depTag) {
-					a.internalDeps = append(a.internalDeps, depName)
+					// Because APK-in-APEX embeds jni_libs transitively, we don't need to track transitive deps
+					return false
+				} else if java.IsXmlPermissionsFileDepTag(depTag) {
+					if prebuilt, ok := child.(android.PrebuiltEtcModule); ok {
+						filesInfo = append(filesInfo, apexFileForPrebuiltEtc(ctx, prebuilt, depName))
+					}
 				} else if am.CanHaveApexVariants() && am.IsInstallableToApex() {
 					ctx.ModuleErrorf("unexpected tag %q for indirect dependency %q", depTag, depName)
 				}
@@ -2300,6 +2329,17 @@ func (a *apexBundle) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 	a.linkToSystemLib = !ctx.Config().UnbundledBuild() &&
 		a.installable() &&
 		!proptools.Bool(a.properties.Use_vendor)
+
+	// We don't need the optimization for updatable APEXes, as it might give false signal
+	// to the system health when the APEXes are still bundled (b/149805758)
+	if proptools.Bool(a.properties.Updatable) && a.properties.ApexType == imageApex {
+		a.linkToSystemLib = false
+	}
+
+	// We also don't want the optimization for host APEXes, because it doesn't make sense.
+	if ctx.Host() {
+		a.linkToSystemLib = false
+	}
 
 	// prepare apex_manifest.json
 	a.buildManifest(ctx, provideNativeLibs, requireNativeLibs)

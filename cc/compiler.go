@@ -176,6 +176,9 @@ type BaseCompilerProperties struct {
 
 	// Build and link with OpenMP
 	Openmp *bool `android:"arch_variant"`
+
+	// Adds __ANDROID_APEX_<APEX_MODULE_NAME>__ macro defined for apex variants in addition to __ANDROID_APEX__
+	Use_apex_name_macro *bool
 }
 
 func NewBaseCompiler() *baseCompiler {
@@ -241,12 +244,7 @@ func (compiler *baseCompiler) compilerDeps(ctx DepsContext, deps Deps) Deps {
 // Return true if the module is in the WarningAllowedProjects.
 func warningsAreAllowed(subdir string) bool {
 	subdir += "/"
-	for _, prefix := range config.WarningAllowedProjects {
-		if strings.HasPrefix(subdir, prefix) {
-			return true
-		}
-	}
-	return false
+	return android.HasAnyPrefix(subdir, config.WarningAllowedProjects)
 }
 
 func addToModuleList(ctx ModuleContext, key android.OnceKey, module string) {
@@ -326,9 +324,10 @@ func (compiler *baseCompiler) compilerFlags(ctx ModuleContext, flags Flags, deps
 	}
 
 	if ctx.apexName() != "" {
-		flags.Global.CommonFlags = append(flags.Global.CommonFlags,
-			"-D__ANDROID_APEX__",
-			"-D__ANDROID_APEX_"+makeDefineString(ctx.apexName())+"__")
+		flags.Global.CommonFlags = append(flags.Global.CommonFlags, "-D__ANDROID_APEX__")
+		if Bool(compiler.Properties.Use_apex_name_macro) {
+			flags.Global.CommonFlags = append(flags.Global.CommonFlags, "-D__ANDROID_APEX_"+makeDefineString(ctx.apexName())+"__")
+		}
 	}
 
 	instructionSet := String(compiler.Properties.Instruction_set)
@@ -515,7 +514,7 @@ func (compiler *baseCompiler) compilerFlags(ctx ModuleContext, flags Flags, deps
 
 	// Exclude directories from manual binder interface whitelisting.
 	//TODO(b/145621474): Move this check into IInterface.h when clang-tidy no longer uses absolute paths.
-	if android.PrefixInList(ctx.ModuleDir(), allowedManualInterfacePaths) {
+	if android.HasAnyPrefix(ctx.ModuleDir(), allowedManualInterfacePaths) {
 		flags.Local.CFlags = append(flags.Local.CFlags, "-DDO_NOT_CHECK_MANUAL_BINDER_INTERFACES")
 	}
 
@@ -604,16 +603,12 @@ var thirdPartyDirPrefixExceptions = []*regexp.Regexp{
 func isThirdParty(path string) bool {
 	thirdPartyDirPrefixes := []string{"external/", "vendor/", "hardware/"}
 
-	for _, prefix := range thirdPartyDirPrefixes {
-		if strings.HasPrefix(path, prefix) {
-			for _, prefix := range thirdPartyDirPrefixExceptions {
-				if prefix.MatchString(path) {
-					return false
-				}
+	if android.HasAnyPrefix(path, thirdPartyDirPrefixes) {
+		for _, prefix := range thirdPartyDirPrefixExceptions {
+			if prefix.MatchString(path) {
+				return false
 			}
-			break
 		}
 	}
-
 	return true
 }

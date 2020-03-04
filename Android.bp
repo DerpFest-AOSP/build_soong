@@ -39,6 +39,7 @@ bootstrap_go_package {
         "soong-android-soongconfig",
         "soong-env",
         "soong-shared",
+        "soong-ui-metrics_proto",
     ],
     srcs: [
         "android/androidmk.go",
@@ -54,6 +55,7 @@ bootstrap_go_package {
         "android/hooks.go",
         "android/image.go",
         "android/makevars.go",
+        "android/metrics.go",
         "android/module.go",
         "android/mutator.go",
         "android/namespace.go",
@@ -195,7 +197,6 @@ bootstrap_go_package {
         "cc/vendor_snapshot.go",
         "cc/vndk.go",
         "cc/vndk_prebuilt.go",
-        "cc/xom.go",
 
         "cc/cflag_artifacts.go",
         "cc/cmakelists.go",
@@ -205,8 +206,10 @@ bootstrap_go_package {
         "cc/linker.go",
 
         "cc/binary.go",
+        "cc/binary_sdk_member.go",
         "cc/fuzz.go",
         "cc/library.go",
+        "cc/library_headers.go",
         "cc/library_sdk_member.go",
         "cc/object.go",
         "cc/test.go",
@@ -232,6 +235,7 @@ bootstrap_go_package {
         "cc/compiler_test.go",
         "cc/gen_test.go",
         "cc/genrule_test.go",
+        "cc/library_headers_test.go",
         "cc/library_test.go",
         "cc/object_test.go",
         "cc/prebuilt_test.go",
@@ -534,6 +538,7 @@ bootstrap_go_package {
         "sdk/update.go",
     ],
     testSrcs: [
+        "sdk/bp_test.go",
         "sdk/cc_sdk_test.go",
         "sdk/exports_test.go",
         "sdk/java_sdk_test.go",

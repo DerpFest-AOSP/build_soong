@@ -132,6 +132,9 @@ type BaseModuleContext interface {
 
 	Target() Target
 	TargetPrimary() bool
+
+	// The additional arch specific targets (e.g. 32/64 bit) that this module variant is
+	// responsible for creating.
 	MultiTargets() []Target
 	Arch() Arch
 	Os() OsType
@@ -172,6 +175,7 @@ type ModuleContext interface {
 	InstallInRecovery() bool
 	InstallInRoot() bool
 	InstallBypassMake() bool
+	InstallForceOS() *OsType
 
 	RequiredModuleNames() []string
 	HostRequiredModuleNames() []string
@@ -204,6 +208,7 @@ type Module interface {
 	DepsMutator(BottomUpMutatorContext)
 
 	base() *ModuleBase
+	Disable()
 	Enabled() bool
 	Target() Target
 	InstallInData() bool
@@ -213,11 +218,12 @@ type Module interface {
 	InstallInRecovery() bool
 	InstallInRoot() bool
 	InstallBypassMake() bool
+	InstallForceOS() *OsType
 	SkipInstall()
 	ExportedToMake() bool
 	InitRc() Paths
 	VintfFragments() Paths
-	NoticeFile() OptionalPath
+	NoticeFiles() Paths
 
 	AddProperties(props ...interface{})
 	GetProperties() []interface{}
@@ -241,6 +247,8 @@ type Module interface {
 	RequiredModuleNames() []string
 	HostRequiredModuleNames() []string
 	TargetRequiredModuleNames() []string
+
+	filesToInstall() InstallPaths
 }
 
 // Qualified id for a module
@@ -293,6 +301,12 @@ type nameProperties struct {
 
 type commonProperties struct {
 	// emit build rules for this module
+	//
+	// Disabling a module should only be done for those modules that cannot be built
+	// in the current environment. Modules that can build in the current environment
+	// but are not usually required (e.g. superceded by a prebuilt) should not be
+	// disabled as that will prevent them from being built by the checkbuild target
+	// and so prevent early detection of changes that have broken those modules.
 	Enabled *bool `android:"arch_variant"`
 
 	// Controls the visibility of this module to other modules. Allowable values are one or more of
@@ -353,6 +367,10 @@ type commonProperties struct {
 		}
 	}
 
+	// If set to true then the archMutator will create variants for each arch specific target
+	// (e.g. 32/64) that the module is required to produce. If set to false then it will only
+	// create a variant for the architecture and will list the additional arch specific targets
+	// that the variant needs to produce in the CompileMultiTargets property.
 	UseTargetVariants bool   `blueprint:"mutated"`
 	Default_multilib  string `blueprint:"mutated"`
 
@@ -431,15 +449,55 @@ type commonProperties struct {
 		Suffix *string `android:"arch_variant"`
 	} `android:"arch_variant"`
 
-	// Set by TargetMutator
-	CompileOS           OsType   `blueprint:"mutated"`
-	CompileTarget       Target   `blueprint:"mutated"`
+	// The OsType of artifacts that this module variant is responsible for creating.
+	//
+	// Set by osMutator
+	CompileOS OsType `blueprint:"mutated"`
+
+	// The Target of artifacts that this module variant is responsible for creating.
+	//
+	// Set by archMutator
+	CompileTarget Target `blueprint:"mutated"`
+
+	// The additional arch specific targets (e.g. 32/64 bit) that this module variant is
+	// responsible for creating.
+	//
+	// By default this is nil as, where necessary, separate variants are created for the
+	// different multilib types supported and that information is encapsulated in the
+	// CompileTarget so the module variant simply needs to create artifacts for that.
+	//
+	// However, if UseTargetVariants is set to false (e.g. by
+	// InitAndroidMultiTargetsArchModule)  then no separate variants are created for the
+	// multilib targets. Instead a single variant is created for the architecture and
+	// this contains the multilib specific targets that this variant should create.
+	//
+	// Set by archMutator
 	CompileMultiTargets []Target `blueprint:"mutated"`
-	CompilePrimary      bool     `blueprint:"mutated"`
+
+	// True if the module variant's CompileTarget is the primary target
+	//
+	// Set by archMutator
+	CompilePrimary bool `blueprint:"mutated"`
 
 	// Set by InitAndroidModule
 	HostOrDeviceSupported HostOrDeviceSupported `blueprint:"mutated"`
 	ArchSpecific          bool                  `blueprint:"mutated"`
+
+	// If set to true then a CommonOS variant will be created which will have dependencies
+	// on all its OsType specific variants. Used by sdk/module_exports to create a snapshot
+	// that covers all os and architecture variants.
+	//
+	// The OsType specific variants can be retrieved by calling
+	// GetOsSpecificVariantsOfCommonOSVariant
+	//
+	// Set at module initialization time by calling InitCommonOSAndroidMultiTargetsArchModule
+	CreateCommonOSVariant bool `blueprint:"mutated"`
+
+	// If set to true then this variant is the CommonOS variant that has dependencies on its
+	// OsType specific variants.
+	//
+	// Set by osMutator.
+	CommonOSVariant bool `blueprint:"mutated"`
 
 	SkipInstall bool `blueprint:"mutated"`
 
@@ -573,6 +631,14 @@ func InitAndroidMultiTargetsArchModule(m Module, hod HostOrDeviceSupported, defa
 	m.base().commonProperties.UseTargetVariants = false
 }
 
+// As InitAndroidMultiTargetsArchModule except it creates an additional CommonOS variant that
+// has dependencies on all the OsType specific variants.
+func InitCommonOSAndroidMultiTargetsArchModule(m Module, hod HostOrDeviceSupported, defaultMultilib Multilib) {
+	InitAndroidArchModule(m, hod, defaultMultilib)
+	m.base().commonProperties.UseTargetVariants = false
+	m.base().commonProperties.CreateCommonOSVariant = true
+}
+
 // A ModuleBase object contains the properties that are common to all Android
 // modules.  It should be included as an anonymous field in every module
 // struct definition.  InitAndroidModule should then be called from the module's
@@ -636,9 +702,9 @@ type ModuleBase struct {
 	primaryVisibilityProperty visibilityProperty
 
 	noAddressSanitizer bool
-	installFiles       Paths
+	installFiles       InstallPaths
 	checkbuildFiles    Paths
-	noticeFile         OptionalPath
+	noticeFiles        Paths
 
 	// Used by buildTargetSingleton to create checkbuild and per-directory build targets
 	// Only set on the final variant of each module
@@ -764,6 +830,11 @@ func (m *ModuleBase) ArchSpecific() bool {
 	return m.commonProperties.ArchSpecific
 }
 
+// True if the current variant is a CommonOS variant, false otherwise.
+func (m *ModuleBase) IsCommonOSVariant() bool {
+	return m.commonProperties.CommonOSVariant
+}
+
 func (m *ModuleBase) OsClassSupported() []OsClass {
 	switch m.commonProperties.HostOrDeviceSupported {
 	case HostSupported:
@@ -830,6 +901,10 @@ func (m *ModuleBase) Enabled() bool {
 	return *m.commonProperties.Enabled
 }
 
+func (m *ModuleBase) Disable() {
+	m.commonProperties.Enabled = proptools.BoolPtr(false)
+}
+
 func (m *ModuleBase) SkipInstall() {
 	m.commonProperties.SkipInstall = true
 }
@@ -838,22 +913,20 @@ func (m *ModuleBase) ExportedToMake() bool {
 	return m.commonProperties.NamespaceExportedToMake
 }
 
-func (m *ModuleBase) computeInstallDeps(
-	ctx blueprint.ModuleContext) Paths {
+func (m *ModuleBase) computeInstallDeps(ctx blueprint.ModuleContext) InstallPaths {
 
-	result := Paths{}
+	var result InstallPaths
 	// TODO(ccross): we need to use WalkDeps and have some way to know which dependencies require installation
-	ctx.VisitDepsDepthFirstIf(isFileInstaller,
-		func(m blueprint.Module) {
-			fileInstaller := m.(fileInstaller)
-			files := fileInstaller.filesToInstall()
-			result = append(result, files...)
-		})
+	ctx.VisitDepsDepthFirst(func(m blueprint.Module) {
+		if a, ok := m.(Module); ok {
+			result = append(result, a.filesToInstall()...)
+		}
+	})
 
 	return result
 }
 
-func (m *ModuleBase) filesToInstall() Paths {
+func (m *ModuleBase) filesToInstall() InstallPaths {
 	return m.installFiles
 }
 
@@ -889,12 +962,16 @@ func (m *ModuleBase) InstallBypassMake() bool {
 	return false
 }
 
+func (m *ModuleBase) InstallForceOS() *OsType {
+	return nil
+}
+
 func (m *ModuleBase) Owner() string {
 	return String(m.commonProperties.Owner)
 }
 
-func (m *ModuleBase) NoticeFile() OptionalPath {
-	return m.noticeFile
+func (m *ModuleBase) NoticeFiles() Paths {
+	return m.noticeFiles
 }
 
 func (m *ModuleBase) setImageVariation(variant string) {
@@ -937,8 +1014,8 @@ func (m *ModuleBase) VintfFragments() Paths {
 }
 
 func (m *ModuleBase) generateModuleTarget(ctx ModuleContext) {
-	allInstalledFiles := Paths{}
-	allCheckbuildFiles := Paths{}
+	var allInstalledFiles InstallPaths
+	var allCheckbuildFiles Paths
 	ctx.VisitAllModuleVariants(func(module Module) {
 		a := module.base()
 		allInstalledFiles = append(allInstalledFiles, a.installFiles...)
@@ -957,7 +1034,7 @@ func (m *ModuleBase) generateModuleTarget(ctx ModuleContext) {
 		ctx.Build(pctx, BuildParams{
 			Rule:      blueprint.Phony,
 			Output:    name,
-			Implicits: allInstalledFiles,
+			Implicits: allInstalledFiles.Paths(),
 			Default:   !ctx.Config().EmbeddedInMake(),
 		})
 		deps = append(deps, name)
@@ -1086,8 +1163,11 @@ func (m *ModuleBase) GenerateBuildActions(blueprintCtx blueprint.ModuleContext) 
 	blueprintCtx.GetMissingDependencies()
 
 	// For the final GenerateAndroidBuildActions pass, require that all visited dependencies Soong modules and
-	// are enabled.
-	ctx.baseModuleContext.strictVisitDeps = true
+	// are enabled. Unless the module is a CommonOS variant which may have dependencies on disabled variants
+	// (because the dependencies are added before the modules are disabled). The
+	// GetOsSpecificVariantsOfCommonOSVariant(...) method will ensure that the disabled variants are
+	// ignored.
+	ctx.baseModuleContext.strictVisitDeps = !m.IsCommonOSVariant()
 
 	if ctx.config.captureBuild {
 		ctx.ruleParams = make(map[blueprint.Rule]blueprint.RuleParams)
@@ -1100,6 +1180,9 @@ func (m *ModuleBase) GenerateBuildActions(blueprintCtx blueprint.ModuleContext) 
 	}
 	if !ctx.PrimaryArch() {
 		suffix = append(suffix, ctx.Arch().ArchType.String())
+	}
+	if apex, ok := m.module.(ApexModule); ok && !apex.IsForPlatform() {
+		suffix = append(suffix, apex.ApexName())
 	}
 
 	ctx.Variable(pctx, "moduleDesc", desc)
@@ -1137,12 +1220,25 @@ func (m *ModuleBase) GenerateBuildActions(blueprintCtx blueprint.ModuleContext) 
 			}
 		})
 
-		notice := proptools.StringDefault(m.commonProperties.Notice, "NOTICE")
+		m.noticeFiles = make([]Path, 0)
+		optPath := OptionalPath{}
+		notice := proptools.StringDefault(m.commonProperties.Notice, "")
 		if module := SrcIsModule(notice); module != "" {
-			m.noticeFile = ctx.ExpandOptionalSource(&notice, "notice")
-		} else {
+			optPath = ctx.ExpandOptionalSource(&notice, "notice")
+		} else if notice != "" {
 			noticePath := filepath.Join(ctx.ModuleDir(), notice)
-			m.noticeFile = ExistentPathForSource(ctx, noticePath)
+			optPath = ExistentPathForSource(ctx, noticePath)
+		}
+		if optPath.Valid() {
+			m.noticeFiles = append(m.noticeFiles, optPath.Path())
+		} else {
+			for _, notice = range []string{"LICENSE", "LICENCE", "NOTICE"} {
+				noticePath := filepath.Join(ctx.ModuleDir(), notice)
+				optPath = ExistentPathForSource(ctx, noticePath)
+				if optPath.Valid() {
+					m.noticeFiles = append(m.noticeFiles, optPath.Path())
+				}
+			}
 		}
 
 		m.module.GenerateAndroidBuildActions(ctx)
@@ -1264,16 +1360,20 @@ type baseModuleContext struct {
 	strictVisitDeps bool // If true, enforce that all dependencies are enabled
 }
 
-func (b *baseModuleContext) OtherModuleName(m blueprint.Module) string { return b.bp.OtherModuleName(m) }
-func (b *baseModuleContext) OtherModuleDir(m blueprint.Module) string  { return b.bp.OtherModuleDir(m) }
+func (b *baseModuleContext) OtherModuleName(m blueprint.Module) string {
+	return b.bp.OtherModuleName(m)
+}
+func (b *baseModuleContext) OtherModuleDir(m blueprint.Module) string { return b.bp.OtherModuleDir(m) }
 func (b *baseModuleContext) OtherModuleErrorf(m blueprint.Module, fmt string, args ...interface{}) {
-	b.bp.OtherModuleErrorf(m, fmt, args)
+	b.bp.OtherModuleErrorf(m, fmt, args...)
 }
 func (b *baseModuleContext) OtherModuleDependencyTag(m blueprint.Module) blueprint.DependencyTag {
 	return b.bp.OtherModuleDependencyTag(m)
 }
-func (b *baseModuleContext) OtherModuleExists(name string) bool        { return b.bp.OtherModuleExists(name) }
-func (b *baseModuleContext) OtherModuleType(m blueprint.Module) string { return b.bp.OtherModuleType(m) }
+func (b *baseModuleContext) OtherModuleExists(name string) bool { return b.bp.OtherModuleExists(name) }
+func (b *baseModuleContext) OtherModuleType(m blueprint.Module) string {
+	return b.bp.OtherModuleType(m)
+}
 
 func (b *baseModuleContext) GetDirectDepWithTag(name string, tag blueprint.DependencyTag) blueprint.Module {
 	return b.bp.GetDirectDepWithTag(name, tag)
@@ -1282,8 +1382,8 @@ func (b *baseModuleContext) GetDirectDepWithTag(name string, tag blueprint.Depen
 type moduleContext struct {
 	bp blueprint.ModuleContext
 	baseModuleContext
-	installDeps     Paths
-	installFiles    Paths
+	installDeps     InstallPaths
+	installFiles    InstallPaths
 	checkbuildFiles Paths
 	module          Module
 
@@ -1689,6 +1789,10 @@ func (m *moduleContext) InstallBypassMake() bool {
 	return m.module.InstallBypassMake()
 }
 
+func (m *moduleContext) InstallForceOS() *OsType {
+	return m.module.InstallForceOS()
+}
+
 func (m *moduleContext) skipInstall(fullInstallPath InstallPath) bool {
 	if m.module.base().commonProperties.SkipInstall {
 		return true
@@ -1732,7 +1836,7 @@ func (m *moduleContext) installFile(installPath InstallPath, name string, srcPat
 
 	if !m.skipInstall(fullInstallPath) {
 
-		deps = append(deps, m.installDeps...)
+		deps = append(deps, m.installDeps.Paths()...)
 
 		var implicitDeps, orderOnlyDeps Paths
 
@@ -1811,20 +1915,6 @@ func (m *moduleContext) InstallAbsoluteSymlink(installPath InstallPath, name str
 
 func (m *moduleContext) CheckbuildFile(srcPath Path) {
 	m.checkbuildFiles = append(m.checkbuildFiles, srcPath)
-}
-
-type fileInstaller interface {
-	filesToInstall() Paths
-}
-
-func isFileInstaller(m blueprint.Module) bool {
-	_, ok := m.(fileInstaller)
-	return ok
-}
-
-func isAndroidModule(m blueprint.Module) bool {
-	_, ok := m.(Module)
-	return ok
 }
 
 func findStringInSlice(str string, slice []string) int {

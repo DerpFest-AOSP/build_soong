@@ -23,12 +23,14 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/google/blueprint"
 	"github.com/google/blueprint/pathtools"
 	"github.com/google/blueprint/proptools"
 
 	"android/soong/android"
+	"android/soong/dexpreopt"
 	"android/soong/java/config"
 	"android/soong/tradefed"
 )
@@ -39,11 +41,17 @@ func init() {
 	// Register sdk member types.
 	android.RegisterSdkMemberType(javaHeaderLibsSdkMemberType)
 
-	android.RegisterSdkMemberType(&implLibrarySdkMemberType{
-		librarySdkMemberType{
-			android.SdkMemberTypeBase{
-				PropertyName: "java_libs",
-			},
+	android.RegisterSdkMemberType(&librarySdkMemberType{
+		android.SdkMemberTypeBase{
+			PropertyName: "java_libs",
+		},
+		func(j *Library) android.Path {
+			implementationJars := j.ImplementationJars()
+			if len(implementationJars) != 1 {
+				panic(fmt.Errorf("there must be only one implementation jar from %q", j.Name()))
+			}
+
+			return implementationJars[0]
 		},
 	})
 
@@ -52,6 +60,8 @@ func init() {
 			PropertyName: "java_tests",
 		},
 	})
+
+	android.PostDepsMutators(RegisterPostDepsMutators)
 }
 
 func RegisterJavaBuildComponents(ctx android.RegistrationContext) {
@@ -72,8 +82,50 @@ func RegisterJavaBuildComponents(ctx android.RegistrationContext) {
 	ctx.RegisterModuleType("java_host_for_device", HostForDeviceFactory)
 	ctx.RegisterModuleType("dex_import", DexImportFactory)
 
+	ctx.FinalDepsMutators(func(ctx android.RegisterMutatorsContext) {
+		ctx.BottomUp("dexpreopt_tool_deps", dexpreoptToolDepsMutator).Parallel()
+	})
+
 	ctx.RegisterSingletonType("logtags", LogtagsSingleton)
 	ctx.RegisterSingletonType("kythe_java_extract", kytheExtractJavaFactory)
+}
+
+func RegisterPostDepsMutators(ctx android.RegisterMutatorsContext) {
+	ctx.BottomUp("ordered_system_server_jars", systemServerJarsDepsMutator)
+}
+
+var (
+	dexpreoptedSystemServerJarsKey  = android.NewOnceKey("dexpreoptedSystemServerJars")
+	dexpreoptedSystemServerJarsLock sync.Mutex
+)
+
+func DexpreoptedSystemServerJars(config android.Config) *[]string {
+	return config.Once(dexpreoptedSystemServerJarsKey, func() interface{} {
+		return &[]string{}
+	}).(*[]string)
+}
+
+// A PostDepsMutator pass that enforces total order on non-updatable system server jars. A total
+// order is neededed because such jars must be dexpreopted together (each jar on the list must have
+// all preceding jars in its class loader context). The total order must be compatible with the
+// partial order imposed by genuine dependencies between system server jars (which is not always
+// respected by the PRODUCT_SYSTEM_SERVER_JARS variable).
+//
+// An earlier mutator pass creates genuine dependencies, and this pass traverses the jars in that
+// order (which is partial and non-deterministic). This pass adds additional dependencies between
+// jars, making the order total and deterministic. It also constructs a global ordered list.
+func systemServerJarsDepsMutator(ctx android.BottomUpMutatorContext) {
+	jars := dexpreopt.NonUpdatableSystemServerJars(ctx, dexpreopt.GetGlobalConfig(ctx))
+	name := ctx.ModuleName()
+	if android.InList(name, jars) {
+		dexpreoptedSystemServerJarsLock.Lock()
+		defer dexpreoptedSystemServerJarsLock.Unlock()
+		jars := DexpreoptedSystemServerJars(ctx.Config())
+		for _, dep := range *jars {
+			ctx.AddDependency(ctx.Module(), dexpreopt.SystemServerDepTag, dep)
+		}
+		*jars = append(*jars, name)
+	}
 }
 
 func (j *Module) checkSdkVersion(ctx android.ModuleContext) {
@@ -659,6 +711,11 @@ func (j *Module) deps(ctx android.BottomUpMutatorContext) {
 	} else if j.shouldInstrumentStatic(ctx) {
 		ctx.AddVariationDependencies(nil, staticLibTag, "jacocoagent")
 	}
+
+	// services depend on com.android.location.provider, but dependency in not registered in a Blueprint file
+	if ctx.ModuleName() == "services" {
+		ctx.AddDependency(ctx.Module(), dexpreopt.SystemServerForcedDepTag, "com.android.location.provider")
+	}
 }
 
 func hasSrcExt(srcs []string, ext string) bool {
@@ -756,6 +813,7 @@ const (
 	javaSdk
 	javaSystem
 	javaModule
+	javaSystemServer
 	javaPlatform
 )
 
@@ -789,6 +847,10 @@ func (m *Module) getLinkType(name string) (ret linkType, stubs bool) {
 		return javaModule, true
 	case ver.kind == sdkModule:
 		return javaModule, false
+	case name == "services-stubs":
+		return javaSystemServer, true
+	case ver.kind == sdkSystemServer:
+		return javaSystemServer, false
 	case ver.kind == sdkPrivate || ver.kind == sdkNone || ver.kind == sdkCorePlatform:
 		return javaPlatform, false
 	case !ver.valid():
@@ -824,14 +886,20 @@ func checkLinkType(ctx android.ModuleContext, from *Module, to linkTypeContext, 
 		}
 		break
 	case javaSystem:
-		if otherLinkType == javaPlatform || otherLinkType == javaModule {
+		if otherLinkType == javaPlatform || otherLinkType == javaModule || otherLinkType == javaSystemServer {
 			ctx.ModuleErrorf("compiles against system API, but dependency %q is compiling against private API."+commonMessage,
 				ctx.OtherModuleName(to))
 		}
 		break
 	case javaModule:
-		if otherLinkType == javaPlatform {
+		if otherLinkType == javaPlatform || otherLinkType == javaSystemServer {
 			ctx.ModuleErrorf("compiles against module API, but dependency %q is compiling against private API."+commonMessage,
+				ctx.OtherModuleName(to))
+		}
+		break
+	case javaSystemServer:
+		if otherLinkType == javaPlatform {
+			ctx.ModuleErrorf("compiles against system server API, but dependency %q is compiling against private API."+commonMessage,
 				ctx.OtherModuleName(to))
 		}
 		break
@@ -969,18 +1037,16 @@ func (j *Module) collectDeps(ctx android.ModuleContext) deps {
 			case bootClasspathTag:
 				// If a system modules dependency has been added to the bootclasspath
 				// then add its libs to the bootclasspath.
-				sm := module.(*SystemModules)
-				deps.bootClasspath = append(deps.bootClasspath, sm.headerJars...)
+				sm := module.(SystemModulesProvider)
+				deps.bootClasspath = append(deps.bootClasspath, sm.HeaderJars()...)
 
 			case systemModulesTag:
 				if deps.systemModules != nil {
 					panic("Found two system module dependencies")
 				}
-				sm := module.(*SystemModules)
-				if sm.outputDir == nil || len(sm.outputDeps) == 0 {
-					panic("Missing directory for system module dependency")
-				}
-				deps.systemModules = &systemModules{sm.outputDir, sm.outputDeps}
+				sm := module.(SystemModulesProvider)
+				outputDir, outputDeps := sm.OutputDirAndDeps()
+				deps.systemModules = &systemModules{outputDir, outputDeps}
 			}
 		}
 	})
@@ -1263,6 +1329,7 @@ func (j *Module) compile(ctx android.ModuleContext, aaptSrcJar android.Path) {
 	j.compiledSrcJars = srcJars
 
 	enable_sharding := false
+	var headerJarFileWithoutJarjar android.Path
 	if ctx.Device() && !ctx.Config().IsEnvFalse("TURBINE_ENABLED") && !deps.disableTurbine {
 		if j.properties.Javac_shard_size != nil && *(j.properties.Javac_shard_size) > 0 {
 			enable_sharding = true
@@ -1272,7 +1339,8 @@ func (j *Module) compile(ctx android.ModuleContext, aaptSrcJar android.Path) {
 			// allow for the use of annotation processors that do function correctly
 			// with sharding enabled. See: b/77284273.
 		}
-		j.headerJarFile = j.compileJavaHeader(ctx, uniqueSrcFiles, srcJars, deps, flags, jarName, kotlinJars)
+		headerJarFileWithoutJarjar, j.headerJarFile =
+			j.compileJavaHeader(ctx, uniqueSrcFiles, srcJars, deps, flags, jarName, kotlinJars)
 		if ctx.Failed() {
 			return
 		}
@@ -1291,7 +1359,7 @@ func (j *Module) compile(ctx android.ModuleContext, aaptSrcJar android.Path) {
 		}
 
 		if enable_sharding {
-			flags.classpath = append(flags.classpath, j.headerJarFile)
+			flags.classpath = append(flags.classpath, headerJarFileWithoutJarjar)
 			shardSize := int(*(j.properties.Javac_shard_size))
 			var shardSrcs []android.Paths
 			if len(uniqueSrcFiles) > 0 {
@@ -1459,6 +1527,14 @@ func (j *Module) compile(ctx android.ModuleContext, aaptSrcJar android.Path) {
 		j.headerJarFile = j.implementationJarFile
 	}
 
+	// Force enable the instrumentation for java code that is built for APEXes ...
+	// except for the jacocoagent itself (because instrumenting jacocoagent using jacocoagent
+	// doesn't make sense)
+	isJacocoAgent := ctx.ModuleName() == "jacocoagent"
+	if android.DirectlyInAnyApex(ctx, ctx.ModuleName()) && !isJacocoAgent && !j.IsForPlatform() {
+		j.properties.Instrument = true
+	}
+
 	if j.shouldInstrument(ctx) {
 		outputFile = j.instrument(ctx, flags, outputFile, jarName)
 	}
@@ -1474,6 +1550,16 @@ func (j *Module) compile(ctx android.ModuleContext, aaptSrcJar android.Path) {
 	}
 
 	j.implementationAndResourcesJar = implementationAndResourcesJar
+
+	// Enable dex compilation for the APEX variants, unless it is disabled explicitly
+	if android.DirectlyInAnyApex(ctx, ctx.ModuleName()) && !j.IsForPlatform() {
+		if j.deviceProperties.Compile_dex == nil {
+			j.deviceProperties.Compile_dex = proptools.BoolPtr(true)
+		}
+		if j.deviceProperties.Hostdex == nil {
+			j.deviceProperties.Hostdex = proptools.BoolPtr(true)
+		}
+	}
 
 	if ctx.Device() && j.hasCode(ctx) &&
 		(Bool(j.properties.Installable) || Bool(j.deviceProperties.Compile_dex)) {
@@ -1572,7 +1658,8 @@ func CheckKotlincFlags(ctx android.ModuleContext, flags []string) {
 }
 
 func (j *Module) compileJavaHeader(ctx android.ModuleContext, srcFiles, srcJars android.Paths,
-	deps deps, flags javaBuilderFlags, jarName string, extraJars android.Paths) android.Path {
+	deps deps, flags javaBuilderFlags, jarName string,
+	extraJars android.Paths) (headerJar, jarjarHeaderJar android.Path) {
 
 	var jars android.Paths
 	if len(srcFiles) > 0 || len(srcJars) > 0 {
@@ -1580,7 +1667,7 @@ func (j *Module) compileJavaHeader(ctx android.ModuleContext, srcFiles, srcJars 
 		turbineJar := android.PathForModuleOut(ctx, "turbine", jarName)
 		TransformJavaToHeaderClasses(ctx, turbineJar, srcFiles, srcJars, flags)
 		if ctx.Failed() {
-			return nil
+			return nil, nil
 		}
 		jars = append(jars, turbineJar)
 	}
@@ -1589,7 +1676,6 @@ func (j *Module) compileJavaHeader(ctx android.ModuleContext, srcFiles, srcJars 
 
 	// Combine any static header libraries into classes-header.jar. If there is only
 	// one input jar this step will be skipped.
-	var headerJar android.Path
 	jars = append(jars, deps.staticHeaderJars...)
 
 	// we cannot skip the combine step for now if there is only one jar
@@ -1598,18 +1684,19 @@ func (j *Module) compileJavaHeader(ctx android.ModuleContext, srcFiles, srcJars 
 	TransformJarsToJar(ctx, combinedJar, "for turbine", jars, android.OptionalPath{},
 		false, nil, []string{"META-INF/TRANSITIVE"})
 	headerJar = combinedJar
+	jarjarHeaderJar = combinedJar
 
 	if j.expandJarjarRules != nil {
 		// Transform classes.jar into classes-jarjar.jar
 		jarjarFile := android.PathForModuleOut(ctx, "turbine-jarjar", jarName)
 		TransformJarJar(ctx, jarjarFile, headerJar, j.expandJarjarRules)
-		headerJar = jarjarFile
+		jarjarHeaderJar = jarjarFile
 		if ctx.Failed() {
-			return nil
+			return nil, nil
 		}
 	}
 
-	return headerJar
+	return headerJar, jarjarHeaderJar
 }
 
 func (j *Module) instrument(ctx android.ModuleContext, flags javaBuilderFlags,
@@ -1724,6 +1811,10 @@ func (j *Module) JacocoReportClassesFile() android.Path {
 	return j.jacocoReportClassesFile
 }
 
+func (j *Module) IsInstallable() bool {
+	return Bool(j.properties.Installable)
+}
+
 //
 // Java libraries (.jar file)
 //
@@ -1761,7 +1852,6 @@ func (j *Library) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 	j.checkSdkVersion(ctx)
 	j.dexpreopter.installPath = android.PathForModuleInstall(ctx, "framework", j.Stem()+".jar")
 	j.dexpreopter.isSDKLibrary = j.deviceProperties.IsSDKLibrary
-	j.dexpreopter.isInstallable = Bool(j.properties.Installable)
 	j.dexpreopter.uncompressedDex = shouldUncompressDex(ctx, &j.dexpreopter)
 	j.deviceProperties.UncompressDex = j.dexpreopter.uncompressedDex
 	j.compile(ctx, nil)
@@ -1799,6 +1889,10 @@ func sdkSnapshotFilePathForMember(member android.SdkMember, suffix string) strin
 
 type librarySdkMemberType struct {
 	android.SdkMemberTypeBase
+
+	// Function to retrieve the appropriate output jar (implementation or header) from
+	// the library.
+	jarToExportGetter func(j *Library) android.Path
 }
 
 func (mt *librarySdkMemberType) AddDependencies(mctx android.BottomUpMutatorContext, dependencyTag blueprint.DependencyTag, names []string) {
@@ -1810,11 +1904,7 @@ func (mt *librarySdkMemberType) IsInstance(module android.Module) bool {
 	return ok
 }
 
-func (mt *librarySdkMemberType) buildSnapshot(
-	sdkModuleContext android.ModuleContext,
-	builder android.SnapshotBuilder,
-	member android.SdkMember,
-	jarToExportGetter func(j *Library) android.Path) {
+func (mt *librarySdkMemberType) BuildSnapshot(sdkModuleContext android.ModuleContext, builder android.SnapshotBuilder, member android.SdkMember) {
 
 	variants := member.Variants()
 	if len(variants) != 1 {
@@ -1826,7 +1916,7 @@ func (mt *librarySdkMemberType) buildSnapshot(
 	variant := variants[0]
 	j := variant.(*Library)
 
-	exportedJar := jarToExportGetter(j)
+	exportedJar := mt.jarToExportGetter(j)
 	snapshotRelativeJavaLibPath := sdkSnapshotFilePathForJar(member)
 	builder.CopyToSnapshot(exportedJar, snapshotRelativeJavaLibPath)
 
@@ -1842,43 +1932,19 @@ func (mt *librarySdkMemberType) buildSnapshot(
 	module.AddProperty("jars", []string{snapshotRelativeJavaLibPath})
 }
 
-var javaHeaderLibsSdkMemberType android.SdkMemberType = &headerLibrarySdkMemberType{
-	librarySdkMemberType{
-		android.SdkMemberTypeBase{
-			PropertyName: "java_header_libs",
-			SupportsSdk:  true,
-		},
+var javaHeaderLibsSdkMemberType android.SdkMemberType = &librarySdkMemberType{
+	android.SdkMemberTypeBase{
+		PropertyName: "java_header_libs",
+		SupportsSdk:  true,
 	},
-}
-
-type headerLibrarySdkMemberType struct {
-	librarySdkMemberType
-}
-
-func (mt *headerLibrarySdkMemberType) BuildSnapshot(sdkModuleContext android.ModuleContext, builder android.SnapshotBuilder, member android.SdkMember) {
-	mt.librarySdkMemberType.buildSnapshot(sdkModuleContext, builder, member, func(j *Library) android.Path {
+	func(j *Library) android.Path {
 		headerJars := j.HeaderJars()
 		if len(headerJars) != 1 {
 			panic(fmt.Errorf("there must be only one header jar from %q", j.Name()))
 		}
 
 		return headerJars[0]
-	})
-}
-
-type implLibrarySdkMemberType struct {
-	librarySdkMemberType
-}
-
-func (mt *implLibrarySdkMemberType) BuildSnapshot(sdkModuleContext android.ModuleContext, builder android.SnapshotBuilder, member android.SdkMember) {
-	mt.librarySdkMemberType.buildSnapshot(sdkModuleContext, builder, member, func(j *Library) android.Path {
-		implementationJars := j.ImplementationJars()
-		if len(implementationJars) != 1 {
-			panic(fmt.Errorf("there must be only one implementation jar from %q", j.Name()))
-		}
-
-		return implementationJars[0]
-	})
+	},
 }
 
 // java_library builds and links sources into a `.jar` file for the device, and possibly for the host as well.
@@ -2518,13 +2584,16 @@ func (j *DexImport) Stem() string {
 	return proptools.StringDefault(j.properties.Stem, j.ModuleBase.Name())
 }
 
+func (j *DexImport) IsInstallable() bool {
+	return true
+}
+
 func (j *DexImport) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 	if len(j.properties.Jars) != 1 {
 		ctx.PropertyErrorf("jars", "exactly one jar must be provided")
 	}
 
 	j.dexpreopter.installPath = android.PathForModuleInstall(ctx, "framework", j.Stem()+".jar")
-	j.dexpreopter.isInstallable = true
 	j.dexpreopter.uncompressedDex = shouldUncompressDex(ctx, &j.dexpreopter)
 
 	inputJar := ctx.ExpandSource(j.properties.Jars[0], "jars")

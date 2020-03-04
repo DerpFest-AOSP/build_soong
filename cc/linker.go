@@ -101,6 +101,10 @@ type BaseLinkerProperties struct {
 			// variant of the C/C++ module.
 			Shared_libs []string
 
+			// list of static libs that only should be used to build the vendor
+			// variant of the C/C++ module.
+			Static_libs []string
+
 			// list of shared libs that should not be used to build the vendor variant
 			// of the C/C++ module.
 			Exclude_shared_libs []string
@@ -222,6 +226,7 @@ func (linker *baseLinker) linkerDeps(ctx DepsContext, deps Deps) Deps {
 		deps.SharedLibs = append(deps.SharedLibs, linker.Properties.Target.Vendor.Shared_libs...)
 		deps.SharedLibs = removeListFromList(deps.SharedLibs, linker.Properties.Target.Vendor.Exclude_shared_libs)
 		deps.ReexportSharedLibHeaders = removeListFromList(deps.ReexportSharedLibHeaders, linker.Properties.Target.Vendor.Exclude_shared_libs)
+		deps.StaticLibs = append(deps.StaticLibs, linker.Properties.Target.Vendor.Static_libs...)
 		deps.StaticLibs = removeListFromList(deps.StaticLibs, linker.Properties.Target.Vendor.Exclude_static_libs)
 		deps.HeaderLibs = removeListFromList(deps.HeaderLibs, linker.Properties.Target.Vendor.Exclude_header_libs)
 		deps.ReexportStaticLibHeaders = removeListFromList(deps.ReexportStaticLibHeaders, linker.Properties.Target.Vendor.Exclude_static_libs)
@@ -496,19 +501,21 @@ func init() {
 var injectVersionSymbol = pctx.AndroidStaticRule("injectVersionSymbol",
 	blueprint.RuleParams{
 		Command: "$symbolInjectCmd -i $in -o $out -s soong_build_number " +
-			"-from 'SOONG BUILD NUMBER PLACEHOLDER' -v $buildNumberFromFile",
+			"-from 'SOONG BUILD NUMBER PLACEHOLDER' -v $$(cat $buildNumberFile)",
 		CommandDeps: []string{"$symbolInjectCmd"},
 	},
-	"buildNumberFromFile")
+	"buildNumberFile")
 
 func (linker *baseLinker) injectVersionSymbol(ctx ModuleContext, in android.Path, out android.WritablePath) {
+	buildNumberFile := ctx.Config().BuildNumberFile(ctx)
 	ctx.Build(pctx, android.BuildParams{
 		Rule:        injectVersionSymbol,
 		Description: "inject version symbol",
 		Input:       in,
 		Output:      out,
+		OrderOnly:   android.Paths{buildNumberFile},
 		Args: map[string]string{
-			"buildNumberFromFile": proptools.NinjaEscape(ctx.Config().BuildNumberFromFile()),
+			"buildNumberFile": buildNumberFile.String(),
 		},
 	})
 }

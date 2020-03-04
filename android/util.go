@@ -122,7 +122,7 @@ func InList(s string, list []string) bool {
 }
 
 // Returns true if the given string s is prefixed with any string in the given prefix list.
-func PrefixInList(s string, prefixList []string) bool {
+func HasAnyPrefix(s string, prefixList []string) bool {
 	for _, prefix := range prefixList {
 		if strings.HasPrefix(s, prefix) {
 			return true
@@ -132,7 +132,7 @@ func PrefixInList(s string, prefixList []string) bool {
 }
 
 // Returns true if any string in the given list has the given prefix.
-func PrefixedStringInList(list []string, prefix string) bool {
+func PrefixInList(list []string, prefix string) bool {
 	for _, s := range list {
 		if strings.HasPrefix(s, prefix) {
 			return true
@@ -193,6 +193,14 @@ func RemoveFromList(s string, list []string) (bool, []string) {
 // FirstUniqueStrings returns all unique elements of a slice of strings, keeping the first copy of
 // each.  It modifies the slice contents in place, and returns a subslice of the original slice.
 func FirstUniqueStrings(list []string) []string {
+	// 128 was chosen based on BenchmarkFirstUniqueStrings results.
+	if len(list) > 128 {
+		return firstUniqueStringsMap(list)
+	}
+	return firstUniqueStringsList(list)
+}
+
+func firstUniqueStringsList(list []string) []string {
 	k := 0
 outer:
 	for i := 0; i < len(list); i++ {
@@ -201,6 +209,20 @@ outer:
 				continue outer
 			}
 		}
+		list[k] = list[i]
+		k++
+	}
+	return list[:k]
+}
+
+func firstUniqueStringsMap(list []string) []string {
+	k := 0
+	seen := make(map[string]bool, len(list))
+	for i := 0; i < len(list); i++ {
+		if seen[list[i]] {
+			continue
+		}
+		seen[list[i]] = true
 		list[k] = list[i]
 		k++
 	}

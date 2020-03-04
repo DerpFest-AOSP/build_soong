@@ -15,6 +15,7 @@
 package apex
 
 import (
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"runtime"
@@ -136,15 +137,17 @@ var (
 		})
 
 	apexBundleRule = pctx.StaticRule("apexBundleRule", blueprint.RuleParams{
-		Command: `${zip2zip} -i $in -o $out ` +
+		Command: `${zip2zip} -i $in -o $out.base ` +
 			`apex_payload.img:apex/${abi}.img ` +
 			`apex_manifest.json:root/apex_manifest.json ` +
 			`apex_manifest.pb:root/apex_manifest.pb ` +
 			`AndroidManifest.xml:manifest/AndroidManifest.xml ` +
-			`assets/NOTICE.html.gz:assets/NOTICE.html.gz`,
-		CommandDeps: []string{"${zip2zip}"},
+			`assets/NOTICE.html.gz:assets/NOTICE.html.gz &&` +
+			`${soong_zip} -o $out.config -C $$(dirname ${config}) -f ${config} && ` +
+			`${merge_zips} $out $out.base $out.config`,
+		CommandDeps: []string{"${zip2zip}", "${soong_zip}", "${merge_zips}"},
 		Description: "app bundle",
-	}, "abi")
+	}, "abi", "config")
 
 	emitApexContentRule = pctx.StaticRule("emitApexContentRule", blueprint.RuleParams{
 		Command:        `rm -f ${out} && touch ${out} && (. ${out}.emit_commands)`,
@@ -178,6 +181,17 @@ func (a *apexBundle) buildManifest(ctx android.ModuleContext, provideNativeLibs,
 	optCommands := []string{}
 	if a.properties.Apex_name != nil {
 		optCommands = append(optCommands, "-v name "+*a.properties.Apex_name)
+	}
+
+	// collect jniLibs. Notice that a.filesInfo is already sorted
+	var jniLibs []string
+	for _, fi := range a.filesInfo {
+		if fi.isJniLib {
+			jniLibs = append(jniLibs, fi.builtFile.Base())
+		}
+	}
+	if len(jniLibs) > 0 {
+		optCommands = append(optCommands, "-a jniLibs "+strings.Join(jniLibs, " "))
 	}
 
 	ctx.Build(pctx, android.BuildParams{
@@ -215,15 +229,15 @@ func (a *apexBundle) buildNoticeFiles(ctx android.ModuleContext, apexFileName st
 	noticeFiles := []android.Path{}
 	for _, f := range a.filesInfo {
 		if f.module != nil {
-			notice := f.module.NoticeFile()
-			if notice.Valid() {
-				noticeFiles = append(noticeFiles, notice.Path())
+			notices := f.module.NoticeFiles()
+			if len(notices) > 0 {
+				noticeFiles = append(noticeFiles, notices...)
 			}
 		}
 	}
 	// append the notice file specified in the apex module itself
-	if a.NoticeFile().Valid() {
-		noticeFiles = append(noticeFiles, a.NoticeFile().Path())
+	if len(a.NoticeFiles()) > 0 {
+		noticeFiles = append(noticeFiles, a.NoticeFiles()...)
 	}
 
 	if len(noticeFiles) == 0 {
@@ -243,6 +257,61 @@ func (a *apexBundle) buildInstalledFilesFile(ctx android.ModuleContext, builtApe
 		Text(" | sort -nr > ").
 		Output(output)
 	rule.Build(pctx, ctx, "installed-files."+a.Name(), "Installed files")
+	return output.OutputPath
+}
+
+func (a *apexBundle) buildBundleConfig(ctx android.ModuleContext) android.OutputPath {
+	output := android.PathForModuleOut(ctx, "bundle_config.json")
+
+	type ApkConfig struct {
+		Package_name string `json:"package_name"`
+		Apk_path     string `json:"path"`
+	}
+	config := struct {
+		Compression struct {
+			Uncompressed_glob []string `json:"uncompressed_glob"`
+		} `json:"compression"`
+		Apex_config struct {
+			Apex_embedded_apk_config []ApkConfig `json:"apex_embedded_apk_config,omitempty"`
+		} `json:"apex_config,omitempty"`
+	}{}
+
+	config.Compression.Uncompressed_glob = []string{
+		"apex_payload.img",
+		"apex_manifest.*",
+	}
+
+	// collect the manifest names and paths of android apps
+	// if their manifest names are overridden
+	for _, fi := range a.filesInfo {
+		if fi.class != app {
+			continue
+		}
+		packageName := fi.overriddenPackageName
+		if packageName != "" {
+			config.Apex_config.Apex_embedded_apk_config = append(
+				config.Apex_config.Apex_embedded_apk_config,
+				ApkConfig{
+					Package_name: packageName,
+					Apk_path:     fi.Path(),
+				})
+		}
+	}
+
+	j, err := json.Marshal(config)
+	if err != nil {
+		panic(fmt.Errorf("error while marshalling to %q: %#v", output, err))
+	}
+
+	ctx.Build(pctx, android.BuildParams{
+		Rule:        android.WriteFile,
+		Output:      output,
+		Description: "Bundle Config " + output.String(),
+		Args: map[string]string{
+			"content": string(j),
+		},
+	})
+
 	return output.OutputPath
 }
 
@@ -383,6 +452,16 @@ func (a *apexBundle) buildUnflattenedApex(ctx android.ModuleContext) {
 
 		targetSdkVersion := ctx.Config().DefaultAppTargetSdk()
 		minSdkVersion := ctx.Config().DefaultAppTargetSdk()
+
+		if proptools.Bool(a.properties.Legacy_android10_support) {
+			if !java.UseApiFingerprint(ctx, targetSdkVersion) {
+				targetSdkVersion = "29"
+			}
+			if !java.UseApiFingerprint(ctx, minSdkVersion) {
+				minSdkVersion = "29"
+			}
+		}
+
 		if java.UseApiFingerprint(ctx, targetSdkVersion) {
 			targetSdkVersion += fmt.Sprintf(".$$(cat %s)", java.ApiFingerprintPath(ctx).String())
 			implicitInputs = append(implicitInputs, java.ApiFingerprintPath(ctx))
@@ -393,6 +472,10 @@ func (a *apexBundle) buildUnflattenedApex(ctx android.ModuleContext) {
 		}
 		optFlags = append(optFlags, "--target_sdk_version "+targetSdkVersion)
 		optFlags = append(optFlags, "--min_sdk_version "+minSdkVersion)
+
+		if a.overridableProperties.Logging_parent != "" {
+			optFlags = append(optFlags, "--logging_parent ", a.overridableProperties.Logging_parent)
+		}
 
 		a.mergedNotices = a.buildNoticeFiles(ctx, a.Name()+suffix)
 		if a.mergedNotices.HtmlGzOutput.Valid() {
@@ -451,13 +534,17 @@ func (a *apexBundle) buildUnflattenedApex(ctx android.ModuleContext) {
 			Description: "apex proto convert",
 		})
 
+		bundleConfig := a.buildBundleConfig(ctx)
+
 		ctx.Build(pctx, android.BuildParams{
 			Rule:        apexBundleRule,
 			Input:       apexProtoFile,
+			Implicit:    bundleConfig,
 			Output:      a.bundleModuleFile,
 			Description: "apex bundle module",
 			Args: map[string]string{
-				"abi": strings.Join(abis, "."),
+				"abi":    strings.Join(abis, "."),
+				"config": bundleConfig.String(),
 			},
 		})
 	} else {
@@ -596,19 +683,14 @@ func (a *apexBundle) buildApexDependencyInfo(ctx android.ModuleContext) {
 		return
 	}
 
-	internalDeps := a.internalDeps
-	externalDeps := a.externalDeps
-
-	internalDeps = android.SortedUniqueStrings(internalDeps)
-	externalDeps = android.SortedUniqueStrings(externalDeps)
-	externalDeps = android.RemoveListFromList(externalDeps, internalDeps)
-
 	var content strings.Builder
-	for _, name := range internalDeps {
-		fmt.Fprintf(&content, "internal %s\\n", name)
-	}
-	for _, name := range externalDeps {
-		fmt.Fprintf(&content, "external %s\\n", name)
+	for _, key := range android.SortedStringKeys(a.depInfos) {
+		info := a.depInfos[key]
+		toName := info.to
+		if info.isExternal {
+			toName = toName + " (external)"
+		}
+		fmt.Fprintf(&content, "%s <- %s\\n", toName, strings.Join(android.SortedUniqueStrings(info.from), ", "))
 	}
 
 	depsInfoFile := android.PathForOutput(ctx, a.Name()+"-deps-info.txt")

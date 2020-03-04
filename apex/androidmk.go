@@ -120,8 +120,8 @@ func (a *apexBundle) androidMkForFiles(w io.Writer, apexBundleName, apexName, mo
 				fmt.Fprintln(w, "LOCAL_MODULE_SYMLINKS :=", strings.Join(fi.symlinks, " "))
 			}
 
-			if fi.module != nil && fi.module.NoticeFile().Valid() {
-				fmt.Fprintln(w, "LOCAL_NOTICE_FILE :=", fi.module.NoticeFile().Path().String())
+			if fi.module != nil && len(fi.module.NoticeFiles()) > 0 {
+				fmt.Fprintln(w, "LOCAL_NOTICE_FILE :=", strings.Join(fi.module.NoticeFiles().Strings(), " "))
 			}
 		} else {
 			fmt.Fprintln(w, "LOCAL_MODULE_PATH :=", pathWhenActivated)
@@ -217,6 +217,12 @@ func (a *apexBundle) androidMkForFiles(w io.Writer, apexBundleName, apexName, mo
 			}
 			fmt.Fprintln(w, "include $(BUILD_PREBUILT)")
 		}
+
+		// m <module_name> will build <module_name>.<apex_name> as well.
+		if fi.moduleName != moduleName && a.primaryApexType {
+			fmt.Fprintln(w, ".PHONY: "+fi.moduleName)
+			fmt.Fprintln(w, fi.moduleName+": "+moduleName)
+		}
 	}
 	return moduleNames
 }
@@ -302,7 +308,7 @@ func (a *apexBundle) androidMkForType() android.AndroidMkData {
 				}
 
 				if a.installedFilesFile != nil {
-					goal := "droidcore"
+					goal := "checkbuild"
 					distFile := name + "-installed-files.txt"
 					fmt.Fprintln(w, ".PHONY:", goal)
 					fmt.Fprintf(w, "$(call dist-for-goals,%s,%s:%s)\n",

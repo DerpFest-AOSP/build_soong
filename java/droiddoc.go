@@ -547,10 +547,10 @@ func (j *Javadoc) collectDeps(ctx android.ModuleContext) deps {
 		case bootClasspathTag:
 			if dep, ok := module.(Dependency); ok {
 				deps.bootClasspath = append(deps.bootClasspath, dep.ImplementationJars()...)
-			} else if sm, ok := module.(*SystemModules); ok {
+			} else if sm, ok := module.(SystemModulesProvider); ok {
 				// A system modules dependency has been added to the bootclasspath
 				// so add its libs to the bootclasspath.
-				deps.bootClasspath = append(deps.bootClasspath, sm.headerJars...)
+				deps.bootClasspath = append(deps.bootClasspath, sm.HeaderJars()...)
 			} else {
 				panic(fmt.Errorf("unknown dependency %q for %q", otherName, ctx.ModuleName()))
 			}
@@ -578,11 +578,9 @@ func (j *Javadoc) collectDeps(ctx android.ModuleContext) deps {
 			if deps.systemModules != nil {
 				panic("Found two system module dependencies")
 			}
-			sm := module.(*SystemModules)
-			if sm.outputDir == nil && len(sm.outputDeps) == 0 {
-				panic("Missing directory for system module dependency")
-			}
-			deps.systemModules = &systemModules{sm.outputDir, sm.outputDeps}
+			sm := module.(SystemModulesProvider)
+			outputDir, outputDeps := sm.OutputDirAndDeps()
+			deps.systemModules = &systemModules{outputDir, outputDeps}
 		}
 	})
 	// do not pass exclude_srcs directly when expanding srcFiles since exclude_srcs
@@ -605,11 +603,8 @@ func (j *Javadoc) collectDeps(ctx android.ModuleContext) deps {
 				continue
 			}
 			packageName := strings.ReplaceAll(filepath.Dir(src.Rel()), "/", ".")
-			for _, pkg := range filterPackages {
-				if strings.HasPrefix(packageName, pkg) {
-					filtered = append(filtered, src)
-					break
-				}
+			if android.HasAnyPrefix(packageName, filterPackages) {
+				filtered = append(filtered, src)
 			}
 		}
 		return filtered
@@ -778,6 +773,7 @@ func (d *Droiddoc) DepsMutator(ctx android.BottomUpMutatorContext) {
 }
 
 func (d *Droiddoc) doclavaDocsFlags(ctx android.ModuleContext, cmd *android.RuleBuilderCommand, docletPath classpath) {
+	buildNumberFile := ctx.Config().BuildNumberFile(ctx)
 	// Droiddoc always gets "-source 1.8" because it doesn't support 1.9 sources.  For modules with 1.9
 	// sources, droiddoc will get sources produced by metalava which will have already stripped out the
 	// 1.9 language features.
@@ -787,7 +783,7 @@ func (d *Droiddoc) doclavaDocsFlags(ctx android.ModuleContext, cmd *android.Rule
 		Flag("-XDignore.symbol.file").
 		FlagWithArg("-doclet ", "com.google.doclava.Doclava").
 		FlagWithInputList("-docletpath ", docletPath.Paths(), ":").
-		FlagWithArg("-hdf page.build ", ctx.Config().BuildId()+"-"+ctx.Config().BuildNumberFromFile()).
+		FlagWithArg("-hdf page.build ", ctx.Config().BuildId()+"-$(cat "+buildNumberFile.String()+")").OrderOnly(buildNumberFile).
 		FlagWithArg("-hdf page.now ", `"$(date -d @$(cat `+ctx.Config().Getenv("BUILD_DATETIME_FILE")+`) "+%d %b %Y %k:%M")" `)
 
 	if String(d.properties.Custom_template) == "" {

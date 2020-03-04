@@ -19,6 +19,11 @@ import (
 	"android/soong/dexpreopt"
 )
 
+type dexpreopterInterface interface {
+	IsInstallable() bool // Structs that embed dexpreopter must implement this.
+	dexpreoptDisabled(ctx android.BaseModuleContext) bool
+}
+
 type dexpreopter struct {
 	dexpreoptProperties DexpreoptProperties
 
@@ -26,7 +31,6 @@ type dexpreopter struct {
 	uncompressedDex     bool
 	isSDKLibrary        bool
 	isTest              bool
-	isInstallable       bool
 	isPresignedPrebuilt bool
 
 	manifestFile     android.Path
@@ -58,8 +62,8 @@ type DexpreoptProperties struct {
 	}
 }
 
-func (d *dexpreopter) dexpreoptDisabled(ctx android.ModuleContext) bool {
-	global := dexpreoptGlobalConfig(ctx)
+func (d *dexpreopter) dexpreoptDisabled(ctx android.BaseModuleContext) bool {
+	global := dexpreopt.GetGlobalConfig(ctx)
 
 	if global.DisablePreopt {
 		return true
@@ -81,7 +85,11 @@ func (d *dexpreopter) dexpreoptDisabled(ctx android.ModuleContext) bool {
 		return true
 	}
 
-	if !d.isInstallable {
+	if !ctx.Module().(dexpreopterInterface).IsInstallable() {
+		return true
+	}
+
+	if ctx.Host() {
 		return true
 	}
 
@@ -95,16 +103,28 @@ func (d *dexpreopter) dexpreoptDisabled(ctx android.ModuleContext) bool {
 	return false
 }
 
+func dexpreoptToolDepsMutator(ctx android.BottomUpMutatorContext) {
+	if d, ok := ctx.Module().(dexpreopterInterface); !ok || d.dexpreoptDisabled(ctx) {
+		return
+	}
+	dexpreopt.RegisterToolDeps(ctx)
+}
+
 func odexOnSystemOther(ctx android.ModuleContext, installPath android.InstallPath) bool {
-	return dexpreopt.OdexOnSystemOtherByName(ctx.ModuleName(), android.InstallPathToOnDevicePath(ctx, installPath), dexpreoptGlobalConfig(ctx))
+	return dexpreopt.OdexOnSystemOtherByName(ctx.ModuleName(), android.InstallPathToOnDevicePath(ctx, installPath), dexpreopt.GetGlobalConfig(ctx))
 }
 
 func (d *dexpreopter) dexpreopt(ctx android.ModuleContext, dexJarFile android.ModuleOutPath) android.ModuleOutPath {
-	if d.dexpreoptDisabled(ctx) {
+	// TODO(b/148690468): The check on d.installPath is to bail out in cases where
+	// the dexpreopter struct hasn't been fully initialized before we're called,
+	// e.g. in aar.go. This keeps the behaviour that dexpreopting is effectively
+	// disabled, even if installable is true.
+	if d.dexpreoptDisabled(ctx) || d.installPath.Base() == "." {
 		return dexJarFile
 	}
 
-	global := dexpreoptGlobalConfig(ctx)
+	globalSoong := dexpreopt.GetGlobalSoongConfig(ctx)
+	global := dexpreopt.GetGlobalConfig(ctx)
 	bootImage := defaultBootImageConfig(ctx)
 	dexFiles := bootImage.dexPathsDeps.Paths()
 	dexLocations := bootImage.dexLocationsDeps
@@ -112,28 +132,28 @@ func (d *dexpreopter) dexpreopt(ctx android.ModuleContext, dexJarFile android.Mo
 		bootImage = artBootImageConfig(ctx)
 	}
 
-	var archs []android.ArchType
-	for _, a := range ctx.MultiTargets() {
-		archs = append(archs, a.Arch.ArchType)
-	}
-	if len(archs) == 0 {
+	targets := ctx.MultiTargets()
+	if len(targets) == 0 {
 		// assume this is a java library, dexpreopt for all arches for now
 		for _, target := range ctx.Config().Targets[android.Android] {
 			if target.NativeBridge == android.NativeBridgeDisabled {
-				archs = append(archs, target.Arch.ArchType)
+				targets = append(targets, target)
 			}
 		}
 		if inList(ctx.ModuleName(), global.SystemServerJars) && !d.isSDKLibrary {
 			// If the module is not an SDK library and it's a system server jar, only preopt the primary arch.
-			archs = archs[:1]
+			targets = targets[:1]
 		}
 	}
 
+	var archs []android.ArchType
 	var images android.Paths
 	var imagesDeps []android.OutputPaths
-	for _, arch := range archs {
-		images = append(images, bootImage.images[arch])
-		imagesDeps = append(imagesDeps, bootImage.imagesDeps[arch])
+	for _, target := range targets {
+		archs = append(archs, target.Arch.ArchType)
+		variant := bootImage.getVariant(target)
+		images = append(images, variant.images)
+		imagesDeps = append(imagesDeps, variant.imagesDeps)
 	}
 
 	dexLocation := android.InstallPathToOnDevicePath(ctx, d.installPath)
@@ -156,7 +176,7 @@ func (d *dexpreopter) dexpreopt(ctx android.ModuleContext, dexJarFile android.Mo
 		}
 	}
 
-	dexpreoptConfig := dexpreopt.ModuleConfig{
+	dexpreoptConfig := &dexpreopt.ModuleConfig{
 		Name:            ctx.ModuleName(),
 		DexLocation:     dexLocation,
 		BuildPath:       android.PathForModuleOut(ctx, "dexpreopt", ctx.ModuleName()+".jar").OutputPath,
@@ -191,7 +211,7 @@ func (d *dexpreopter) dexpreopt(ctx android.ModuleContext, dexJarFile android.Mo
 		PresignedPrebuilt: d.isPresignedPrebuilt,
 	}
 
-	dexpreoptRule, err := dexpreopt.GenerateDexpreoptRule(ctx, global, dexpreoptConfig)
+	dexpreoptRule, err := dexpreopt.GenerateDexpreoptRule(ctx, globalSoong, global, dexpreoptConfig)
 	if err != nil {
 		ctx.ModuleErrorf("error generating dexpreopt rule: %s", err.Error())
 		return dexJarFile
