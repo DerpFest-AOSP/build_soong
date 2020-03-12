@@ -150,6 +150,7 @@ func createDynamicSdkMemberTypes(sdkMemberTypes []android.SdkMemberType) *dynami
 		fields = append(fields, reflect.StructField{
 			Name: proptools.FieldNameForProperty(p),
 			Type: reflect.TypeOf([]string{}),
+			Tag:  `android:"arch_variant"`,
 		})
 
 		// Copy the field index for use in the getter func as using the loop variable directly will
@@ -281,7 +282,9 @@ func (s *sdk) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 		}
 
 		// Generate the snapshot from the member info.
-		s.snapshotFile = android.OptionalPathForPath(s.buildSnapshot(ctx, sdkVariants))
+		p := s.buildSnapshot(ctx, sdkVariants)
+		s.snapshotFile = android.OptionalPathForPath(p)
+		ctx.InstallFile(android.PathForMainlineSdksInstall(ctx), s.Name()+"-current.zip", p)
 	}
 }
 

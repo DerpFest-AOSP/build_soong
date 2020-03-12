@@ -58,6 +58,7 @@ func TestDepNotInRequiredSdks(t *testing.T) {
 			sdk_version: "none",
 			compile_dex: true,
 			host_supported: true,
+			apex_available: ["myapex"],
 		}
 
 		// this lib is no in mysdk
@@ -113,7 +114,7 @@ func TestSnapshotVisibility(t *testing.T) {
 
 		java_defaults {
 			name: "java-defaults",
-			visibility: ["//other/bar"], 
+			visibility: ["//other/bar"],
 		}
 
 		java_library {
@@ -204,4 +205,20 @@ sdk_snapshot {
     ],
 }
 `))
+}
+
+func TestSDkInstall(t *testing.T) {
+	sdk := `
+		sdk {
+			name: "mysdk",
+		}
+	`
+	result := testSdkWithFs(t, ``,
+		map[string][]byte{
+			"Android.bp": []byte(sdk),
+		})
+
+	result.CheckSnapshot("mysdk", "",
+		checkAllOtherCopyRules(`.intermediates/mysdk/common_os/mysdk-current.zip -> mysdk-current.zip`),
+	)
 }

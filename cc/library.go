@@ -379,6 +379,68 @@ type libraryDecorator struct {
 	*baseCompiler
 	*baseLinker
 	*baseInstaller
+
+	collectedSnapshotHeaders android.Paths
+}
+
+// collectHeadersForSnapshot collects all exported headers from library.
+// It globs header files in the source tree for exported include directories,
+// and tracks generated header files separately.
+//
+// This is to be called from GenerateAndroidBuildActions, and then collected
+// header files can be retrieved by snapshotHeaders().
+func (l *libraryDecorator) collectHeadersForSnapshot(ctx android.ModuleContext) {
+	ret := android.Paths{}
+
+	// Headers in the source tree should be globbed. On the contrast, generated headers
+	// can't be globbed, and they should be manually collected.
+	// So, we first filter out intermediate directories (which contains generated headers)
+	// from exported directories, and then glob headers under remaining directories.
+	for _, path := range append(l.exportedDirs(), l.exportedSystemDirs()...) {
+		dir := path.String()
+		// Skip if dir is for generated headers
+		if strings.HasPrefix(dir, android.PathForOutput(ctx).String()) {
+			continue
+		}
+		exts := headerExts
+		// Glob all files under this special directory, because of C++ headers.
+		if strings.HasPrefix(dir, "external/libcxx/include") {
+			exts = []string{""}
+		}
+		for _, ext := range exts {
+			glob, err := ctx.GlobWithDeps(dir+"/**/*"+ext, nil)
+			if err != nil {
+				ctx.ModuleErrorf("glob failed: %#v", err)
+				return
+			}
+			for _, header := range glob {
+				if strings.HasSuffix(header, "/") {
+					continue
+				}
+				ret = append(ret, android.PathForSource(ctx, header))
+			}
+		}
+	}
+
+	// Collect generated headers
+	for _, header := range append(l.exportedGeneratedHeaders(), l.exportedDeps()...) {
+		// TODO(b/148123511): remove exportedDeps after cleaning up genrule
+		if strings.HasSuffix(header.Base(), "-phony") {
+			continue
+		}
+		ret = append(ret, header)
+	}
+
+	l.collectedSnapshotHeaders = ret
+}
+
+// This returns all exported header files, both generated ones and headers from source tree.
+// collectHeadersForSnapshot() must be called before calling this.
+func (l *libraryDecorator) snapshotHeaders() android.Paths {
+	if l.collectedSnapshotHeaders == nil {
+		panic("snapshotHeaders() must be called after collectHeadersForSnapshot()")
+	}
+	return l.collectedSnapshotHeaders
 }
 
 func (library *libraryDecorator) linkerProps() []interface{} {
@@ -1158,6 +1220,12 @@ func (library *libraryDecorator) install(ctx ModuleContext, file android.Path) {
 	}
 }
 
+func (library *libraryDecorator) everInstallable() bool {
+	// Only shared and static libraries are installed. Header libraries (which are
+	// neither static or shared) are not installed.
+	return library.shared() || library.static()
+}
+
 func (library *libraryDecorator) static() bool {
 	return library.MutatedProperties.VariantIsStatic
 }
@@ -1209,6 +1277,11 @@ func (library *libraryDecorator) symbolFileForAbiCheck(ctx ModuleContext) *strin
 
 func (library *libraryDecorator) stubsVersion() string {
 	return library.MutatedProperties.StubsVersion
+}
+
+func (library *libraryDecorator) isLatestStubVersion() bool {
+	versions := library.Properties.Stubs.Versions
+	return versions[len(versions)-1] == library.stubsVersion()
 }
 
 func (library *libraryDecorator) availableFor(what string) bool {
@@ -1382,30 +1455,35 @@ func LatestStubsVersionFor(config android.Config, name string) string {
 	return ""
 }
 
+func checkVersions(ctx android.BaseModuleContext, versions []string) {
+	numVersions := make([]int, len(versions))
+	for i, v := range versions {
+		numVer, err := strconv.Atoi(v)
+		if err != nil {
+			ctx.PropertyErrorf("versions", "%q is not a number", v)
+		}
+		numVersions[i] = numVer
+	}
+	if !sort.IsSorted(sort.IntSlice(numVersions)) {
+		ctx.PropertyErrorf("versions", "not sorted: %v", versions)
+	}
+}
+
 // Version mutator splits a module into the mandatory non-stubs variant
 // (which is unnamed) and zero or more stubs variants.
 func VersionMutator(mctx android.BottomUpMutatorContext) {
 	if library, ok := mctx.Module().(LinkableInterface); ok && !library.InRecovery() {
 		if library.CcLibrary() && library.BuildSharedVariant() && len(library.StubsVersions()) > 0 {
-			versions := []string{}
-			for _, v := range library.StubsVersions() {
-				if _, err := strconv.Atoi(v); err != nil {
-					mctx.PropertyErrorf("versions", "%q is not a number", v)
-				}
-				versions = append(versions, v)
+			versions := library.StubsVersions()
+			checkVersions(mctx, versions)
+			if mctx.Failed() {
+				return
 			}
-			sort.Slice(versions, func(i, j int) bool {
-				left, _ := strconv.Atoi(versions[i])
-				right, _ := strconv.Atoi(versions[j])
-				return left < right
-			})
 
 			// save the list of versions for later use
-			copiedVersions := make([]string, len(versions))
-			copy(copiedVersions, versions)
 			stubsVersionsLock.Lock()
 			defer stubsVersionsLock.Unlock()
-			stubsVersionsFor(mctx.Config())[mctx.ModuleName()] = copiedVersions
+			stubsVersionsFor(mctx.Config())[mctx.ModuleName()] = versions
 
 			// "" is for the non-stubs variant
 			versions = append([]string{""}, versions...)

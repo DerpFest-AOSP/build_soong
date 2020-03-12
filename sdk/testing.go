@@ -40,7 +40,7 @@ func testSdkContext(bp string, fs map[string][]byte) (*android.TestContext, andr
 			name: "myapex.cert",
 			certificate: "myapex",
 		}
-	` + cc.GatherRequiredDepsForTest(android.Android)
+	` + cc.GatherRequiredDepsForTest(android.Android, android.Windows)
 
 	mockFS := map[string][]byte{
 		"build/make/target/product/security":         nil,
@@ -68,6 +68,16 @@ func testSdkContext(bp string, fs map[string][]byte) (*android.TestContext, andr
 	}
 
 	ctx := android.NewTestArchContext()
+
+	// Enable androidmk support.
+	// * Register the singleton
+	// * Configure that we are inside make
+	// * Add CommonOS to ensure that androidmk processing works.
+	android.RegisterAndroidMkBuildComponents(ctx)
+	android.SetInMakeForTests(config)
+	config.Targets[android.CommonOS] = []android.Target{
+		{android.CommonOS, android.Arch{ArchType: android.Common}, android.NativeBridgeDisabled, "", ""},
+	}
 
 	// from android package
 	android.RegisterPackageBuildComponents(ctx)
@@ -188,19 +198,22 @@ func (r *testSdkResult) getSdkSnapshotBuildInfo(sdk *sdk) *snapshotBuildInfo {
 
 	buildParams := sdk.BuildParamsForTests()
 	copyRules := &strings.Builder{}
+	otherCopyRules := &strings.Builder{}
 	snapshotDirPrefix := sdk.builderForTests.snapshotDir.String() + "/"
 	for _, bp := range buildParams {
 		switch bp.Rule.String() {
 		case android.Cp.String():
 			output := bp.Output
-			// Only check copies into the snapshot directory.
+			// Get destination relative to the snapshot root
+			dest := output.Rel()
+			src := android.NormalizePathForTesting(bp.Input)
+			// We differentiate between copy rules for the snapshot, and copy rules for the install file.
 			if strings.HasPrefix(output.String(), snapshotDirPrefix) {
 				// Get source relative to build directory.
-				src := android.NormalizePathForTesting(bp.Input)
-				// Get destination relative to the snapshot root
-				dest := output.Rel()
 				_, _ = fmt.Fprintf(copyRules, "%s -> %s\n", src, dest)
 				info.snapshotContents = append(info.snapshotContents, dest)
+			} else {
+				_, _ = fmt.Fprintf(otherCopyRules, "%s -> %s\n", src, dest)
 			}
 
 		case repackageZip.String():
@@ -234,6 +247,7 @@ func (r *testSdkResult) getSdkSnapshotBuildInfo(sdk *sdk) *snapshotBuildInfo {
 	}
 
 	info.copyRules = copyRules.String()
+	info.otherCopyRules = otherCopyRules.String()
 
 	return info
 }
@@ -309,6 +323,13 @@ func checkAllCopyRules(expected string) snapshotBuildInfoChecker {
 	}
 }
 
+func checkAllOtherCopyRules(expected string) snapshotBuildInfoChecker {
+	return func(info *snapshotBuildInfo) {
+		info.r.t.Helper()
+		info.r.AssertTrimmedStringEquals("Incorrect copy rules", expected, info.otherCopyRules)
+	}
+}
+
 // Check that the specified path is in the list of zips to merge with the intermediate zip.
 func checkMergeZip(expected string) snapshotBuildInfoChecker {
 	return func(info *snapshotBuildInfo) {
@@ -335,9 +356,13 @@ type snapshotBuildInfo struct {
 	// snapshot.
 	snapshotContents []string
 
-	// A formatted representation of the src/dest pairs, one pair per line, of the format
-	// src -> dest
+	// A formatted representation of the src/dest pairs for a snapshot, one pair per line,
+	// of the format src -> dest
 	copyRules string
+
+	// A formatted representation of the src/dest pairs for files not in a snapshot, one pair
+	// per line, of the format src -> dest
+	otherCopyRules string
 
 	// The path to the intermediate zip, which is a zip created from the source files copied
 	// into the snapshot directory and which will be merged with other zips to form the final output.

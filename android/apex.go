@@ -15,7 +15,9 @@
 package android
 
 import (
+	"fmt"
 	"sort"
+	"strconv"
 	"sync"
 )
 
@@ -25,6 +27,8 @@ type ApexInfo struct {
 
 	// Whether this apex variant needs to target Android 10
 	LegacyAndroid10Support bool
+
+	MinSdkVersion int
 }
 
 // ApexModule is the interface that a module type is expected to implement if
@@ -86,6 +90,13 @@ type ApexModule interface {
 	// DepIsInSameApex tests if the other module 'dep' is installed to the same
 	// APEX as this module
 	DepIsInSameApex(ctx BaseModuleContext, dep Module) bool
+
+	// Returns the highest version which is <= min_sdk_version.
+	// For example, with min_sdk_version is 10 and versionList is [9,11]
+	// it returns 9.
+	ChooseSdkVersion(versionList []string, useLatest bool) (string, error)
+
+	ShouldSupportAndroid10() bool
 }
 
 type ApexProperties struct {
@@ -114,6 +125,10 @@ type ApexModuleBase struct {
 
 func (m *ApexModuleBase) apexModuleBase() *ApexModuleBase {
 	return m
+}
+
+func (m *ApexModuleBase) ApexAvailable() []string {
+	return m.ApexProperties.Apex_available
 }
 
 func (m *ApexModuleBase) BuildForApexes(apexes []ApexInfo) {
@@ -153,7 +168,7 @@ func (m *ApexModuleBase) IsInstallableToApex() bool {
 
 const (
 	AvailableToPlatform = "//apex_available:platform"
-	availableToAnyApex  = "//apex_available:anyapex"
+	AvailableToAnyApex  = "//apex_available:anyapex"
 )
 
 func CheckAvailableForApex(what string, apex_available []string) bool {
@@ -163,7 +178,7 @@ func CheckAvailableForApex(what string, apex_available []string) bool {
 		return what == AvailableToPlatform
 	}
 	return InList(what, apex_available) ||
-		(what != AvailableToPlatform && InList(availableToAnyApex, apex_available))
+		(what != AvailableToPlatform && InList(AvailableToAnyApex, apex_available))
 }
 
 func (m *ApexModuleBase) AvailableFor(what string) bool {
@@ -177,9 +192,27 @@ func (m *ApexModuleBase) DepIsInSameApex(ctx BaseModuleContext, dep Module) bool
 	return true
 }
 
+func (m *ApexModuleBase) ChooseSdkVersion(versionList []string, useLatest bool) (string, error) {
+	if useLatest {
+		return versionList[len(versionList)-1], nil
+	}
+	minSdkVersion := m.ApexProperties.Info.MinSdkVersion
+	for i := range versionList {
+		ver, _ := strconv.Atoi(versionList[len(versionList)-i-1])
+		if ver <= minSdkVersion {
+			return versionList[len(versionList)-i-1], nil
+		}
+	}
+	return "", fmt.Errorf("min_sdk_version is set %v, but not found in %v", minSdkVersion, versionList)
+}
+
+func (m *ApexModuleBase) ShouldSupportAndroid10() bool {
+	return !m.IsForPlatform() && (m.ApexProperties.Info.MinSdkVersion <= 29 || m.ApexProperties.Info.LegacyAndroid10Support)
+}
+
 func (m *ApexModuleBase) checkApexAvailableProperty(mctx BaseModuleContext) {
 	for _, n := range m.ApexProperties.Apex_available {
-		if n == AvailableToPlatform || n == availableToAnyApex {
+		if n == AvailableToPlatform || n == AvailableToAnyApex {
 			continue
 		}
 		if !mctx.OtherModuleExists(n) && !mctx.Config().AllowMissingDependencies() {

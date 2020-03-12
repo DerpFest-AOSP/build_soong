@@ -25,11 +25,13 @@ func testSdkWithCc(t *testing.T, bp string) *testSdkResult {
 	t.Helper()
 
 	fs := map[string][]byte{
-		"Test.cpp":                  nil,
-		"include/Test.h":            nil,
-		"arm64/include/Arm64Test.h": nil,
-		"libfoo.so":                 nil,
-		"aidl/foo/bar/Test.aidl":    nil,
+		"Test.cpp":                      nil,
+		"include/Test.h":                nil,
+		"include-android/AndroidTest.h": nil,
+		"include-host/HostTest.h":       nil,
+		"arm64/include/Arm64Test.h":     nil,
+		"libfoo.so":                     nil,
+		"aidl/foo/bar/Test.aidl":        nil,
 	}
 	return testSdkWithFs(t, bp, fs)
 }
@@ -295,6 +297,7 @@ func TestSnapshotWithCcSharedLibraryCommonProperties(t *testing.T) {
 cc_prebuilt_library_shared {
     name: "mysdk_mynativelib@current",
     sdk_member_name: "mynativelib",
+    installable: false,
     export_include_dirs: ["include/include"],
     arch: {
         arm64: {
@@ -364,6 +367,7 @@ func TestSnapshotWithCcBinary(t *testing.T) {
 cc_prebuilt_binary {
     name: "mymodule_exports_mynativebinary@current",
     sdk_member_name: "mynativebinary",
+    installable: false,
     compile_multilib: "both",
     arch: {
         arm64: {
@@ -401,6 +405,109 @@ module_exports_snapshot {
 	)
 }
 
+func TestMultipleHostOsTypesSnapshotWithCcBinary(t *testing.T) {
+	// b/145598135 - Generating host snapshots for anything other than linux is not supported.
+	SkipIfNotLinux(t)
+
+	result := testSdkWithCc(t, `
+		module_exports {
+			name: "myexports",
+			device_supported: false,
+			host_supported: true,
+			native_binaries: ["mynativebinary"],
+			target: {
+				windows: {
+					enabled: true,
+				},
+			},
+		}
+
+		cc_binary {
+			name: "mynativebinary",
+			device_supported: false,
+			host_supported: true,
+			srcs: [
+				"Test.cpp",
+			],
+			compile_multilib: "both",
+			system_shared_libs: [],
+			stl: "none",
+			target: {
+				windows: {
+					enabled: true,
+				},
+			},
+		}
+	`)
+
+	result.CheckSnapshot("myexports", "",
+		checkAndroidBpContents(`
+// This is auto-generated. DO NOT EDIT.
+
+cc_prebuilt_binary {
+    name: "myexports_mynativebinary@current",
+    sdk_member_name: "mynativebinary",
+    device_supported: false,
+    host_supported: true,
+    installable: false,
+    target: {
+        linux_glibc: {
+            compile_multilib: "both",
+        },
+        linux_glibc_x86_64: {
+            srcs: ["linux_glibc/x86_64/bin/mynativebinary"],
+        },
+        linux_glibc_x86: {
+            srcs: ["linux_glibc/x86/bin/mynativebinary"],
+        },
+        windows: {
+            compile_multilib: "64",
+        },
+        windows_x86_64: {
+            srcs: ["windows/x86_64/bin/mynativebinary.exe"],
+        },
+    },
+}
+
+cc_prebuilt_binary {
+    name: "mynativebinary",
+    prefer: false,
+    device_supported: false,
+    host_supported: true,
+    target: {
+        linux_glibc: {
+            compile_multilib: "both",
+        },
+        linux_glibc_x86_64: {
+            srcs: ["linux_glibc/x86_64/bin/mynativebinary"],
+        },
+        linux_glibc_x86: {
+            srcs: ["linux_glibc/x86/bin/mynativebinary"],
+        },
+        windows: {
+            compile_multilib: "64",
+        },
+        windows_x86_64: {
+            srcs: ["windows/x86_64/bin/mynativebinary.exe"],
+        },
+    },
+}
+
+module_exports_snapshot {
+    name: "myexports@current",
+    device_supported: false,
+    host_supported: true,
+    native_binaries: ["myexports_mynativebinary@current"],
+}
+`),
+		checkAllCopyRules(`
+.intermediates/mynativebinary/linux_glibc_x86_64/mynativebinary -> linux_glibc/x86_64/bin/mynativebinary
+.intermediates/mynativebinary/linux_glibc_x86/mynativebinary -> linux_glibc/x86/bin/mynativebinary
+.intermediates/mynativebinary/windows_x86_64/mynativebinary.exe -> windows/x86_64/bin/mynativebinary.exe
+`),
+	)
+}
+
 func TestSnapshotWithCcSharedLibrary(t *testing.T) {
 	result := testSdkWithCc(t, `
 		sdk {
@@ -414,6 +521,7 @@ func TestSnapshotWithCcSharedLibrary(t *testing.T) {
 				"Test.cpp",
 				"aidl/foo/bar/Test.aidl",
 			],
+			apex_available: ["apex1", "apex2"],
 			export_include_dirs: ["include"],
 			aidl: {
 				export_aidl_headers: true,
@@ -430,6 +538,11 @@ func TestSnapshotWithCcSharedLibrary(t *testing.T) {
 cc_prebuilt_library_shared {
     name: "mysdk_mynativelib@current",
     sdk_member_name: "mynativelib",
+    apex_available: [
+        "apex1",
+        "apex2",
+    ],
+    installable: false,
     export_include_dirs: ["include/include"],
     arch: {
         arm64: {
@@ -448,6 +561,10 @@ cc_prebuilt_library_shared {
 cc_prebuilt_library_shared {
     name: "mynativelib",
     prefer: false,
+    apex_available: [
+        "apex1",
+        "apex2",
+    ],
     export_include_dirs: ["include/include"],
     arch: {
         arm64: {
@@ -508,6 +625,7 @@ func TestHostSnapshotWithCcSharedLibrary(t *testing.T) {
 			},
 			system_shared_libs: [],
 			stl: "none",
+			sdk_version: "minimum",
 		}
 	`)
 
@@ -520,6 +638,8 @@ cc_prebuilt_library_shared {
     sdk_member_name: "mynativelib",
     device_supported: false,
     host_supported: true,
+    installable: false,
+    sdk_version: "minimum",
     export_include_dirs: ["include/include"],
     arch: {
         x86_64: {
@@ -540,6 +660,7 @@ cc_prebuilt_library_shared {
     prefer: false,
     device_supported: false,
     host_supported: true,
+    sdk_version: "minimum",
     export_include_dirs: ["include/include"],
     arch: {
         x86_64: {
@@ -576,6 +697,100 @@ include/Test.h -> include/include/Test.h
 	)
 }
 
+func TestMultipleHostOsTypesSnapshotWithCcSharedLibrary(t *testing.T) {
+	// b/145598135 - Generating host snapshots for anything other than linux is not supported.
+	SkipIfNotLinux(t)
+
+	result := testSdkWithCc(t, `
+		sdk {
+			name: "mysdk",
+			device_supported: false,
+			host_supported: true,
+			native_shared_libs: ["mynativelib"],
+			target: {
+				windows: {
+					enabled: true,
+				},
+			},
+		}
+
+		cc_library_shared {
+			name: "mynativelib",
+			device_supported: false,
+			host_supported: true,
+			srcs: [
+				"Test.cpp",
+			],
+			system_shared_libs: [],
+			stl: "none",
+			target: {
+				windows: {
+					enabled: true,
+				},
+			},
+		}
+	`)
+
+	result.CheckSnapshot("mysdk", "",
+		checkAndroidBpContents(`
+// This is auto-generated. DO NOT EDIT.
+
+cc_prebuilt_library_shared {
+    name: "mysdk_mynativelib@current",
+    sdk_member_name: "mynativelib",
+    device_supported: false,
+    host_supported: true,
+    installable: false,
+    target: {
+        linux_glibc_x86_64: {
+            srcs: ["linux_glibc/x86_64/lib/mynativelib.so"],
+        },
+        linux_glibc_x86: {
+            srcs: ["linux_glibc/x86/lib/mynativelib.so"],
+        },
+        windows_x86_64: {
+            srcs: ["windows/x86_64/lib/mynativelib.dll"],
+        },
+    },
+    stl: "none",
+    system_shared_libs: [],
+}
+
+cc_prebuilt_library_shared {
+    name: "mynativelib",
+    prefer: false,
+    device_supported: false,
+    host_supported: true,
+    target: {
+        linux_glibc_x86_64: {
+            srcs: ["linux_glibc/x86_64/lib/mynativelib.so"],
+        },
+        linux_glibc_x86: {
+            srcs: ["linux_glibc/x86/lib/mynativelib.so"],
+        },
+        windows_x86_64: {
+            srcs: ["windows/x86_64/lib/mynativelib.dll"],
+        },
+    },
+    stl: "none",
+    system_shared_libs: [],
+}
+
+sdk_snapshot {
+    name: "mysdk@current",
+    device_supported: false,
+    host_supported: true,
+    native_shared_libs: ["mysdk_mynativelib@current"],
+}
+`),
+		checkAllCopyRules(`
+.intermediates/mynativelib/linux_glibc_x86_64_shared/mynativelib.so -> linux_glibc/x86_64/lib/mynativelib.so
+.intermediates/mynativelib/linux_glibc_x86_shared/mynativelib.so -> linux_glibc/x86/lib/mynativelib.so
+.intermediates/mynativelib/windows_x86_64_shared/mynativelib.dll -> windows/x86_64/lib/mynativelib.dll
+`),
+	)
+}
+
 func TestSnapshotWithCcStaticLibrary(t *testing.T) {
 	result := testSdkWithCc(t, `
 		module_exports {
@@ -605,6 +820,7 @@ func TestSnapshotWithCcStaticLibrary(t *testing.T) {
 cc_prebuilt_library_static {
     name: "myexports_mynativelib@current",
     sdk_member_name: "mynativelib",
+    installable: false,
     export_include_dirs: ["include/include"],
     arch: {
         arm64: {
@@ -695,6 +911,7 @@ cc_prebuilt_library_static {
     sdk_member_name: "mynativelib",
     device_supported: false,
     host_supported: true,
+    installable: false,
     export_include_dirs: ["include/include"],
     arch: {
         x86_64: {
@@ -794,6 +1011,7 @@ cc_prebuilt_library_static {
     sdk_member_name: "mynativelib",
     device_supported: false,
     host_supported: true,
+    installable: false,
     export_include_dirs: ["include/include"],
     arch: {
         x86_64: {
@@ -943,6 +1161,86 @@ sdk_snapshot {
 `),
 		checkAllCopyRules(`
 include/Test.h -> include/include/Test.h
+`),
+	)
+}
+
+func TestDeviceAndHostSnapshotWithCcHeadersLibrary(t *testing.T) {
+	// b/145598135 - Generating host snapshots for anything other than linux is not supported.
+	SkipIfNotLinux(t)
+
+	result := testSdkWithCc(t, `
+		sdk {
+			name: "mysdk",
+			host_supported: true,
+			native_header_libs: ["mynativeheaders"],
+		}
+
+		cc_library_headers {
+			name: "mynativeheaders",
+			host_supported: true,
+			system_shared_libs: [],
+			stl: "none",
+			export_system_include_dirs: ["include"],
+			target: {
+				android: {
+					export_include_dirs: ["include-android"],
+				},
+				host: {
+					export_include_dirs: ["include-host"],
+				},
+			},
+		}
+	`)
+
+	result.CheckSnapshot("mysdk", "",
+		checkAndroidBpContents(`
+// This is auto-generated. DO NOT EDIT.
+
+cc_prebuilt_library_headers {
+    name: "mysdk_mynativeheaders@current",
+    sdk_member_name: "mynativeheaders",
+    host_supported: true,
+    export_system_include_dirs: ["include/include"],
+    target: {
+        android: {
+            export_include_dirs: ["include/include-android"],
+        },
+        linux_glibc: {
+            export_include_dirs: ["include/include-host"],
+        },
+    },
+    stl: "none",
+    system_shared_libs: [],
+}
+
+cc_prebuilt_library_headers {
+    name: "mynativeheaders",
+    prefer: false,
+    host_supported: true,
+    export_system_include_dirs: ["include/include"],
+    target: {
+        android: {
+            export_include_dirs: ["include/include-android"],
+        },
+        linux_glibc: {
+            export_include_dirs: ["include/include-host"],
+        },
+    },
+    stl: "none",
+    system_shared_libs: [],
+}
+
+sdk_snapshot {
+    name: "mysdk@current",
+    host_supported: true,
+    native_header_libs: ["mysdk_mynativeheaders@current"],
+}
+`),
+		checkAllCopyRules(`
+include/Test.h -> include/include/Test.h
+include-android/AndroidTest.h -> include/include-android/AndroidTest.h
+include-host/HostTest.h -> include/include-host/HostTest.h
 `),
 	)
 }

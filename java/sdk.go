@@ -50,9 +50,8 @@ type sdkContext interface {
 	targetSdkVersion() sdkSpec
 }
 
-func UseApiFingerprint(ctx android.BaseModuleContext, v string) bool {
-	if v == ctx.Config().PlatformSdkCodename() &&
-		ctx.Config().UnbundledBuild() &&
+func UseApiFingerprint(ctx android.BaseModuleContext) bool {
+	if ctx.Config().UnbundledBuild() &&
 		!ctx.Config().UnbundledBuildUsePrebuiltSdks() &&
 		ctx.Config().IsEnvTrue("UNBUNDLED_BUILD_TARGET_SDK_WITH_API_FINGERPRINT") {
 		return true
@@ -283,6 +282,28 @@ func sdkSpecFrom(str string) sdkSpec {
 	}
 }
 
+func (s sdkSpec) validateSystemSdk(ctx android.EarlyModuleContext) bool {
+	// Ensures that the specified system SDK version is one of BOARD_SYSTEMSDK_VERSIONS (for vendor/product Java module)
+	// Assuming that BOARD_SYSTEMSDK_VERSIONS := 28 29,
+	// sdk_version of the modules in vendor/product that use system sdk must be either system_28, system_29 or system_current
+	if s.kind != sdkSystem || !s.version.isNumbered() {
+		return true
+	}
+	allowedVersions := ctx.DeviceConfig().PlatformSystemSdkVersions()
+	if ctx.DeviceSpecific() || ctx.SocSpecific() || (ctx.ProductSpecific() && ctx.Config().EnforceProductPartitionInterface()) {
+		systemSdkVersions := ctx.DeviceConfig().SystemSdkVersions()
+		if len(systemSdkVersions) > 0 {
+			allowedVersions = systemSdkVersions
+		}
+	}
+	if len(allowedVersions) > 0 && !android.InList(s.version.String(), allowedVersions) {
+		ctx.PropertyErrorf("sdk_version", "incompatible sdk version %q. System SDK version should be one of %q",
+			s.raw, allowedVersions)
+		return false
+	}
+	return true
+}
+
 func decodeSdkDep(ctx android.EarlyModuleContext, sdkContext sdkContext) sdkDep {
 	sdkVersion := sdkContext.sdkVersion()
 	if !sdkVersion.valid() {
@@ -292,6 +313,9 @@ func decodeSdkDep(ctx android.EarlyModuleContext, sdkContext sdkContext) sdkDep 
 
 	if ctx.Config().IsPdkBuild() {
 		sdkVersion = sdkVersion.forPdkBuild(ctx)
+	}
+	if !sdkVersion.validateSystemSdk(ctx) {
+		return sdkDep{}
 	}
 
 	if sdkVersion.usePrebuilt(ctx) {
@@ -337,21 +361,6 @@ func decodeSdkDep(ctx android.EarlyModuleContext, sdkContext sdkContext) sdkDep 
 			java9Classpath:     modules,
 			frameworkResModule: res,
 			aidl:               android.OptionalPathForPath(aidl),
-		}
-	}
-
-	// Ensures that the specificed system SDK version is one of BOARD_SYSTEMSDK_VERSIONS (for vendor apks)
-	// or PRODUCT_SYSTEMSDK_VERSIONS (for other apks or when BOARD_SYSTEMSDK_VERSIONS is not set)
-	if sdkVersion.kind == sdkSystem && sdkVersion.version.isNumbered() {
-		allowed_versions := ctx.DeviceConfig().PlatformSystemSdkVersions()
-		if ctx.DeviceSpecific() || ctx.SocSpecific() {
-			if len(ctx.DeviceConfig().SystemSdkVersions()) > 0 {
-				allowed_versions = ctx.DeviceConfig().SystemSdkVersions()
-			}
-		}
-		if len(allowed_versions) > 0 && !android.InList(sdkVersion.version.String(), allowed_versions) {
-			ctx.PropertyErrorf("sdk_version", "incompatible sdk version %q. System SDK version should be one of %q",
-				sdkVersion.raw, allowed_versions)
 		}
 	}
 

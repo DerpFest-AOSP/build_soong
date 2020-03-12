@@ -250,6 +250,8 @@ type BaseProperties struct {
 	// Used by vendor snapshot to record dependencies from snapshot modules.
 	SnapshotSharedLibs  []string `blueprint:"mutated"`
 	SnapshotRuntimeLibs []string `blueprint:"mutated"`
+
+	Installable *bool
 }
 
 type VendorProperties struct {
@@ -371,6 +373,7 @@ type linker interface {
 type installer interface {
 	installerProps() []interface{}
 	install(ctx ModuleContext, path android.Path)
+	everInstallable() bool
 	inData() bool
 	inSanitizerDir() bool
 	hostToolPath() android.OptionalPath
@@ -629,6 +632,15 @@ func (c *Module) SetStubsVersions(version string) {
 		}
 	}
 	panic(fmt.Errorf("SetStubsVersions called on non-library module: %q", c.BaseModuleName()))
+}
+
+func (c *Module) StubsVersion() string {
+	if c.linker != nil {
+		if library, ok := c.linker.(*libraryDecorator); ok {
+			return library.MutatedProperties.StubsVersion
+		}
+	}
+	panic(fmt.Errorf("StubsVersion called on non-library module: %q", c.BaseModuleName()))
 }
 
 func (c *Module) SetStatic() {
@@ -1465,6 +1477,13 @@ func (c *Module) GenerateAndroidBuildActions(actx android.ModuleContext) {
 			c.Properties.HideFromMake = false // unhide
 			// Note: this is still non-installable
 		}
+
+		// glob exported headers for snapshot, if BOARD_VNDK_VERSION is current.
+		if i, ok := c.linker.(snapshotLibraryInterface); ok && ctx.DeviceConfig().VndkVersion() == "current" {
+			if isSnapshotAware(ctx, c) {
+				i.collectHeadersForSnapshot(ctx)
+			}
+		}
 	}
 
 	if c.installable() {
@@ -1472,6 +1491,13 @@ func (c *Module) GenerateAndroidBuildActions(actx android.ModuleContext) {
 		if ctx.Failed() {
 			return
 		}
+	} else if !proptools.BoolDefault(c.Properties.Installable, true) {
+		// If the module has been specifically configure to not be installed then
+		// skip the installation as otherwise it will break when running inside make
+		// as the output path to install will not be specified. Not all uninstallable
+		// modules can skip installation as some are needed for resolving make side
+		// dependencies.
+		c.SkipInstall()
 	}
 }
 
@@ -1814,16 +1840,17 @@ func (c *Module) DepsMutator(actx android.BottomUpMutatorContext) {
 		}
 		actx.AddVariationDependencies(variations, depTag, name)
 
-		// If the version is not specified, add dependency to the latest stubs library.
+		// If the version is not specified, add dependency to all stubs libraries.
 		// The stubs library will be used when the depending module is built for APEX and
 		// the dependent module is not in the same APEX.
-		latestVersion := LatestStubsVersionFor(actx.Config(), name)
-		if version == "" && latestVersion != "" && versionVariantAvail {
-			actx.AddVariationDependencies([]blueprint.Variation{
-				{Mutator: "link", Variation: "shared"},
-				{Mutator: "version", Variation: latestVersion},
-			}, depTag, name)
-			// Note that depTag.ExplicitlyVersioned is false in this case.
+		if version == "" && versionVariantAvail {
+			for _, ver := range stubsVersionsFor(actx.Config())[name] {
+				// Note that depTag.ExplicitlyVersioned is false in this case.
+				actx.AddVariationDependencies([]blueprint.Variation{
+					{Mutator: "link", Variation: "shared"},
+					{Mutator: "version", Variation: ver},
+				}, depTag, name)
+			}
 		}
 	}
 
@@ -2171,7 +2198,8 @@ func (c *Module) depsToPaths(ctx android.ModuleContext) PathDeps {
 		}
 
 		if depTag == staticUnwinderDepTag {
-			if c.ApexProperties.Info.LegacyAndroid10Support {
+			// Use static unwinder for legacy (min_sdk_version = 29) apexes  (b/144430859)
+			if c.ShouldSupportAndroid10() {
 				depTag = StaticDepTag
 			} else {
 				return
@@ -2221,6 +2249,19 @@ func (c *Module) depsToPaths(ctx android.ModuleContext) PathDeps {
 					// If building for APEX, use stubs only when it is not from
 					// the same APEX
 					useThisDep = (depInSameApex != depIsStubs)
+				}
+
+				// when to use (unspecified) stubs, check min_sdk_version and choose the right one
+				if useThisDep && depIsStubs && !explicitlyVersioned {
+					useLatest := c.IsForPlatform() || (c.ShouldSupportAndroid10() && !ctx.Config().UnbundledBuild())
+					versionToUse, err := c.ChooseSdkVersion(ccDep.StubsVersions(), useLatest)
+					if err != nil {
+						ctx.OtherModuleErrorf(dep, err.Error())
+						return
+					}
+					if versionToUse != ccDep.StubsVersion() {
+						useThisDep = false
+					}
 				}
 
 				if !useThisDep {
@@ -2598,8 +2639,18 @@ func (c *Module) AvailableFor(what string) bool {
 	}
 }
 
+// Return true if the module is ever installable.
+func (c *Module) EverInstallable() bool {
+	return c.installer != nil &&
+		// Check to see whether the module is actually ever installable.
+		c.installer.everInstallable()
+}
+
 func (c *Module) installable() bool {
-	ret := c.installer != nil && !c.Properties.PreventInstall && c.outputFile.Valid()
+	ret := c.EverInstallable() &&
+		// Check to see whether the module has been configured to not be installed.
+		proptools.BoolDefault(c.Properties.Installable, true) &&
+		!c.Properties.PreventInstall && c.outputFile.Valid()
 
 	// The platform variant doesn't need further condition. Apex variants however might not
 	// be installable because it will likely to be included in the APEX and won't appear
@@ -2740,19 +2791,18 @@ func (m *Module) ImageMutatorBegin(mctx android.BaseModuleContext) {
 
 	if vndkdep := m.vndkdep; vndkdep != nil {
 		if vndkdep.isVndk() {
-			if productSpecific {
-				mctx.PropertyErrorf("product_specific",
-					"product_specific must not be true when `vndk: {enabled: true}`")
-			}
-			if vendorSpecific {
+			if vendorSpecific || productSpecific {
 				if !vndkdep.isVndkExt() {
 					mctx.PropertyErrorf("vndk",
 						"must set `extends: \"...\"` to vndk extension")
+				} else if m.VendorProperties.Vendor_available != nil {
+					mctx.PropertyErrorf("vendor_available",
+						"must not set at the same time as `vndk: {extends: \"...\"}`")
 				}
 			} else {
 				if vndkdep.isVndkExt() {
 					mctx.PropertyErrorf("vndk",
-						"must set `vendor: true` to set `extends: %q`",
+						"must set `vendor: true` or `product_specific: true` to set `extends: %q`",
 						m.getVndkExtendsModuleName())
 				}
 				if m.VendorProperties.Vendor_available == nil {
@@ -2825,7 +2875,7 @@ func (m *Module) ImageMutatorBegin(mctx android.BaseModuleContext) {
 		} else {
 			mctx.ModuleErrorf("version is unknown for snapshot prebuilt")
 		}
-	} else if m.HasVendorVariant() && !vendorSpecific {
+	} else if m.HasVendorVariant() && !m.isVndkExt() {
 		// This will be available in /system, /vendor and /product
 		// or a /system directory that is available to vendor and product.
 		coreVariantNeeded = true

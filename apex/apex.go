@@ -19,6 +19,7 @@ import (
 	"path"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -62,7 +63,25 @@ var (
 	usesTag        = dependencyTag{name: "uses"}
 	androidAppTag  = dependencyTag{name: "androidApp", payload: true}
 	apexAvailWl    = makeApexAvailableWhitelist()
+
+	inverseApexAvailWl = invertApexWhiteList(apexAvailWl)
 )
+
+// Transform the map of apex -> modules to module -> apexes.
+func invertApexWhiteList(m map[string][]string) map[string][]string {
+	r := make(map[string][]string)
+	for apex, modules := range m {
+		for _, module := range modules {
+			r[module] = append(r[module], apex)
+		}
+	}
+	return r
+}
+
+// Retrieve the while list of apexes to which the supplied module belongs.
+func WhitelistedApexAvailable(moduleName string) []string {
+	return inverseApexAvailWl[normalizeModuleName(moduleName)]
+}
 
 // This is a map from apex to modules, which overrides the
 // apex_available setting for that particular module to make
@@ -114,14 +133,7 @@ func makeApexAvailableWhitelist() map[string][]string {
 	//
 	// Module separator
 	//
-	m["com.android.appsearch"] = []string{
-		"icing-java-proto-lite",
-		"libprotobuf-java-lite",
-	}
-	//
-	// Module separator
-	//
-	m["com.android.art"] = []string{
+	artApexContents := []string{
 		"art_cmdlineparser_headers",
 		"art_disassembler_headers",
 		"art_libartbase_headers",
@@ -196,6 +208,8 @@ func makeApexAvailableWhitelist() map[string][]string {
 		"libziparchive",
 		"perfetto_trace_protos",
 	}
+	m["com.android.art.debug"] = artApexContents
+	m["com.android.art.release"] = artApexContents
 	//
 	// Module separator
 	//
@@ -220,8 +234,11 @@ func makeApexAvailableWhitelist() map[string][]string {
 		"bluetooth-protos-lite",
 		"bluetooth.mapsapi",
 		"com.android.vcard",
+		"dnsresolver_aidl_interface-V2-java",
 		"fmtlib",
 		"guava",
+		"ipmemorystore-aidl-interfaces-V5-java",
+		"ipmemorystore-aidl-interfaces-java",
 		"internal_include_headers",
 		"lib-bt-packets",
 		"lib-bt-packets-avrcp",
@@ -287,6 +304,12 @@ func makeApexAvailableWhitelist() map[string][]string {
 		"libutils_headers",
 		"libz",
 		"media_plugin_headers",
+		"net-utils-services-common",
+		"netd_aidl_interface-unstable-java",
+		"netd_event_listener_interface-java",
+		"netlink-client",
+		"networkstack-aidl-interfaces-unstable-java",
+		"networkstack-client",
 		"sap-api-java-static",
 		"services.net",
 	}
@@ -304,6 +327,7 @@ func makeApexAvailableWhitelist() map[string][]string {
 		"libcrypto",
 		"libnativehelper_header_only",
 		"libssl",
+		"unsupportedappusage",
 	}
 	//
 	// Module separator
@@ -327,6 +351,7 @@ func makeApexAvailableWhitelist() map[string][]string {
 		"cronet_impl_platform_java",
 		"libcronet.80.0.3986.0",
 		"org.chromium.net.cronet",
+		"org.chromium.net.cronet.xml",
 		"prebuilt_libcronet.80.0.3986.0",
 	}
 	//
@@ -565,6 +590,7 @@ func makeApexAvailableWhitelist() map[string][]string {
 		"libFLAC-config",
 		"libFLAC-headers",
 		"libFraunhoferAAC",
+		"libLibGuiProperties",
 		"libarect",
 		"libasync_safe",
 		"libaudio_system_headers",
@@ -580,6 +606,7 @@ func makeApexAvailableWhitelist() map[string][]string {
 		"libbase",
 		"libbase_headers",
 		"libbinder_headers",
+		"libbinderthreadstateutils",
 		"libbluetooth-types-header",
 		"libbufferhub_headers",
 		"libc++",
@@ -782,6 +809,7 @@ func makeApexAvailableWhitelist() map[string][]string {
 		"libdexfile_external_headers",
 		"libdexfile_support",
 		"libdexfile_support_static",
+		"libdl_static",
 		"libgtest_prod",
 		"libjemalloc5",
 		"liblinker_main",
@@ -873,6 +901,7 @@ func makeApexAvailableWhitelist() map[string][]string {
 	m["com.android.wifi"] = []string{
 		"PlatformProperties",
 		"android.hardware.wifi-V1.0-java",
+		"android.hardware.wifi-V1.0-java-constants",
 		"android.hardware.wifi-V1.1-java",
 		"android.hardware.wifi-V1.2-java",
 		"android.hardware.wifi-V1.3-java",
@@ -893,6 +922,8 @@ func makeApexAvailableWhitelist() map[string][]string {
 		"bouncycastle-unbundled",
 		"dnsresolver_aidl_interface-V2-java",
 		"error_prone_annotations",
+		"framework-wifi-pre-jarjar",
+		"framework-wifi-util-lib",
 		"ipmemorystore-aidl-interfaces-V3-java",
 		"ipmemorystore-aidl-interfaces-java",
 		"ksoap2",
@@ -951,7 +982,7 @@ func makeApexAvailableWhitelist() map[string][]string {
 	//
 	// Module separator
 	//
-	m["//any"] = []string{
+	m[android.AvailableToAnyApex] = []string{
 		"crtbegin_dynamic",
 		"crtbegin_dynamic1",
 		"crtbegin_so",
@@ -1028,7 +1059,12 @@ func apexDepsMutator(mctx android.TopDownMutatorContext) {
 	var apexBundles []android.ApexInfo
 	var directDep bool
 	if a, ok := mctx.Module().(*apexBundle); ok && !a.vndkApex {
-		apexBundles = []android.ApexInfo{{mctx.ModuleName(), proptools.Bool(a.properties.Legacy_android10_support)}}
+		minSdkVersion := a.minSdkVersion(mctx)
+		apexBundles = []android.ApexInfo{android.ApexInfo{
+			ApexName:               mctx.ModuleName(),
+			LegacyAndroid10Support: proptools.Bool(a.properties.Legacy_android10_support),
+			MinSdkVersion:          minSdkVersion,
+		}}
 		directDep = true
 	} else if am, ok := mctx.Module().(android.ApexModule); ok {
 		apexBundles = am.ApexVariations()
@@ -1039,10 +1075,14 @@ func apexDepsMutator(mctx android.TopDownMutatorContext) {
 		return
 	}
 
+	cur := mctx.Module().(interface {
+		DepIsInSameApex(android.BaseModuleContext, android.Module) bool
+	})
+
 	mctx.VisitDirectDeps(func(child android.Module) {
 		depName := mctx.OtherModuleName(child)
 		if am, ok := child.(android.ApexModule); ok && am.CanHaveApexVariants() &&
-			(directDep || am.DepIsInSameApex(mctx, child)) {
+			cur.DepIsInSameApex(mctx, child) {
 			android.UpdateApexDependency(apexBundles, depName, directDep)
 			am.BuildForApexes(apexBundles)
 		}
@@ -1816,10 +1856,10 @@ func apexFileForNativeLibrary(ctx android.BaseModuleContext, ccMod *cc.Module, h
 	case "lib64":
 		dirInApex = "lib64"
 	}
-	dirInApex = filepath.Join(dirInApex, ccMod.RelativeInstallPath())
 	if ccMod.Target().NativeBridge == android.NativeBridgeEnabled {
 		dirInApex = filepath.Join(dirInApex, ccMod.Target().NativeBridgeRelativePath)
 	}
+	dirInApex = filepath.Join(dirInApex, ccMod.RelativeInstallPath())
 	if handleSpecialLibs && cc.InstallToBootstrap(ccMod.BaseModuleName(), ctx.Config()) {
 		// Special case for Bionic libs and other libs installed with them. This is
 		// to prevent those libs from being included in the search path
@@ -1839,10 +1879,11 @@ func apexFileForNativeLibrary(ctx android.BaseModuleContext, ccMod *cc.Module, h
 }
 
 func apexFileForExecutable(ctx android.BaseModuleContext, cc *cc.Module) apexFile {
-	dirInApex := filepath.Join("bin", cc.RelativeInstallPath())
+	dirInApex := "bin"
 	if cc.Target().NativeBridge == android.NativeBridgeEnabled {
 		dirInApex = filepath.Join(dirInApex, cc.Target().NativeBridgeRelativePath)
 	}
+	dirInApex = filepath.Join(dirInApex, cc.RelativeInstallPath())
 	fileToCopy := cc.OutputFile().Path()
 	af := newApexFile(ctx, fileToCopy, cc.Name(), dirInApex, nativeExecutable, cc)
 	af.symlinks = cc.Symlinks()
@@ -1955,7 +1996,7 @@ func (a *apexBundle) walkPayloadDeps(ctx android.ModuleContext,
 		}
 
 		// Check for the indirect dependencies if it is considered as part of the APEX
-		if am.DepIsInSameApex(ctx, am) {
+		if am.ApexName() != "" {
 			do(ctx, parent, am, false /* externalDep */)
 			return true
 		}
@@ -1967,6 +2008,18 @@ func (a *apexBundle) walkPayloadDeps(ctx android.ModuleContext,
 	})
 }
 
+func (a *apexBundle) minSdkVersion(ctx android.BaseModuleContext) int {
+	ver := proptools.StringDefault(a.properties.Min_sdk_version, "current")
+	if ver != "current" {
+		minSdkVersion, err := strconv.Atoi(ver)
+		if err != nil {
+			ctx.PropertyErrorf("min_sdk_version", "should be \"current\" or <number>, but %q", ver)
+		}
+		return minSdkVersion
+	}
+	return android.FutureApiLevel
+}
+
 // Ensures that the dependencies are marked as available for this APEX
 func (a *apexBundle) checkApexAvailability(ctx android.ModuleContext) {
 	// Let's be practical. Availability for test, host, and the VNDK apex isn't important
@@ -1976,10 +2029,12 @@ func (a *apexBundle) checkApexAvailability(ctx android.ModuleContext) {
 
 	a.walkPayloadDeps(ctx, func(ctx android.ModuleContext, from blueprint.Module, to android.ApexModule, externalDep bool) {
 		apexName := ctx.ModuleName()
-		if externalDep || to.AvailableFor(apexName) || whitelistedApexAvailable(apexName, to) {
+		fromName := ctx.OtherModuleName(from)
+		toName := ctx.OtherModuleName(to)
+		if externalDep || to.AvailableFor(apexName) || whitelistedApexAvailable(apexName, toName) {
 			return
 		}
-		ctx.ModuleErrorf("requires %q that is not available for the APEX.", to.Name())
+		ctx.ModuleErrorf("%q requires %q that is not available for the APEX.", fromName, toName)
 	})
 }
 
@@ -2356,13 +2411,23 @@ func (a *apexBundle) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 	a.buildApexDependencyInfo(ctx)
 }
 
-func whitelistedApexAvailable(apex string, module android.Module) bool {
+func whitelistedApexAvailable(apex, moduleName string) bool {
 	key := apex
-	key = strings.Replace(key, "test_", "", 1)
-	key = strings.Replace(key, "com.android.art.debug", "com.android.art", 1)
-	key = strings.Replace(key, "com.android.art.release", "com.android.art", 1)
+	moduleName = normalizeModuleName(moduleName)
 
-	moduleName := module.Name()
+	if val, ok := apexAvailWl[key]; ok && android.InList(moduleName, val) {
+		return true
+	}
+
+	key = android.AvailableToAnyApex
+	if val, ok := apexAvailWl[key]; ok && android.InList(moduleName, val) {
+		return true
+	}
+
+	return false
+}
+
+func normalizeModuleName(moduleName string) string {
 	// Prebuilt modules (e.g. java_import, etc.) have "prebuilt_" prefix added by the build
 	// system. Trim the prefix for the check since they are confusing
 	moduleName = strings.TrimPrefix(moduleName, "prebuilt_")
@@ -2371,17 +2436,7 @@ func whitelistedApexAvailable(apex string, module android.Module) bool {
 		// We don't want to list them all
 		moduleName = "libclang_rt"
 	}
-
-	if val, ok := apexAvailWl[key]; ok && android.InList(moduleName, val) {
-		return true
-	}
-
-	key = "//any"
-	if val, ok := apexAvailWl[key]; ok && android.InList(moduleName, val) {
-		return true
-	}
-
-	return false
+	return moduleName
 }
 
 func newApexBundle() *apexBundle {

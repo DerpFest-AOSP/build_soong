@@ -87,6 +87,24 @@ func withTargets(targets map[android.OsType][]android.Target) testCustomizer {
 	}
 }
 
+// withNativeBridgeTargets sets configuration with targets including:
+// - X86_64 (primary)
+// - X86 (secondary)
+// - Arm64 on X86_64 (native bridge)
+// - Arm on X86 (native bridge)
+func withNativeBridgeEnabled(fs map[string][]byte, config android.Config) {
+	config.Targets[android.Android] = []android.Target{
+		{Os: android.Android, Arch: android.Arch{ArchType: android.X86_64, ArchVariant: "silvermont", Abi: []string{"arm64-v8a"}},
+			NativeBridge: android.NativeBridgeDisabled, NativeBridgeHostArchName: "", NativeBridgeRelativePath: ""},
+		{Os: android.Android, Arch: android.Arch{ArchType: android.X86, ArchVariant: "silvermont", Abi: []string{"armeabi-v7a"}},
+			NativeBridge: android.NativeBridgeDisabled, NativeBridgeHostArchName: "", NativeBridgeRelativePath: ""},
+		{Os: android.Android, Arch: android.Arch{ArchType: android.Arm64, ArchVariant: "armv8-a", Abi: []string{"arm64-v8a"}},
+			NativeBridge: android.NativeBridgeEnabled, NativeBridgeHostArchName: "x86_64", NativeBridgeRelativePath: "arm64"},
+		{Os: android.Android, Arch: android.Arch{ArchType: android.Arm, ArchVariant: "armv7-a-neon", Abi: []string{"armeabi-v7a"}},
+			NativeBridge: android.NativeBridgeEnabled, NativeBridgeHostArchName: "x86", NativeBridgeRelativePath: "arm"},
+	}
+}
+
 func withManifestPackageNameOverrides(specs []string) testCustomizer {
 	return func(fs map[string][]byte, config android.Config) {
 		config.TestProductVariables.ManifestPackageNameOverrides = specs
@@ -984,6 +1002,297 @@ func TestApexWithSystemLibsStubs(t *testing.T) {
 	ensureContains(t, libFlags, "libdl/android_arm64_armv8-a_shared/libdl.so")
 }
 
+func TestApexUseStubsAccordingToMinSdkVersionInUnbundledBuild(t *testing.T) {
+	// there are three links between liba --> libz
+	// 1) myapex -> libx -> liba -> libz    : this should be #2 link, but fallback to #1
+	// 2) otherapex -> liby -> liba -> libz : this should be #3 link
+	// 3) (platform) -> liba -> libz        : this should be non-stub link
+	ctx, _ := testApex(t, `
+		apex {
+			name: "myapex",
+			key: "myapex.key",
+			native_shared_libs: ["libx"],
+			min_sdk_version: "2",
+		}
+
+		apex {
+			name: "otherapex",
+			key: "myapex.key",
+			native_shared_libs: ["liby"],
+			min_sdk_version: "3",
+		}
+
+		apex_key {
+			name: "myapex.key",
+			public_key: "testkey.avbpubkey",
+			private_key: "testkey.pem",
+		}
+
+		cc_library {
+			name: "libx",
+			shared_libs: ["liba"],
+			system_shared_libs: [],
+			stl: "none",
+			apex_available: [ "myapex" ],
+		}
+
+		cc_library {
+			name: "liby",
+			shared_libs: ["liba"],
+			system_shared_libs: [],
+			stl: "none",
+			apex_available: [ "otherapex" ],
+		}
+
+		cc_library {
+			name: "liba",
+			shared_libs: ["libz"],
+			system_shared_libs: [],
+			stl: "none",
+			apex_available: [
+				"//apex_available:anyapex",
+				"//apex_available:platform",
+			],
+		}
+
+		cc_library {
+			name: "libz",
+			system_shared_libs: [],
+			stl: "none",
+			stubs: {
+				versions: ["1", "3"],
+			},
+		}
+	`, withUnbundledBuild)
+
+	expectLink := func(from, from_variant, to, to_variant string) {
+		ldArgs := ctx.ModuleForTests(from, "android_arm64_armv8-a_"+from_variant).Rule("ld").Args["libFlags"]
+		ensureContains(t, ldArgs, "android_arm64_armv8-a_"+to_variant+"/"+to+".so")
+	}
+	expectNoLink := func(from, from_variant, to, to_variant string) {
+		ldArgs := ctx.ModuleForTests(from, "android_arm64_armv8-a_"+from_variant).Rule("ld").Args["libFlags"]
+		ensureNotContains(t, ldArgs, "android_arm64_armv8-a_"+to_variant+"/"+to+".so")
+	}
+	// platform liba is linked to non-stub version
+	expectLink("liba", "shared", "libz", "shared")
+	// liba in myapex is linked to #1
+	expectLink("liba", "shared_myapex", "libz", "shared_1")
+	expectNoLink("liba", "shared_myapex", "libz", "shared_3")
+	expectNoLink("liba", "shared_myapex", "libz", "shared")
+	// liba in otherapex is linked to #3
+	expectLink("liba", "shared_otherapex", "libz", "shared_3")
+	expectNoLink("liba", "shared_otherapex", "libz", "shared_1")
+	expectNoLink("liba", "shared_otherapex", "libz", "shared")
+}
+
+func TestApexMinSdkVersionDefaultsToLatest(t *testing.T) {
+	ctx, _ := testApex(t, `
+		apex {
+			name: "myapex",
+			key: "myapex.key",
+			native_shared_libs: ["libx"],
+		}
+
+		apex_key {
+			name: "myapex.key",
+			public_key: "testkey.avbpubkey",
+			private_key: "testkey.pem",
+		}
+
+		cc_library {
+			name: "libx",
+			shared_libs: ["libz"],
+			system_shared_libs: [],
+			stl: "none",
+			apex_available: [ "myapex" ],
+		}
+
+		cc_library {
+			name: "libz",
+			system_shared_libs: [],
+			stl: "none",
+			stubs: {
+				versions: ["1", "2"],
+			},
+		}
+	`)
+
+	expectLink := func(from, from_variant, to, to_variant string) {
+		ldArgs := ctx.ModuleForTests(from, "android_arm64_armv8-a_"+from_variant).Rule("ld").Args["libFlags"]
+		ensureContains(t, ldArgs, "android_arm64_armv8-a_"+to_variant+"/"+to+".so")
+	}
+	expectNoLink := func(from, from_variant, to, to_variant string) {
+		ldArgs := ctx.ModuleForTests(from, "android_arm64_armv8-a_"+from_variant).Rule("ld").Args["libFlags"]
+		ensureNotContains(t, ldArgs, "android_arm64_armv8-a_"+to_variant+"/"+to+".so")
+	}
+	expectLink("libx", "shared_myapex", "libz", "shared_2")
+	expectNoLink("libx", "shared_myapex", "libz", "shared_1")
+	expectNoLink("libx", "shared_myapex", "libz", "shared")
+}
+
+func TestPlatformUsesLatestStubsFromApexes(t *testing.T) {
+	ctx, _ := testApex(t, `
+		apex {
+			name: "myapex",
+			key: "myapex.key",
+			native_shared_libs: ["libx"],
+		}
+
+		apex_key {
+			name: "myapex.key",
+			public_key: "testkey.avbpubkey",
+			private_key: "testkey.pem",
+		}
+
+		cc_library {
+			name: "libx",
+			system_shared_libs: [],
+			stl: "none",
+			apex_available: [ "myapex" ],
+			stubs: {
+				versions: ["1", "2"],
+			},
+		}
+
+		cc_library {
+			name: "libz",
+			shared_libs: ["libx"],
+			system_shared_libs: [],
+			stl: "none",
+		}
+	`)
+
+	expectLink := func(from, from_variant, to, to_variant string) {
+		ldArgs := ctx.ModuleForTests(from, "android_arm64_armv8-a_"+from_variant).Rule("ld").Args["libFlags"]
+		ensureContains(t, ldArgs, "android_arm64_armv8-a_"+to_variant+"/"+to+".so")
+	}
+	expectNoLink := func(from, from_variant, to, to_variant string) {
+		ldArgs := ctx.ModuleForTests(from, "android_arm64_armv8-a_"+from_variant).Rule("ld").Args["libFlags"]
+		ensureNotContains(t, ldArgs, "android_arm64_armv8-a_"+to_variant+"/"+to+".so")
+	}
+	expectLink("libz", "shared", "libx", "shared_2")
+	expectNoLink("libz", "shared", "libz", "shared_1")
+	expectNoLink("libz", "shared", "libz", "shared")
+}
+
+func TestQApexesUseLatestStubsInBundledBuilds(t *testing.T) {
+	ctx, _ := testApex(t, `
+		apex {
+			name: "myapex",
+			key: "myapex.key",
+			native_shared_libs: ["libx"],
+			min_sdk_version: "29",
+		}
+
+		apex_key {
+			name: "myapex.key",
+			public_key: "testkey.avbpubkey",
+			private_key: "testkey.pem",
+		}
+
+		cc_library {
+			name: "libx",
+			shared_libs: ["libbar"],
+			apex_available: [ "myapex" ],
+		}
+
+		cc_library {
+			name: "libbar",
+			stubs: {
+				versions: ["29", "30"],
+			},
+		}
+	`)
+	expectLink := func(from, from_variant, to, to_variant string) {
+		ld := ctx.ModuleForTests(from, "android_arm64_armv8-a_"+from_variant).Rule("ld")
+		libFlags := ld.Args["libFlags"]
+		ensureContains(t, libFlags, "android_arm64_armv8-a_"+to_variant+"/"+to+".so")
+	}
+	expectLink("libx", "shared_myapex", "libbar", "shared_30")
+}
+
+func TestQTargetApexUseStaticUnwinder(t *testing.T) {
+	ctx, _ := testApex(t, `
+		apex {
+			name: "myapex",
+			key: "myapex.key",
+			native_shared_libs: ["libx"],
+			min_sdk_version: "29",
+		}
+
+		apex_key {
+			name: "myapex.key",
+			public_key: "testkey.avbpubkey",
+			private_key: "testkey.pem",
+		}
+
+		cc_library {
+			name: "libx",
+			apex_available: [ "myapex" ],
+		}
+
+	`, withUnbundledBuild)
+
+	// ensure apex variant of c++ is linked with static unwinder
+	cm := ctx.ModuleForTests("libc++", "android_arm64_armv8-a_shared_myapex").Module().(*cc.Module)
+	ensureListContains(t, cm.Properties.AndroidMkStaticLibs, "libgcc_stripped")
+	// note that platform variant is not.
+	cm = ctx.ModuleForTests("libc++", "android_arm64_armv8-a_shared").Module().(*cc.Module)
+	ensureListNotContains(t, cm.Properties.AndroidMkStaticLibs, "libgcc_stripped")
+
+	libFlags := ctx.ModuleForTests("libx", "android_arm64_armv8-a_shared_myapex").Rule("ld").Args["libFlags"]
+	ensureContains(t, libFlags, "android_arm64_armv8-a_shared_myapex/libc++.so")
+	ensureContains(t, libFlags, "android_arm64_armv8-a_shared_29/libc.so") // min_sdk_version applied
+}
+
+func TestInvalidMinSdkVersion(t *testing.T) {
+	testApexError(t, `"libz" .*: min_sdk_version is set 29.*`, `
+		apex {
+			name: "myapex",
+			key: "myapex.key",
+			native_shared_libs: ["libx"],
+			min_sdk_version: "29",
+		}
+
+		apex_key {
+			name: "myapex.key",
+			public_key: "testkey.avbpubkey",
+			private_key: "testkey.pem",
+		}
+
+		cc_library {
+			name: "libx",
+			shared_libs: ["libz"],
+			system_shared_libs: [],
+			stl: "none",
+			apex_available: [ "myapex" ],
+		}
+
+		cc_library {
+			name: "libz",
+			system_shared_libs: [],
+			stl: "none",
+			stubs: {
+				versions: ["30"],
+			},
+		}
+	`, withUnbundledBuild)
+
+	testApexError(t, `"myapex" .*: min_sdk_version: should be .*`, `
+		apex {
+			name: "myapex",
+			key: "myapex.key",
+			min_sdk_version: "R",
+		}
+
+		apex_key {
+			name: "myapex.key",
+			public_key: "testkey.avbpubkey",
+			private_key: "testkey.pem",
+		}
+	`)
+}
+
 func TestFilesInSubDir(t *testing.T) {
 	ctx, _ := testApex(t, `
 		apex {
@@ -1044,6 +1353,64 @@ func TestFilesInSubDir(t *testing.T) {
 	ensureListContains(t, dirs, "bin")
 	ensureListContains(t, dirs, "bin/foo")
 	ensureListContains(t, dirs, "bin/foo/bar")
+}
+
+func TestFilesInSubDirWhenNativeBridgeEnabled(t *testing.T) {
+	ctx, _ := testApex(t, `
+		apex {
+			name: "myapex",
+			key: "myapex.key",
+			multilib: {
+				both: {
+					native_shared_libs: ["mylib"],
+					binaries: ["mybin"],
+				},
+			},
+			compile_multilib: "both",
+			native_bridge_supported: true,
+		}
+
+		apex_key {
+			name: "myapex.key",
+			public_key: "testkey.avbpubkey",
+			private_key: "testkey.pem",
+		}
+
+		cc_library {
+			name: "mylib",
+			relative_install_path: "foo/bar",
+			system_shared_libs: [],
+			stl: "none",
+			apex_available: [ "myapex" ],
+			native_bridge_supported: true,
+		}
+
+		cc_binary {
+			name: "mybin",
+			relative_install_path: "foo/bar",
+			system_shared_libs: [],
+			static_executable: true,
+			stl: "none",
+			apex_available: [ "myapex" ],
+			native_bridge_supported: true,
+			compile_multilib: "both", // default is "first" for binary
+			multilib: {
+				lib64: {
+					suffix: "64",
+				},
+			},
+		}
+	`, withNativeBridgeEnabled)
+	ensureExactContents(t, ctx, "myapex", "android_common_myapex_image", []string{
+		"bin/foo/bar/mybin",
+		"bin/foo/bar/mybin64",
+		"bin/arm/foo/bar/mybin",
+		"bin/arm64/foo/bar/mybin64",
+		"lib/foo/bar/mylib.so",
+		"lib/arm/foo/bar/mylib.so",
+		"lib64/foo/bar/mylib.so",
+		"lib64/arm64/foo/bar/mylib.so",
+	})
 }
 
 func TestUseVendor(t *testing.T) {
@@ -1909,15 +2276,7 @@ func TestVndkApexSkipsNativeBridgeSupportedModules(t *testing.T) {
 			stl: "none",
 			apex_available: [ "myapex" ],
 		}
-		`+vndkLibrariesTxtFiles("current"),
-		withTargets(map[android.OsType][]android.Target{
-			android.Android: []android.Target{
-				{Os: android.Android, Arch: android.Arch{ArchType: android.Arm64, ArchVariant: "armv8-a", Abi: []string{"arm64-v8a"}}, NativeBridge: android.NativeBridgeDisabled, NativeBridgeHostArchName: "", NativeBridgeRelativePath: ""},
-				{Os: android.Android, Arch: android.Arch{ArchType: android.Arm, ArchVariant: "armv7-a-neon", Abi: []string{"armeabi-v7a"}}, NativeBridge: android.NativeBridgeDisabled, NativeBridgeHostArchName: "", NativeBridgeRelativePath: ""},
-				{Os: android.Android, Arch: android.Arch{ArchType: android.X86_64, ArchVariant: "silvermont", Abi: []string{"arm64-v8a"}}, NativeBridge: android.NativeBridgeEnabled, NativeBridgeHostArchName: "arm64", NativeBridgeRelativePath: "x86_64"},
-				{Os: android.Android, Arch: android.Arch{ArchType: android.X86, ArchVariant: "silvermont", Abi: []string{"armeabi-v7a"}}, NativeBridge: android.NativeBridgeEnabled, NativeBridgeHostArchName: "arm", NativeBridgeRelativePath: "x86"},
-			},
-		}))
+		`+vndkLibrariesTxtFiles("current"), withNativeBridgeEnabled)
 
 	ensureExactContents(t, ctx, "myapex", "android_common_image", []string{
 		"lib/libvndk.so",
@@ -2012,7 +2371,8 @@ func TestVndkApexWithBinder32(t *testing.T) {
 		withBinder32bit,
 		withTargets(map[android.OsType][]android.Target{
 			android.Android: []android.Target{
-				{Os: android.Android, Arch: android.Arch{ArchType: android.Arm, ArchVariant: "armv7-a-neon", Abi: []string{"armeabi-v7a"}}, NativeBridge: android.NativeBridgeDisabled, NativeBridgeHostArchName: "", NativeBridgeRelativePath: ""},
+				{Os: android.Android, Arch: android.Arch{ArchType: android.Arm, ArchVariant: "armv7-a-neon", Abi: []string{"armeabi-v7a"}},
+					NativeBridge: android.NativeBridgeDisabled, NativeBridgeHostArchName: "", NativeBridgeRelativePath: ""},
 			},
 		}),
 	)
@@ -2873,6 +3233,7 @@ func TestErrorsIfDepsAreNotEnabled(t *testing.T) {
 			stl: "none",
 			system_shared_libs: [],
 			enabled: false,
+			apex_available: ["myapex"],
 		}
 	`)
 	testApexError(t, `module "myapex" .* depends on disabled module "myjar"`, `
@@ -2894,6 +3255,7 @@ func TestErrorsIfDepsAreNotEnabled(t *testing.T) {
 			sdk_version: "none",
 			system_modules: "none",
 			enabled: false,
+			apex_available: ["myapex"],
 		}
 	`)
 }
@@ -3054,7 +3416,7 @@ func TestApexWithTestHelperApp(t *testing.T) {
 
 func TestApexPropertiesShouldBeDefaultable(t *testing.T) {
 	// libfoo's apex_available comes from cc_defaults
-	testApexError(t, `"myapex" .*: requires "libfoo" that is not available for the APEX`, `
+	testApexError(t, `requires "libfoo" that is not available for the APEX`, `
 	apex {
 		name: "myapex",
 		key: "myapex.key",
@@ -3120,8 +3482,8 @@ func TestApexAvailable(t *testing.T) {
 		apex_available: ["otherapex"],
 	}`)
 
-	// libbar is an indirect dep
-	testApexError(t, "requires \"libbar\" that is not available for the APEX", `
+	// libbbaz is an indirect dep
+	testApexError(t, "requires \"libbaz\" that is not available for the APEX", `
 	apex {
 		name: "myapex",
 		key: "myapex.key",
@@ -3134,31 +3496,26 @@ func TestApexAvailable(t *testing.T) {
 		private_key: "testkey.pem",
 	}
 
-	apex {
-		name: "otherapex",
-		key: "otherapex.key",
-		native_shared_libs: ["libfoo"],
-	}
-
-	apex_key {
-		name: "otherapex.key",
-		public_key: "testkey.avbpubkey",
-		private_key: "testkey.pem",
-	}
-
 	cc_library {
 		name: "libfoo",
 		stl: "none",
 		shared_libs: ["libbar"],
 		system_shared_libs: [],
-		apex_available: ["myapex", "otherapex"],
+		apex_available: ["myapex"],
 	}
 
 	cc_library {
 		name: "libbar",
 		stl: "none",
+		shared_libs: ["libbaz"],
 		system_shared_libs: [],
-		apex_available: ["otherapex"],
+		apex_available: ["myapex"],
+	}
+
+	cc_library {
+		name: "libbaz",
+		stl: "none",
+		system_shared_libs: [],
 	}`)
 
 	testApexError(t, "\"otherapex\" is not a valid module name", `
@@ -3325,7 +3682,7 @@ func TestOverrideApex(t *testing.T) {
 			base: "app",
 			package_name: "bar",
 		}
-	`)
+	`, withManifestPackageNameOverrides([]string{"myapex:com.android.myapex"}))
 
 	originalVariant := ctx.ModuleForTests("myapex", "android_common_myapex_image").Module().(android.OverridableModule)
 	overriddenVariant := ctx.ModuleForTests("myapex", "android_common_override_myapex_myapex_image").Module().(android.OverridableModule)
@@ -3352,6 +3709,9 @@ func TestOverrideApex(t *testing.T) {
 	if apexBundle.overridableProperties.Logging_parent != "com.foo.bar" {
 		t.Errorf("override_myapex should have logging parent (com.foo.bar), but was %q.", apexBundle.overridableProperties.Logging_parent)
 	}
+
+	optFlags := apexRule.Args["opt_flags"]
+	ensureContains(t, optFlags, "--override_apk_package_name com.android.myapex")
 
 	data := android.AndroidMkDataForTest(t, config, "", apexBundle)
 	var builder strings.Builder
@@ -3502,6 +3862,7 @@ func TestRejectNonInstallableJavaLibrary(t *testing.T) {
 			sdk_version: "none",
 			system_modules: "none",
 			compile_dex: false,
+			apex_available: ["myapex"],
 		}
 	`)
 }
