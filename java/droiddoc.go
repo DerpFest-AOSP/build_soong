@@ -34,6 +34,9 @@ func init() {
 	android.RegisterSdkMemberType(&droidStubsSdkMemberType{
 		SdkMemberTypeBase: android.SdkMemberTypeBase{
 			PropertyName: "stubs_sources",
+			// stubs_sources can be used with sdk to provide the source stubs for APIs provided by
+			// the APEX.
+			SupportsSdk: true,
 		},
 	})
 }
@@ -220,6 +223,9 @@ type DroiddocProperties struct {
 
 	// if set to true, generate docs through Dokka instead of Doclava.
 	Dokka_enabled *bool
+
+	// Compat config XML. Generates compat change documentation if set.
+	Compat_config *string `android:"path"`
 }
 
 type DroidstubsProperties struct {
@@ -421,19 +427,19 @@ func JavadocHostFactory() android.Module {
 
 var _ android.OutputFileProducer = (*Javadoc)(nil)
 
-func (j *Javadoc) sdkVersion() string {
-	return String(j.properties.Sdk_version)
+func (j *Javadoc) sdkVersion() sdkSpec {
+	return sdkSpecFrom(String(j.properties.Sdk_version))
 }
 
 func (j *Javadoc) systemModules() string {
 	return proptools.String(j.properties.System_modules)
 }
 
-func (j *Javadoc) minSdkVersion() string {
+func (j *Javadoc) minSdkVersion() sdkSpec {
 	return j.sdkVersion()
 }
 
-func (j *Javadoc) targetSdkVersion() string {
+func (j *Javadoc) targetSdkVersion() sdkSpec {
 	return j.sdkVersion()
 }
 
@@ -528,6 +534,9 @@ func (j *Javadoc) collectDeps(ctx android.ModuleContext) deps {
 		ctx.AddMissingDependencies(sdkDep.java9Classpath)
 	} else if sdkDep.useFiles {
 		deps.bootClasspath = append(deps.bootClasspath, sdkDep.jars...)
+		deps.aidlPreprocess = sdkDep.aidl
+	} else {
+		deps.aidlPreprocess = sdkDep.aidl
 	}
 
 	ctx.VisitDirectDeps(func(module android.Module) {
@@ -538,10 +547,10 @@ func (j *Javadoc) collectDeps(ctx android.ModuleContext) deps {
 		case bootClasspathTag:
 			if dep, ok := module.(Dependency); ok {
 				deps.bootClasspath = append(deps.bootClasspath, dep.ImplementationJars()...)
-			} else if sm, ok := module.(*SystemModules); ok {
+			} else if sm, ok := module.(SystemModulesProvider); ok {
 				// A system modules dependency has been added to the bootclasspath
 				// so add its libs to the bootclasspath.
-				deps.bootClasspath = append(deps.bootClasspath, sm.headerJars...)
+				deps.bootClasspath = append(deps.bootClasspath, sm.HeaderJars()...)
 			} else {
 				panic(fmt.Errorf("unknown dependency %q for %q", otherName, ctx.ModuleName()))
 			}
@@ -569,11 +578,9 @@ func (j *Javadoc) collectDeps(ctx android.ModuleContext) deps {
 			if deps.systemModules != nil {
 				panic("Found two system module dependencies")
 			}
-			sm := module.(*SystemModules)
-			if sm.outputDir == nil && len(sm.outputDeps) == 0 {
-				panic("Missing directory for system module dependency")
-			}
-			deps.systemModules = &systemModules{sm.outputDir, sm.outputDeps}
+			sm := module.(SystemModulesProvider)
+			outputDir, outputDeps := sm.OutputDirAndDeps()
+			deps.systemModules = &systemModules{outputDir, outputDeps}
 		}
 	})
 	// do not pass exclude_srcs directly when expanding srcFiles since exclude_srcs
@@ -596,11 +603,8 @@ func (j *Javadoc) collectDeps(ctx android.ModuleContext) deps {
 				continue
 			}
 			packageName := strings.ReplaceAll(filepath.Dir(src.Rel()), "/", ".")
-			for _, pkg := range filterPackages {
-				if strings.HasPrefix(packageName, pkg) {
-					filtered = append(filtered, src)
-					break
-				}
+			if android.HasAnyPrefix(packageName, filterPackages) {
+				filtered = append(filtered, src)
 			}
 		}
 		return filtered
@@ -769,6 +773,7 @@ func (d *Droiddoc) DepsMutator(ctx android.BottomUpMutatorContext) {
 }
 
 func (d *Droiddoc) doclavaDocsFlags(ctx android.ModuleContext, cmd *android.RuleBuilderCommand, docletPath classpath) {
+	buildNumberFile := ctx.Config().BuildNumberFile(ctx)
 	// Droiddoc always gets "-source 1.8" because it doesn't support 1.9 sources.  For modules with 1.9
 	// sources, droiddoc will get sources produced by metalava which will have already stripped out the
 	// 1.9 language features.
@@ -778,7 +783,7 @@ func (d *Droiddoc) doclavaDocsFlags(ctx android.ModuleContext, cmd *android.Rule
 		Flag("-XDignore.symbol.file").
 		FlagWithArg("-doclet ", "com.google.doclava.Doclava").
 		FlagWithInputList("-docletpath ", docletPath.Paths(), ":").
-		FlagWithArg("-hdf page.build ", ctx.Config().BuildId()+"-"+ctx.Config().BuildNumberFromFile()).
+		FlagWithArg("-hdf page.build ", ctx.Config().BuildId()+"-$(cat "+buildNumberFile.String()+")").OrderOnly(buildNumberFile).
 		FlagWithArg("-hdf page.now ", `"$(date -d @$(cat `+ctx.Config().Getenv("BUILD_DATETIME_FILE")+`) "+%d %b %Y %k:%M")" `)
 
 	if String(d.properties.Custom_template) == "" {
@@ -1033,6 +1038,11 @@ func (d *Droiddoc) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 	d.stubsFlags(ctx, cmd, stubsDir)
 
 	cmd.Flag(d.Javadoc.args).Implicits(d.Javadoc.argFiles)
+
+	if d.properties.Compat_config != nil {
+		compatConfig := android.PathForModuleSrc(ctx, String(d.properties.Compat_config))
+		cmd.FlagWithInput("-compatconfig ", compatConfig)
+	}
 
 	var desc string
 	if Bool(d.properties.Dokka_enabled) {
@@ -1335,6 +1345,7 @@ func (d *Droidstubs) stubsFlags(ctx android.ModuleContext, cmd *android.RuleBuil
 		cmd.FlagWithArg("--doc-stubs ", stubsDir.String())
 	} else {
 		cmd.FlagWithArg("--stubs ", stubsDir.String())
+		cmd.Flag("--exclude-documentation-from-stubs")
 	}
 }
 
@@ -1453,6 +1464,8 @@ func (d *Droidstubs) apiToXmlFlags(ctx android.ModuleContext, cmd *android.RuleB
 
 func metalavaCmd(ctx android.ModuleContext, rule *android.RuleBuilder, javaVersion javaVersion, srcs android.Paths,
 	srcJarList android.Path, bootclasspath, classpath classpath, sourcepaths android.Paths) *android.RuleBuilderCommand {
+	// Metalava uses lots of memory, restrict the number of metalava jobs that can run in parallel.
+	rule.HighMem()
 	cmd := rule.Command().BuiltTool(ctx, "metalava").
 		Flag(config.JavacVmFlags).
 		FlagWithArg("-encoding ", "UTF-8").
@@ -1948,12 +1961,42 @@ type PrebuiltStubsSources struct {
 
 	properties PrebuiltStubsSourcesProperties
 
-	srcs        android.Paths
+	// The source directories containing stubs source files.
+	srcDirs     android.Paths
 	stubsSrcJar android.ModuleOutPath
 }
 
+func (p *PrebuiltStubsSources) OutputFiles(tag string) (android.Paths, error) {
+	switch tag {
+	case "":
+		return android.Paths{p.stubsSrcJar}, nil
+	default:
+		return nil, fmt.Errorf("unsupported module reference tag %q", tag)
+	}
+}
+
 func (p *PrebuiltStubsSources) GenerateAndroidBuildActions(ctx android.ModuleContext) {
-	p.srcs = android.PathsForModuleSrc(ctx, p.properties.Srcs)
+	p.stubsSrcJar = android.PathForModuleOut(ctx, ctx.ModuleName()+"-"+"stubs.srcjar")
+
+	p.srcDirs = android.PathsForModuleSrc(ctx, p.properties.Srcs)
+
+	rule := android.NewRuleBuilder()
+	command := rule.Command().
+		BuiltTool(ctx, "soong_zip").
+		Flag("-write_if_changed").
+		Flag("-jar").
+		FlagWithOutput("-o ", p.stubsSrcJar)
+
+	for _, d := range p.srcDirs {
+		dir := d.String()
+		command.
+			FlagWithArg("-C ", dir).
+			FlagWithInput("-D ", d)
+	}
+
+	rule.Restat()
+
+	rule.Build(pctx, ctx, "zip src", "Create srcjar from prebuilt source")
 }
 
 func (p *PrebuiltStubsSources) Prebuilt() *android.Prebuilt {
@@ -1962,10 +2005,6 @@ func (p *PrebuiltStubsSources) Prebuilt() *android.Prebuilt {
 
 func (p *PrebuiltStubsSources) Name() string {
 	return p.prebuilt.Name(p.ModuleBase.Name())
-}
-
-func (p *PrebuiltStubsSources) Srcs() android.Paths {
-	return append(android.Paths{}, p.srcs...)
 }
 
 // prebuilt_stubs_sources imports a set of java source files as if they were

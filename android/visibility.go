@@ -19,6 +19,8 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+
+	"github.com/google/blueprint"
 )
 
 // Enforces visibility rules between modules.
@@ -184,10 +186,19 @@ func (r privateRule) String() string {
 var visibilityRuleMap = NewOnceKey("visibilityRuleMap")
 
 // The map from qualifiedModuleName to visibilityRule.
-func moduleToVisibilityRuleMap(ctx BaseModuleContext) *sync.Map {
-	return ctx.Config().Once(visibilityRuleMap, func() interface{} {
+func moduleToVisibilityRuleMap(config Config) *sync.Map {
+	return config.Once(visibilityRuleMap, func() interface{} {
 		return &sync.Map{}
 	}).(*sync.Map)
+}
+
+// Marker interface that identifies dependencies that are excluded from visibility
+// enforcement.
+type ExcludeFromVisibilityEnforcementTag interface {
+	blueprint.DependencyTag
+
+	// Method that differentiates this interface from others.
+	ExcludeFromVisibilityEnforcement()
 }
 
 // The rule checker needs to be registered before defaults expansion to correctly check that
@@ -293,7 +304,7 @@ func visibilityRuleGatherer(ctx BottomUpMutatorContext) {
 	if visibility := m.visibility(); visibility != nil {
 		rule := parseRules(ctx, currentPkg, m.visibility())
 		if rule != nil {
-			moduleToVisibilityRuleMap(ctx).Store(qualifiedModuleId, rule)
+			moduleToVisibilityRuleMap(ctx.Config()).Store(qualifiedModuleId, rule)
 		}
 	}
 }
@@ -301,6 +312,7 @@ func visibilityRuleGatherer(ctx BottomUpMutatorContext) {
 func parseRules(ctx BaseModuleContext, currentPkg string, visibility []string) compositeRule {
 	rules := make(compositeRule, 0, len(visibility))
 	hasPrivateRule := false
+	hasPublicRule := false
 	hasNonPrivateRule := false
 	for _, v := range visibility {
 		ok, pkg, name := splitRule(v, currentPkg)
@@ -317,6 +329,7 @@ func parseRules(ctx BaseModuleContext, currentPkg string, visibility []string) c
 				isPrivateRule = true
 			case "public":
 				r = publicRule{}
+				hasPublicRule = true
 			}
 		} else {
 			switch name {
@@ -342,6 +355,11 @@ func parseRules(ctx BaseModuleContext, currentPkg string, visibility []string) c
 		ctx.PropertyErrorf("visibility",
 			"cannot mix \"//visibility:private\" with any other visibility rules")
 		return compositeRule{privateRule{}}
+	}
+
+	if hasPublicRule {
+		// Public overrides all other rules so just return it.
+		return compositeRule{publicRule{}}
 	}
 
 	return rules
@@ -389,6 +407,12 @@ func visibilityRuleEnforcer(ctx TopDownMutatorContext) {
 
 	// Visit all the dependencies making sure that this module has access to them all.
 	ctx.VisitDirectDeps(func(dep Module) {
+		// Ignore dependencies that have an ExcludeFromVisibilityEnforcementTag
+		tag := ctx.OtherModuleDependencyTag(dep)
+		if _, ok := tag.(ExcludeFromVisibilityEnforcementTag); ok {
+			return
+		}
+
 		depName := ctx.OtherModuleName(dep)
 		depDir := ctx.OtherModuleDir(dep)
 		depQualified := qualifiedModuleName{depDir, depName}
@@ -398,21 +422,21 @@ func visibilityRuleEnforcer(ctx TopDownMutatorContext) {
 			return
 		}
 
-		rule := effectiveVisibilityRules(ctx, depQualified)
+		rule := effectiveVisibilityRules(ctx.Config(), depQualified)
 		if rule != nil && !rule.matches(qualified) {
 			ctx.ModuleErrorf("depends on %s which is not visible to this module", depQualified)
 		}
 	})
 }
 
-func effectiveVisibilityRules(ctx BaseModuleContext, qualified qualifiedModuleName) compositeRule {
-	moduleToVisibilityRule := moduleToVisibilityRuleMap(ctx)
+func effectiveVisibilityRules(config Config, qualified qualifiedModuleName) compositeRule {
+	moduleToVisibilityRule := moduleToVisibilityRuleMap(config)
 	value, ok := moduleToVisibilityRule.Load(qualified)
 	var rule compositeRule
 	if ok {
 		rule = value.(compositeRule)
 	} else {
-		rule = packageDefaultVisibility(ctx, qualified)
+		rule = packageDefaultVisibility(config, qualified)
 	}
 	return rule
 }
@@ -424,8 +448,8 @@ func createQualifiedModuleName(ctx BaseModuleContext) qualifiedModuleName {
 	return qualified
 }
 
-func packageDefaultVisibility(ctx BaseModuleContext, moduleId qualifiedModuleName) compositeRule {
-	moduleToVisibilityRule := moduleToVisibilityRuleMap(ctx)
+func packageDefaultVisibility(config Config, moduleId qualifiedModuleName) compositeRule {
+	moduleToVisibilityRule := moduleToVisibilityRuleMap(config)
 	packageQualifiedId := moduleId.getContainingPackageId()
 	for {
 		value, ok := moduleToVisibilityRule.Load(packageQualifiedId)
@@ -452,7 +476,7 @@ func EffectiveVisibilityRules(ctx BaseModuleContext, module Module) []string {
 	dir := ctx.OtherModuleDir(module)
 	qualified := qualifiedModuleName{dir, moduleName}
 
-	rule := effectiveVisibilityRules(ctx, qualified)
+	rule := effectiveVisibilityRules(ctx.Config(), qualified)
 
 	return rule.Strings()
 }

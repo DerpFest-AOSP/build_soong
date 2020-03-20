@@ -27,6 +27,7 @@ import (
 //   run Pre-deps mutators
 //   run depsMutator
 //   run PostDeps mutators
+//   run FinalDeps mutators (CreateVariations disallowed in this phase)
 //   continue on to GenerateAndroidBuildActions
 
 func registerMutatorsToContext(ctx *blueprint.Context, mutators []*mutator) {
@@ -43,7 +44,7 @@ func registerMutatorsToContext(ctx *blueprint.Context, mutators []*mutator) {
 	}
 }
 
-func registerMutators(ctx *blueprint.Context, preArch, preDeps, postDeps []RegisterMutatorFunc) {
+func registerMutators(ctx *blueprint.Context, preArch, preDeps, postDeps, finalDeps []RegisterMutatorFunc) {
 	mctx := &registerMutatorsContext{}
 
 	register := func(funcs []RegisterMutatorFunc) {
@@ -60,11 +61,15 @@ func registerMutators(ctx *blueprint.Context, preArch, preDeps, postDeps []Regis
 
 	register(postDeps)
 
+	mctx.finalPhase = true
+	register(finalDeps)
+
 	registerMutatorsToContext(ctx, mctx.mutators)
 }
 
 type registerMutatorsContext struct {
-	mutators []*mutator
+	mutators   []*mutator
+	finalPhase bool
 }
 
 type RegisterMutatorsContext interface {
@@ -75,7 +80,6 @@ type RegisterMutatorsContext interface {
 type RegisterMutatorFunc func(RegisterMutatorsContext)
 
 var preArch = []RegisterMutatorFunc{
-	registerLoadHookMutator,
 	RegisterNamespaceMutator,
 	// Rename package module types.
 	RegisterPackageRenamer,
@@ -89,7 +93,6 @@ func registerArchMutator(ctx RegisterMutatorsContext) {
 	ctx.BottomUp("os", osMutator).Parallel()
 	ctx.BottomUp("image", imageMutator).Parallel()
 	ctx.BottomUp("arch", archMutator).Parallel()
-	ctx.TopDown("arch_hooks", archHookMutator).Parallel()
 }
 
 var preDeps = []RegisterMutatorFunc{
@@ -104,6 +107,8 @@ var postDeps = []RegisterMutatorFunc{
 	RegisterOverridePostDepsMutators,
 }
 
+var finalDeps = []RegisterMutatorFunc{}
+
 func PreArchMutators(f RegisterMutatorFunc) {
 	preArch = append(preArch, f)
 }
@@ -114,6 +119,10 @@ func PreDepsMutators(f RegisterMutatorFunc) {
 
 func PostDepsMutators(f RegisterMutatorFunc) {
 	postDeps = append(postDeps, f)
+}
+
+func FinalDepsMutators(f RegisterMutatorFunc) {
+	finalDeps = append(finalDeps, f)
 }
 
 type TopDownMutator func(TopDownMutatorContext)
@@ -158,14 +167,17 @@ type BottomUpMutatorContext interface {
 type bottomUpMutatorContext struct {
 	bp blueprint.BottomUpMutatorContext
 	baseModuleContext
+	finalPhase bool
 }
 
 func (x *registerMutatorsContext) BottomUp(name string, m BottomUpMutator) MutatorHandle {
+	finalPhase := x.finalPhase
 	f := func(ctx blueprint.BottomUpMutatorContext) {
 		if a, ok := ctx.Module().(Module); ok {
 			actx := &bottomUpMutatorContext{
 				bp:                ctx,
 				baseModuleContext: a.base().baseModuleContextFactory(ctx),
+				finalPhase:        finalPhase,
 			}
 			m(actx)
 		}
@@ -258,7 +270,7 @@ func (t *topDownMutatorContext) CreateModule(factory ModuleFactory, props ...int
 			module.base().variableProperties,
 			// Put an empty copy of the src properties into dst so that properties in src that are not in dst
 			// don't cause a "failed to find property to extend" error.
-			proptools.CloneEmptyProperties(reflect.ValueOf(src).Elem()).Interface(),
+			proptools.CloneEmptyProperties(reflect.ValueOf(src)).Interface(),
 		}
 		err := proptools.AppendMatchingProperties(dst, src, nil)
 		if err != nil {
@@ -287,6 +299,10 @@ func (b *bottomUpMutatorContext) AddReverseDependency(module blueprint.Module, t
 }
 
 func (b *bottomUpMutatorContext) CreateVariations(variations ...string) []Module {
+	if b.finalPhase {
+		panic("CreateVariations not allowed in FinalDepsMutators")
+	}
+
 	modules := b.bp.CreateVariations(variations...)
 
 	aModules := make([]Module, len(modules))
@@ -301,6 +317,10 @@ func (b *bottomUpMutatorContext) CreateVariations(variations ...string) []Module
 }
 
 func (b *bottomUpMutatorContext) CreateLocalVariations(variations ...string) []Module {
+	if b.finalPhase {
+		panic("CreateLocalVariations not allowed in FinalDepsMutators")
+	}
+
 	modules := b.bp.CreateLocalVariations(variations...)
 
 	aModules := make([]Module, len(modules))

@@ -19,6 +19,7 @@ import (
 	"io/ioutil"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -40,7 +41,7 @@ func testSdkContext(bp string, fs map[string][]byte) (*android.TestContext, andr
 			name: "myapex.cert",
 			certificate: "myapex",
 		}
-	` + cc.GatherRequiredDepsForTest(android.Android)
+	` + cc.GatherRequiredDepsForTest(android.Android, android.Windows)
 
 	mockFS := map[string][]byte{
 		"build/make/target/product/security":         nil,
@@ -53,50 +54,47 @@ func testSdkContext(bp string, fs map[string][]byte) (*android.TestContext, andr
 		"myapex.pk8":                                 nil,
 	}
 
+	cc.GatherRequiredFilesForTest(mockFS)
+
 	for k, v := range fs {
 		mockFS[k] = v
 	}
 
 	config := android.TestArchConfig(buildDir, nil, bp, mockFS)
 
+	// Add windows as a default disable OS to test behavior when some OS variants
+	// are disabled.
+	config.Targets[android.Windows] = []android.Target{
+		{android.Windows, android.Arch{ArchType: android.X86_64}, android.NativeBridgeDisabled, "", ""},
+	}
+
 	ctx := android.NewTestArchContext()
 
+	// Enable androidmk support.
+	// * Register the singleton
+	// * Configure that we are inside make
+	// * Add CommonOS to ensure that androidmk processing works.
+	android.RegisterAndroidMkBuildComponents(ctx)
+	android.SetInMakeForTests(config)
+	config.Targets[android.CommonOS] = []android.Target{
+		{android.CommonOS, android.Arch{ArchType: android.Common}, android.NativeBridgeDisabled, "", ""},
+	}
+
 	// from android package
-	ctx.PreArchMutators(android.RegisterPackageRenamer)
+	android.RegisterPackageBuildComponents(ctx)
 	ctx.PreArchMutators(android.RegisterVisibilityRuleChecker)
 	ctx.PreArchMutators(android.RegisterDefaultsPreArchMutators)
 	ctx.PreArchMutators(android.RegisterVisibilityRuleGatherer)
 	ctx.PostDepsMutators(android.RegisterVisibilityRuleEnforcer)
 
-	ctx.PreArchMutators(func(ctx android.RegisterMutatorsContext) {
-		ctx.BottomUp("prebuilts", android.PrebuiltMutator).Parallel()
-	})
-	ctx.PostDepsMutators(func(ctx android.RegisterMutatorsContext) {
-		ctx.TopDown("prebuilt_select", android.PrebuiltSelectModuleMutator).Parallel()
-		ctx.BottomUp("prebuilt_postdeps", android.PrebuiltPostDepsMutator).Parallel()
-	})
-	ctx.RegisterModuleType("package", android.PackageFactory)
-
 	// from java package
 	java.RegisterJavaBuildComponents(ctx)
 	java.RegisterAppBuildComponents(ctx)
 	java.RegisterStubsBuildComponents(ctx)
+	java.RegisterSystemModulesBuildComponents(ctx)
 
 	// from cc package
-	ctx.RegisterModuleType("cc_library", cc.LibraryFactory)
-	ctx.RegisterModuleType("cc_library_shared", cc.LibrarySharedFactory)
-	ctx.RegisterModuleType("cc_library_static", cc.LibraryStaticFactory)
-	ctx.RegisterModuleType("cc_object", cc.ObjectFactory)
-	cc.RegisterPrebuiltBuildComponents(ctx)
-	ctx.RegisterModuleType("llndk_library", cc.LlndkLibraryFactory)
-	ctx.RegisterModuleType("toolchain_library", cc.ToolchainLibraryFactory)
-	ctx.PreDepsMutators(func(ctx android.RegisterMutatorsContext) {
-		ctx.BottomUp("link", cc.LinkageMutator).Parallel()
-		ctx.BottomUp("vndk", cc.VndkMutator).Parallel()
-		ctx.BottomUp("test_per_src", cc.TestPerSrcMutator).Parallel()
-		ctx.BottomUp("version", cc.VersionMutator).Parallel()
-		ctx.BottomUp("begin", cc.BeginMutator).Parallel()
-	})
+	cc.RegisterRequiredBuildComponentsForTest(ctx)
 
 	// from apex package
 	ctx.RegisterModuleType("apex", apex.BundleFactory)
@@ -104,8 +102,10 @@ func testSdkContext(bp string, fs map[string][]byte) (*android.TestContext, andr
 	ctx.PostDepsMutators(apex.RegisterPostDepsMutators)
 
 	// from this package
-	ctx.RegisterModuleType("sdk", ModuleFactory)
+	ctx.RegisterModuleType("sdk", SdkModuleFactory)
 	ctx.RegisterModuleType("sdk_snapshot", SnapshotModuleFactory)
+	ctx.RegisterModuleType("module_exports", ModuleExportsFactory)
+	ctx.RegisterModuleType("module_exports_snapshot", ModuleExportsSnapshotsFactory)
 	ctx.PreDepsMutators(RegisterPreDepsMutators)
 	ctx.PostDepsMutators(RegisterPostDepsMutators)
 
@@ -177,6 +177,13 @@ func (h *TestHelper) AssertTrimmedStringEquals(message string, expected string, 
 	h.AssertStringEquals(message, strings.TrimSpace(expected), strings.TrimSpace(actual))
 }
 
+func (h *TestHelper) AssertDeepEquals(message string, expected interface{}, actual interface{}) {
+	h.t.Helper()
+	if !reflect.DeepEqual(actual, expected) {
+		h.t.Errorf("%s: expected %#v, actual %#v", message, expected, actual)
+	}
+}
+
 // Encapsulates result of processing an SDK definition. Provides support for
 // checking the state of the build structures.
 type testSdkResult struct {
@@ -199,15 +206,23 @@ func (r *testSdkResult) getSdkSnapshotBuildInfo(sdk *sdk) *snapshotBuildInfo {
 
 	buildParams := sdk.BuildParamsForTests()
 	copyRules := &strings.Builder{}
+	otherCopyRules := &strings.Builder{}
+	snapshotDirPrefix := sdk.builderForTests.snapshotDir.String() + "/"
 	for _, bp := range buildParams {
 		switch bp.Rule.String() {
 		case android.Cp.String():
-			// Get source relative to build directory.
-			src := r.pathRelativeToBuildDir(bp.Input)
+			output := bp.Output
 			// Get destination relative to the snapshot root
-			dest := bp.Output.Rel()
-			_, _ = fmt.Fprintf(copyRules, "%s -> %s\n", src, dest)
-			info.snapshotContents = append(info.snapshotContents, dest)
+			dest := output.Rel()
+			src := android.NormalizePathForTesting(bp.Input)
+			// We differentiate between copy rules for the snapshot, and copy rules for the install file.
+			if strings.HasPrefix(output.String(), snapshotDirPrefix) {
+				// Get source relative to build directory.
+				_, _ = fmt.Fprintf(copyRules, "%s -> %s\n", src, dest)
+				info.snapshotContents = append(info.snapshotContents, dest)
+			} else {
+				_, _ = fmt.Fprintf(otherCopyRules, "%s -> %s\n", src, dest)
+			}
 
 		case repackageZip.String():
 			// Add the destdir to the snapshot contents as that is effectively where
@@ -219,12 +234,12 @@ func (r *testSdkResult) getSdkSnapshotBuildInfo(sdk *sdk) *snapshotBuildInfo {
 			// This could be an intermediate zip file and not the actual output zip.
 			// In that case this will be overridden when the rule to merge the zips
 			// is processed.
-			info.outputZip = r.pathRelativeToBuildDir(bp.Output)
+			info.outputZip = android.NormalizePathForTesting(bp.Output)
 
 		case mergeZips.String():
 			// Copy the current outputZip to the intermediateZip.
 			info.intermediateZip = info.outputZip
-			mergeInput := r.pathRelativeToBuildDir(bp.Input)
+			mergeInput := android.NormalizePathForTesting(bp.Input)
 			if info.intermediateZip != mergeInput {
 				r.t.Errorf("Expected intermediate zip %s to be an input to merge zips but found %s instead",
 					info.intermediateZip, mergeInput)
@@ -232,14 +247,15 @@ func (r *testSdkResult) getSdkSnapshotBuildInfo(sdk *sdk) *snapshotBuildInfo {
 
 			// Override output zip (which was actually the intermediate zip file) with the actual
 			// output zip.
-			info.outputZip = r.pathRelativeToBuildDir(bp.Output)
+			info.outputZip = android.NormalizePathForTesting(bp.Output)
 
 			// Save the zips to be merged into the intermediate zip.
-			info.mergeZips = r.pathsRelativeToBuildDir(bp.Inputs)
+			info.mergeZips = android.NormalizePathsForTesting(bp.Inputs)
 		}
 	}
 
 	info.copyRules = copyRules.String()
+	info.otherCopyRules = otherCopyRules.String()
 
 	return info
 }
@@ -252,26 +268,16 @@ func (r *testSdkResult) ModuleForTests(name string, variant string) android.Test
 	return r.ctx.ModuleForTests(name, variant)
 }
 
-func (r *testSdkResult) pathRelativeToBuildDir(path android.Path) string {
-	buildDir := filepath.Clean(r.config.BuildDir()) + "/"
-	return strings.TrimPrefix(filepath.Clean(path.String()), buildDir)
-}
-
-func (r *testSdkResult) pathsRelativeToBuildDir(paths android.Paths) []string {
-	var result []string
-	for _, path := range paths {
-		result = append(result, r.pathRelativeToBuildDir(path))
-	}
-	return result
-}
-
 // Check the snapshot build rules.
 //
 // Takes a list of functions which check different facets of the snapshot build rules.
 // Allows each test to customize what is checked without duplicating lots of code
 // or proliferating check methods of different flavors.
-func (r *testSdkResult) CheckSnapshot(name string, variant string, dir string, checkers ...snapshotBuildInfoChecker) {
+func (r *testSdkResult) CheckSnapshot(name string, dir string, checkers ...snapshotBuildInfoChecker) {
 	r.t.Helper()
+
+	// The sdk CommonOS variant is always responsible for generating the snapshot.
+	variant := android.CommonOS.Name
 
 	sdk := r.Module(name, variant).(*sdk)
 
@@ -325,6 +331,13 @@ func checkAllCopyRules(expected string) snapshotBuildInfoChecker {
 	}
 }
 
+func checkAllOtherCopyRules(expected string) snapshotBuildInfoChecker {
+	return func(info *snapshotBuildInfo) {
+		info.r.t.Helper()
+		info.r.AssertTrimmedStringEquals("Incorrect copy rules", expected, info.otherCopyRules)
+	}
+}
+
 // Check that the specified path is in the list of zips to merge with the intermediate zip.
 func checkMergeZip(expected string) snapshotBuildInfoChecker {
 	return func(info *snapshotBuildInfo) {
@@ -351,9 +364,13 @@ type snapshotBuildInfo struct {
 	// snapshot.
 	snapshotContents []string
 
-	// A formatted representation of the src/dest pairs, one pair per line, of the format
-	// src -> dest
+	// A formatted representation of the src/dest pairs for a snapshot, one pair per line,
+	// of the format src -> dest
 	copyRules string
+
+	// A formatted representation of the src/dest pairs for files not in a snapshot, one pair
+	// per line, of the format src -> dest
+	otherCopyRules string
 
 	// The path to the intermediate zip, which is a zip created from the source files copied
 	// into the snapshot directory and which will be merged with other zips to form the final output.

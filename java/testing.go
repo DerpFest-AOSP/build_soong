@@ -18,6 +18,7 @@ import (
 	"fmt"
 
 	"android/soong/android"
+	"android/soong/cc"
 )
 
 func TestConfig(buildDir string, env map[string]string, bp string, fs map[string][]byte) android.Config {
@@ -30,10 +31,12 @@ func TestConfig(buildDir string, env map[string]string, bp string, fs map[string
 		"b.kt":                   nil,
 		"a.jar":                  nil,
 		"b.jar":                  nil,
+		"c.jar":                  nil,
 		"APP_NOTICE":             nil,
 		"GENRULE_NOTICE":         nil,
 		"LIB_NOTICE":             nil,
 		"TOOL_NOTICE":            nil,
+		"AndroidTest.xml":        nil,
 		"java-res/a/a":           nil,
 		"java-res/b/b":           nil,
 		"java-res2/a":            nil,
@@ -47,8 +50,8 @@ func TestConfig(buildDir string, env map[string]string, bp string, fs map[string
 		"api/test-current.txt":   nil,
 		"api/test-removed.txt":   nil,
 		"framework/aidl/a.aidl":  nil,
-
-		"prebuilts/ndk/current/sources/cxx-stl/llvm-libc++/libs/arm64-v8a/libc++_shared.so": nil,
+		"assets_a/a":             nil,
+		"assets_b/b":             nil,
 
 		"prebuilts/sdk/14/public/android.jar":         nil,
 		"prebuilts/sdk/14/public/framework.aidl":      nil,
@@ -59,6 +62,7 @@ func TestConfig(buildDir string, env map[string]string, bp string, fs map[string
 		"prebuilts/sdk/29/public/android.jar":         nil,
 		"prebuilts/sdk/29/public/framework.aidl":      nil,
 		"prebuilts/sdk/29/system/android.jar":         nil,
+		"prebuilts/sdk/29/system/foo.jar":             nil,
 		"prebuilts/sdk/current/core/android.jar":      nil,
 		"prebuilts/sdk/current/public/android.jar":    nil,
 		"prebuilts/sdk/current/public/framework.aidl": nil,
@@ -117,6 +121,8 @@ func TestConfig(buildDir string, env map[string]string, bp string, fs map[string
 		"stubs/sources/foo/Foo.java": nil,
 	}
 
+	cc.GatherRequiredFilesForTest(mockFS)
+
 	for k, v := range fs {
 		mockFS[k] = v
 	}
@@ -141,6 +147,8 @@ func GatherRequiredDepsForTest() string {
 		"android_stubs_current",
 		"android_system_stubs_current",
 		"android_test_stubs_current",
+		"android_module_lib_stubs_current",
+		"services-stubs",
 		"core.current.stubs",
 		"core.platform.api.stubs",
 		"kotlin-stdlib",
@@ -204,9 +212,6 @@ func GatherRequiredDepsForTest() string {
 	systemModules := []string{
 		"core-current-stubs-system-modules",
 		"core-platform-api-stubs-system-modules",
-		"android_stubs_current_system_modules",
-		"android_system_stubs_current_system_modules",
-		"android_test_stubs_current_system_modules",
 	}
 
 	for _, extra := range systemModules {

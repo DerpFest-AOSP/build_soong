@@ -16,9 +16,7 @@ package cc
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/google/blueprint"
 
@@ -131,14 +129,6 @@ func (m *headerModule) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 	}
 
 	m.licensePath = android.PathForModuleSrc(ctx, String(m.properties.License))
-
-	// When generating NDK prebuilts, skip installing MIPS headers,
-	// but keep them when doing regular platform build.
-	// Ndk_abis property is only set to true with build/soong/scripts/build-ndk-prebuilts.sh
-	// TODO: Revert this once MIPS is supported in NDK again.
-	if ctx.Config().NdkAbis() && strings.Contains(ctx.ModuleName(), "mips") {
-		return
-	}
 
 	srcFiles := android.PathsForModuleSrcExcludes(ctx, m.properties.Srcs, m.properties.Exclude_srcs)
 	for _, header := range srcFiles {
@@ -255,16 +245,8 @@ func processHeadersWithVersioner(ctx android.ModuleContext, srcDir, outDir andro
 	depsPath := android.PathForSource(ctx, "bionic/libc/versioner-dependencies")
 	depsGlob := ctx.Glob(filepath.Join(depsPath.String(), "**/*"), nil)
 	for i, path := range depsGlob {
-		fileInfo, err := os.Lstat(path.String())
-		if err != nil {
-			ctx.ModuleErrorf("os.Lstat(%q) failed: %s", path.String, err)
-		}
-		if fileInfo.Mode()&os.ModeSymlink == os.ModeSymlink {
-			dest, err := os.Readlink(path.String())
-			if err != nil {
-				ctx.ModuleErrorf("os.Readlink(%q) failed: %s",
-					path.String, err)
-			}
+		if ctx.IsSymlink(path) {
+			dest := ctx.Readlink(path)
 			// Additional .. to account for the symlink itself.
 			depsGlob[i] = android.PathForSource(
 				ctx, filepath.Clean(filepath.Join(path.String(), "..", dest)))

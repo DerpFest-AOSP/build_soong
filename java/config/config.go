@@ -45,8 +45,10 @@ var (
 		"core-icu4j",
 		"core-oj",
 		"core-libart",
+		// TODO: Could this be all updatable bootclasspath jars?
 		"updatable-media",
-		"ike",
+		"framework-sdkextensions",
+		"android.net.ipsec.ike",
 	}
 )
 
@@ -141,6 +143,20 @@ func init() {
 
 	pctx.VariableFunc("JavacWrapper", func(ctx android.PackageVarContext) string {
 		if override := ctx.Config().Getenv("JAVAC_WRAPPER"); override != "" {
+			return override + " "
+		}
+		return ""
+	})
+
+	pctx.VariableFunc("R8Wrapper", func(ctx android.PackageVarContext) string {
+		if override := ctx.Config().Getenv("R8_WRAPPER"); override != "" {
+			return override + " "
+		}
+		return ""
+	})
+
+	pctx.VariableFunc("D8Wrapper", func(ctx android.PackageVarContext) string {
+		if override := ctx.Config().Getenv("D8_WRAPPER"); override != "" {
 			return override + " "
 		}
 		return ""

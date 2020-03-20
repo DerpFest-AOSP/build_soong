@@ -16,6 +16,7 @@ package android
 
 import (
 	"fmt"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -36,8 +37,6 @@ func NewTestContext() *TestContext {
 
 	ctx.SetNameInterface(nameResolver)
 
-	ctx.preArch = append(ctx.preArch, registerLoadHookMutator)
-
 	ctx.postDeps = append(ctx.postDeps, registerPathDepsMutator)
 
 	return ctx
@@ -51,12 +50,18 @@ func NewTestArchContext() *TestContext {
 
 type TestContext struct {
 	*Context
-	preArch, preDeps, postDeps []RegisterMutatorFunc
-	NameResolver               *NameResolver
+	preArch, preDeps, postDeps, finalDeps []RegisterMutatorFunc
+	NameResolver                          *NameResolver
+	config                                Config
 }
 
 func (ctx *TestContext) PreArchMutators(f RegisterMutatorFunc) {
 	ctx.preArch = append(ctx.preArch, f)
+}
+
+func (ctx *TestContext) HardCodedPreArchMutators(f RegisterMutatorFunc) {
+	// Register mutator function as normal for testing.
+	ctx.PreArchMutators(f)
 }
 
 func (ctx *TestContext) PreDepsMutators(f RegisterMutatorFunc) {
@@ -67,14 +72,32 @@ func (ctx *TestContext) PostDepsMutators(f RegisterMutatorFunc) {
 	ctx.postDeps = append(ctx.postDeps, f)
 }
 
+func (ctx *TestContext) FinalDepsMutators(f RegisterMutatorFunc) {
+	ctx.finalDeps = append(ctx.finalDeps, f)
+}
+
 func (ctx *TestContext) Register(config Config) {
 	ctx.SetFs(config.fs)
 	if config.mockBpList != "" {
 		ctx.SetModuleListFile(config.mockBpList)
 	}
-	registerMutators(ctx.Context.Context, ctx.preArch, ctx.preDeps, ctx.postDeps)
+	registerMutators(ctx.Context.Context, ctx.preArch, ctx.preDeps, ctx.postDeps, ctx.finalDeps)
 
 	ctx.RegisterSingletonType("env", EnvSingleton)
+
+	ctx.config = config
+}
+
+func (ctx *TestContext) ParseFileList(rootDir string, filePaths []string) (deps []string, errs []error) {
+	// This function adapts the old style ParseFileList calls that are spread throughout the tests
+	// to the new style that takes a config.
+	return ctx.Context.ParseFileList(rootDir, filePaths, ctx.config)
+}
+
+func (ctx *TestContext) ParseBlueprintsFiles(rootDir string) (deps []string, errs []error) {
+	// This function adapts the old style ParseBlueprintsFiles calls that are spread throughout the
+	// tests to the new style that takes a config.
+	return ctx.Context.ParseBlueprintsFiles(rootDir, ctx.config)
 }
 
 func (ctx *TestContext) RegisterModuleType(name string, factory ModuleFactory) {
@@ -387,6 +410,10 @@ func CheckErrorsAgainstExpectations(t *testing.T, errs []error, expectedErrorPat
 
 }
 
+func SetInMakeForTests(config Config) {
+	config.inMake = true
+}
+
 func AndroidMkEntriesForTest(t *testing.T, config Config, bpPath string, mod blueprint.Module) []AndroidMkEntries {
 	var p AndroidMkEntriesProvider
 	var ok bool
@@ -410,4 +437,34 @@ func AndroidMkDataForTest(t *testing.T, config Config, bpPath string, mod bluepr
 	data := p.AndroidMk()
 	data.fillInData(config, bpPath, mod)
 	return data
+}
+
+// Normalize the path for testing.
+//
+// If the path is relative to the build directory then return the relative path
+// to avoid tests having to deal with the dynamically generated build directory.
+//
+// Otherwise, return the supplied path as it is almost certainly a source path
+// that is relative to the root of the source tree.
+//
+// The build and source paths should be distinguishable based on their contents.
+func NormalizePathForTesting(path Path) string {
+	p := path.String()
+	if w, ok := path.(WritablePath); ok {
+		rel, err := filepath.Rel(w.buildDir(), p)
+		if err != nil {
+			panic(err)
+		}
+		return rel
+	}
+	return p
+}
+
+func NormalizePathsForTesting(paths Paths) []string {
+	var result []string
+	for _, path := range paths {
+		relative := NormalizePathForTesting(path)
+		result = append(result, relative)
+	}
+	return result
 }

@@ -151,6 +151,14 @@ func needsLibAndroidSupport(ctx BaseModuleContext) bool {
 	return version < 21
 }
 
+func staticUnwinder(ctx android.BaseModuleContext) string {
+	if ctx.Arch().ArchType == android.Arm {
+		return "libunwind_llvm"
+	} else {
+		return "libgcc_stripped"
+	}
+}
+
 func (stl *stl) deps(ctx BaseModuleContext, deps Deps) Deps {
 	switch stl.Properties.SelectedStl {
 	case "libstdc++":
@@ -171,15 +179,17 @@ func (stl *stl) deps(ctx BaseModuleContext, deps Deps) Deps {
 			deps.StaticLibs = append(deps.StaticLibs, "libc++demangle")
 		}
 		if ctx.toolchain().Bionic() {
-			if ctx.Arch().ArchType == android.Arm {
-				deps.StaticLibs = append(deps.StaticLibs, "libunwind_llvm")
-			}
 			if ctx.staticBinary() {
-				deps.StaticLibs = append(deps.StaticLibs, "libm", "libc")
+				deps.StaticLibs = append(deps.StaticLibs, "libm", "libc", staticUnwinder(ctx))
+			} else {
+				deps.StaticUnwinderIfLegacy = true
 			}
 		}
 	case "":
 		// None or error.
+		if ctx.toolchain().Bionic() && ctx.Module().Name() == "libc++" {
+			deps.StaticUnwinderIfLegacy = true
+		}
 	case "ndk_system":
 		// TODO: Make a system STL prebuilt for the NDK.
 		// The system STL doesn't have a prebuilt (it uses the system's libstdc++), but it does have
@@ -196,6 +206,8 @@ func (stl *stl) deps(ctx BaseModuleContext, deps Deps) Deps {
 		}
 		if ctx.Arch().ArchType == android.Arm {
 			deps.StaticLibs = append(deps.StaticLibs, "ndk_libunwind")
+		} else {
+			deps.StaticLibs = append(deps.StaticLibs, "libgcc_stripped")
 		}
 	default:
 		panic(fmt.Errorf("Unknown stl: %q", stl.Properties.SelectedStl))
@@ -223,11 +235,6 @@ func (stl *stl) flags(ctx ModuleContext, flags Flags) Flags {
 			flags.Local.CppFlags = append(flags.Local.CppFlags, "-nostdinc++")
 			flags.extraLibFlags = append(flags.extraLibFlags, "-nostdlib++")
 			if ctx.Windows() {
-				if stl.Properties.SelectedStl == "libc++_static" {
-					// These are transitively needed by libc++_static.
-					flags.extraLibFlags = append(flags.extraLibFlags,
-						"-lmsvcrt", "-lucrt")
-				}
 				// Use SjLj exceptions for 32-bit.  libgcc_eh implements SjLj
 				// exception model for 32-bit.
 				if ctx.Arch().ArchType == android.X86 {

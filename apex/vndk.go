@@ -105,29 +105,52 @@ func apexVndkDepsMutator(mctx android.BottomUpMutatorContext) {
 	}
 }
 
-func makeCompatSymlinks(apexName string, ctx android.ModuleContext) (symlinks []string) {
+// name is module.BaseModuleName() which is used as LOCAL_MODULE_NAME and also LOCAL_OVERRIDES_*
+func makeCompatSymlinks(name string, ctx android.ModuleContext) (symlinks []string) {
 	// small helper to add symlink commands
 	addSymlink := func(target, dir, linkName string) {
-		outDir := filepath.Join("$(PRODUCT_OUT)", dir)
-		link := filepath.Join(outDir, linkName)
-		symlinks = append(symlinks, "mkdir -p "+outDir+" && rm -rf "+link+" && ln -sf "+target+" "+link)
+		link := filepath.Join(dir, linkName)
+		symlinks = append(symlinks, "mkdir -p "+dir+" && rm -rf "+link+" && ln -sf "+target+" "+link)
 	}
 
 	// TODO(b/142911355): [VNDK APEX] Fix hard-coded references to /system/lib/vndk
 	// When all hard-coded references are fixed, remove symbolic links
 	// Note that  we should keep following symlinks for older VNDKs (<=29)
 	// Since prebuilt vndk libs still depend on system/lib/vndk path
-	if strings.HasPrefix(apexName, vndkApexNamePrefix) {
+	if strings.HasPrefix(name, vndkApexName) {
+		vndkVersion := ctx.DeviceConfig().PlatformVndkVersion()
+		if strings.HasPrefix(name, vndkApexNamePrefix) {
+			vndkVersion = strings.TrimPrefix(name, vndkApexNamePrefix)
+		}
 		// the name of vndk apex is formatted "com.android.vndk.v" + version
-		vndkVersion := strings.TrimPrefix(apexName, vndkApexNamePrefix)
+		apexName := vndkApexNamePrefix + vndkVersion
 		if ctx.Config().Android64() {
-			addSymlink("/apex/"+apexName+"/lib64", "/system/lib64", "vndk-sp-"+vndkVersion)
-			addSymlink("/apex/"+apexName+"/lib64", "/system/lib64", "vndk-"+vndkVersion)
+			addSymlink("/apex/"+apexName+"/lib64", "$(TARGET_OUT)/lib64", "vndk-sp-"+vndkVersion)
+			addSymlink("/apex/"+apexName+"/lib64", "$(TARGET_OUT)/lib64", "vndk-"+vndkVersion)
 		}
 		if !ctx.Config().Android64() || ctx.DeviceConfig().DeviceSecondaryArch() != "" {
-			addSymlink("/apex/"+apexName+"/lib", "/system/lib", "vndk-sp-"+vndkVersion)
-			addSymlink("/apex/"+apexName+"/lib", "/system/lib", "vndk-"+vndkVersion)
+			addSymlink("/apex/"+apexName+"/lib", "$(TARGET_OUT)/lib", "vndk-sp-"+vndkVersion)
+			addSymlink("/apex/"+apexName+"/lib", "$(TARGET_OUT)/lib", "vndk-"+vndkVersion)
 		}
+		return
+	}
+
+	// http://b/121248172 - create a link from /system/usr/icu to
+	// /apex/com.android.i18n/etc/icu so that apps can find the ICU .dat file.
+	// A symlink can't overwrite a directory and the /system/usr/icu directory once
+	// existed so the required structure must be created whatever we find.
+	if name == "com.android.i18n" {
+		addSymlink("/apex/com.android.i18n/etc/icu", "$(TARGET_OUT)/usr", "icu")
+		return
+	}
+
+	// TODO(b/124106384): Clean up compat symlinks for ART binaries.
+	if strings.HasPrefix(name, "com.android.art.") {
+		artBinaries := []string{"dalvikvm", "dex2oat"}
+		for _, b := range artBinaries {
+			addSymlink("/apex/com.android.art/bin/"+b, "$(TARGET_OUT)/bin", b)
+		}
+		return
 	}
 	return
 }

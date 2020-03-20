@@ -101,6 +101,10 @@ type BaseLinkerProperties struct {
 			// variant of the C/C++ module.
 			Shared_libs []string
 
+			// list of static libs that only should be used to build the vendor
+			// variant of the C/C++ module.
+			Static_libs []string
+
 			// list of shared libs that should not be used to build the vendor variant
 			// of the C/C++ module.
 			Exclude_shared_libs []string
@@ -141,6 +145,19 @@ type BaseLinkerProperties struct {
 			// of the C/C++ module.
 			Exclude_header_libs []string
 		}
+		Ramdisk struct {
+			// list of static libs that only should be used to build the recovery
+			// variant of the C/C++ module.
+			Static_libs []string
+
+			// list of shared libs that should not be used to build
+			// the ramdisk variant of the C/C++ module.
+			Exclude_shared_libs []string
+
+			// list of static libs that should not be used to build
+			// the ramdisk variant of the C/C++ module.
+			Exclude_static_libs []string
+		}
 	}
 
 	// make android::build:GetBuildNumber() available containing the build ID.
@@ -151,6 +168,9 @@ type BaseLinkerProperties struct {
 
 	// local file name to pass to the linker as --version_script
 	Version_script *string `android:"path,arch_variant"`
+
+	// list of static libs that should not be used to build this module
+	Exclude_static_libs []string
 }
 
 func NewBaseLinker(sanitize *sanitize) *baseLinker {
@@ -196,6 +216,8 @@ func (linker *baseLinker) linkerDeps(ctx DepsContext, deps Deps) Deps {
 	deps.ReexportSharedLibHeaders = append(deps.ReexportSharedLibHeaders, linker.Properties.Export_shared_lib_headers...)
 	deps.ReexportGeneratedHeaders = append(deps.ReexportGeneratedHeaders, linker.Properties.Export_generated_headers...)
 
+	deps.WholeStaticLibs = removeListFromList(deps.WholeStaticLibs, linker.Properties.Exclude_static_libs)
+
 	if Bool(linker.Properties.Use_version_lib) {
 		deps.WholeStaticLibs = append(deps.WholeStaticLibs, "libbuildversion")
 	}
@@ -204,6 +226,7 @@ func (linker *baseLinker) linkerDeps(ctx DepsContext, deps Deps) Deps {
 		deps.SharedLibs = append(deps.SharedLibs, linker.Properties.Target.Vendor.Shared_libs...)
 		deps.SharedLibs = removeListFromList(deps.SharedLibs, linker.Properties.Target.Vendor.Exclude_shared_libs)
 		deps.ReexportSharedLibHeaders = removeListFromList(deps.ReexportSharedLibHeaders, linker.Properties.Target.Vendor.Exclude_shared_libs)
+		deps.StaticLibs = append(deps.StaticLibs, linker.Properties.Target.Vendor.Static_libs...)
 		deps.StaticLibs = removeListFromList(deps.StaticLibs, linker.Properties.Target.Vendor.Exclude_static_libs)
 		deps.HeaderLibs = removeListFromList(deps.HeaderLibs, linker.Properties.Target.Vendor.Exclude_header_libs)
 		deps.ReexportStaticLibHeaders = removeListFromList(deps.ReexportStaticLibHeaders, linker.Properties.Target.Vendor.Exclude_static_libs)
@@ -223,12 +246,20 @@ func (linker *baseLinker) linkerDeps(ctx DepsContext, deps Deps) Deps {
 		deps.WholeStaticLibs = removeListFromList(deps.WholeStaticLibs, linker.Properties.Target.Recovery.Exclude_static_libs)
 	}
 
+	if ctx.inRamdisk() {
+		deps.SharedLibs = removeListFromList(deps.SharedLibs, linker.Properties.Target.Recovery.Exclude_shared_libs)
+		deps.ReexportSharedLibHeaders = removeListFromList(deps.ReexportSharedLibHeaders, linker.Properties.Target.Recovery.Exclude_shared_libs)
+		deps.StaticLibs = append(deps.StaticLibs, linker.Properties.Target.Recovery.Static_libs...)
+		deps.StaticLibs = removeListFromList(deps.StaticLibs, linker.Properties.Target.Recovery.Exclude_static_libs)
+		deps.ReexportStaticLibHeaders = removeListFromList(deps.ReexportStaticLibHeaders, linker.Properties.Target.Recovery.Exclude_static_libs)
+		deps.WholeStaticLibs = removeListFromList(deps.WholeStaticLibs, linker.Properties.Target.Recovery.Exclude_static_libs)
+	}
+
 	if ctx.toolchain().Bionic() {
-		// libclang_rt.builtins, libgcc and libatomic have to be last on the command line
+		// libclang_rt.builtins and libatomic have to be last on the command line
 		if !Bool(linker.Properties.No_libcrt) {
 			deps.LateStaticLibs = append(deps.LateStaticLibs, config.BuiltinsRuntimeLibrary(ctx.toolchain()))
 			deps.LateStaticLibs = append(deps.LateStaticLibs, "libatomic")
-			deps.LateStaticLibs = append(deps.LateStaticLibs, "libgcc_stripped")
 		}
 
 		systemSharedLibs := linker.Properties.System_shared_libs
@@ -341,6 +372,8 @@ func (linker *baseLinker) linkerFlags(ctx ModuleContext, flags Flags) Flags {
 				flags.Global.LdFlags = append(flags.Global.LdFlags,
 					"-Wl,--pack-dyn-relocs=android+relr",
 					"-Wl,--use-android-relr-tags")
+			} else if CheckSdkVersionAtLeast(ctx, 23) {
+				flags.Global.LdFlags = append(flags.Global.LdFlags, "-Wl,--pack-dyn-relocs=android")
 			}
 		}
 	} else {
@@ -405,11 +438,10 @@ func (linker *baseLinker) linkerFlags(ctx ModuleContext, flags Flags) Flags {
 		}
 	}
 
-	if ctx.useSdk() && (ctx.Arch().ArchType != android.Mips && ctx.Arch().ArchType != android.Mips64) {
+	if ctx.useSdk() {
 		// The bionic linker now has support gnu style hashes (which are much faster!), but shipping
 		// to older devices requires the old style hash. Fortunately, we can build with both and
 		// it'll work anywhere.
-		// This is not currently supported on MIPS architectures.
 		flags.Global.LdFlags = append(flags.Global.LdFlags, "-Wl,--hash-style=both")
 	}
 
@@ -457,6 +489,12 @@ func (linker *baseLinker) link(ctx ModuleContext,
 	panic(fmt.Errorf("baseLinker doesn't know how to link"))
 }
 
+func (linker *baseLinker) linkerSpecifiedDeps(specifiedDeps specifiedDeps) specifiedDeps {
+	specifiedDeps.sharedLibs = append(specifiedDeps.sharedLibs, linker.Properties.Shared_libs...)
+	specifiedDeps.systemSharedLibs = append(specifiedDeps.systemSharedLibs, linker.Properties.System_shared_libs...)
+	return specifiedDeps
+}
+
 // Injecting version symbols
 // Some host modules want a version number, but we don't want to rebuild it every time.  Optionally add a step
 // after linking that injects a constant placeholder with the current version number.
@@ -468,19 +506,21 @@ func init() {
 var injectVersionSymbol = pctx.AndroidStaticRule("injectVersionSymbol",
 	blueprint.RuleParams{
 		Command: "$symbolInjectCmd -i $in -o $out -s soong_build_number " +
-			"-from 'SOONG BUILD NUMBER PLACEHOLDER' -v $buildNumberFromFile",
+			"-from 'SOONG BUILD NUMBER PLACEHOLDER' -v $$(cat $buildNumberFile)",
 		CommandDeps: []string{"$symbolInjectCmd"},
 	},
-	"buildNumberFromFile")
+	"buildNumberFile")
 
 func (linker *baseLinker) injectVersionSymbol(ctx ModuleContext, in android.Path, out android.WritablePath) {
+	buildNumberFile := ctx.Config().BuildNumberFile(ctx)
 	ctx.Build(pctx, android.BuildParams{
 		Rule:        injectVersionSymbol,
 		Description: "inject version symbol",
 		Input:       in,
 		Output:      out,
+		OrderOnly:   android.Paths{buildNumberFile},
 		Args: map[string]string{
-			"buildNumberFromFile": proptools.NinjaEscape(ctx.Config().BuildNumberFromFile()),
+			"buildNumberFile": buildNumberFile.String(),
 		},
 	})
 }

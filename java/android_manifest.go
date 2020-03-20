@@ -53,13 +53,13 @@ var optionalUsesLibs = []string{
 
 // Uses manifest_fixer.py to inject minSdkVersion, etc. into an AndroidManifest.xml
 func manifestFixer(ctx android.ModuleContext, manifest android.Path, sdkContext sdkContext, sdkLibraries []string,
-	isLibrary, useEmbeddedNativeLibs, usesNonSdkApis, useEmbeddedDex, hasNoCode bool) android.Path {
+	isLibrary, useEmbeddedNativeLibs, usesNonSdkApis, useEmbeddedDex, hasNoCode bool, loggingParent string) android.Path {
 
 	var args []string
 	if isLibrary {
 		args = append(args, "--library")
 	} else {
-		minSdkVersion, err := sdkVersionToNumber(ctx, sdkContext.minSdkVersion())
+		minSdkVersion, err := sdkContext.minSdkVersion().effectiveVersion(ctx)
 		if err != nil {
 			ctx.ModuleErrorf("invalid minSdkVersion: %s", err)
 		}
@@ -91,18 +91,32 @@ func manifestFixer(ctx android.ModuleContext, manifest android.Path, sdkContext 
 		args = append(args, "--has-no-code")
 	}
 
+	if loggingParent != "" {
+		args = append(args, "--logging-parent", loggingParent)
+	}
 	var deps android.Paths
-	targetSdkVersion := sdkVersionOrDefault(ctx, sdkContext.targetSdkVersion())
-	if targetSdkVersion == ctx.Config().PlatformSdkCodename() &&
-		ctx.Config().UnbundledBuild() &&
-		!ctx.Config().UnbundledBuildUsePrebuiltSdks() &&
-		ctx.Config().IsEnvTrue("UNBUNDLED_BUILD_TARGET_SDK_WITH_API_FINGERPRINT") {
-		apiFingerprint := ApiFingerprintPath(ctx)
-		targetSdkVersion += fmt.Sprintf(".$$(cat %s)", apiFingerprint.String())
-		deps = append(deps, apiFingerprint)
+	targetSdkVersion, err := sdkContext.targetSdkVersion().effectiveVersionString(ctx)
+	if err != nil {
+		ctx.ModuleErrorf("invalid targetSdkVersion: %s", err)
+	}
+	if UseApiFingerprint(ctx) {
+		targetSdkVersion = ctx.Config().PlatformSdkCodename() + fmt.Sprintf(".$$(cat %s)", ApiFingerprintPath(ctx).String())
+		deps = append(deps, ApiFingerprintPath(ctx))
+	}
+
+	minSdkVersion, err := sdkContext.minSdkVersion().effectiveVersionString(ctx)
+	if err != nil {
+		ctx.ModuleErrorf("invalid minSdkVersion: %s", err)
+	}
+	if UseApiFingerprint(ctx) {
+		minSdkVersion = ctx.Config().PlatformSdkCodename() + fmt.Sprintf(".$$(cat %s)", ApiFingerprintPath(ctx).String())
+		deps = append(deps, ApiFingerprintPath(ctx))
 	}
 
 	fixedManifest := android.PathForModuleOut(ctx, "manifest_fixer", "AndroidManifest.xml")
+	if err != nil {
+		ctx.ModuleErrorf("invalid minSdkVersion: %s", err)
+	}
 	ctx.Build(pctx, android.BuildParams{
 		Rule:        manifestFixerRule,
 		Description: "fix manifest",
@@ -110,7 +124,7 @@ func manifestFixer(ctx android.ModuleContext, manifest android.Path, sdkContext 
 		Implicits:   deps,
 		Output:      fixedManifest,
 		Args: map[string]string{
-			"minSdkVersion":    sdkVersionOrDefault(ctx, sdkContext.minSdkVersion()),
+			"minSdkVersion":    minSdkVersion,
 			"targetSdkVersion": targetSdkVersion,
 			"args":             strings.Join(args, " "),
 		},

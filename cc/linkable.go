@@ -26,6 +26,7 @@ type LinkableInterface interface {
 	BuildStubs() bool
 	SetBuildStubs()
 	SetStubsVersions(string)
+	StubsVersion() string
 	HasStubsVariants() bool
 	SelectedStl() string
 	ApiLevel() string
@@ -37,6 +38,9 @@ type LinkableInterface interface {
 	Static() bool
 	Shared() bool
 	Toc() android.OptionalPath
+
+	InRamdisk() bool
+	OnlyInRamdisk() bool
 
 	InRecovery() bool
 	OnlyInRecovery() bool
@@ -62,11 +66,16 @@ type DependencyTag struct {
 	ReexportFlags bool
 
 	ExplicitlyVersioned bool
+
+	FromStatic bool
 }
 
 var (
 	SharedDepTag = DependencyTag{Name: "shared", Library: true, Shared: true}
 	StaticDepTag = DependencyTag{Name: "static", Library: true}
+
+	// Same as SharedDepTag, but from a static lib
+	SharedFromStaticDepTag = DependencyTag{Name: "shared from static", Library: true, Shared: true, FromStatic: true}
 
 	CrtBeginDepTag = DependencyTag{Name: "crtbegin"}
 	CrtEndDepTag   = DependencyTag{Name: "crtend"}

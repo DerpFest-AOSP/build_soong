@@ -180,7 +180,42 @@ type SnapshotBuilder interface {
 	// will only be used if the equivalently named non-prebuilt module is not
 	// present.
 	AddPrebuiltModule(member SdkMember, moduleType string) BpModule
+
+	// The property tag to use when adding a property to a BpModule that contains
+	// references to other sdk members. Using this will ensure that the reference
+	// is correctly output for both versioned and unversioned prebuilts in the
+	// snapshot.
+	//
+	// "required: true" means that the property must only contain references
+	// to other members of the sdk. Passing a reference to a module that is not a
+	// member of the sdk will result in a build error.
+	//
+	// "required: false" means that the property can contain references to modules
+	// that are either members or not members of the sdk. If a reference is to a
+	// module that is a non member then the reference is left unchanged, i.e. it
+	// is not transformed as references to members are.
+	//
+	// The handling of the member names is dependent on whether it is an internal or
+	// exported member. An exported member is one whose name is specified in one of
+	// the member type specific properties. An internal member is one that is added
+	// due to being a part of an exported (or other internal) member and is not itself
+	// an exported member.
+	//
+	// Member names are handled as follows:
+	// * When creating the unversioned form of the module the name is left unchecked
+	//   unless the member is internal in which case it is transformed into an sdk
+	//   specific name, i.e. by prefixing with the sdk name.
+	//
+	// * When creating the versioned form of the module the name is transformed into
+	//   a versioned sdk specific name, i.e. by prefixing with the sdk name and
+	//   suffixing with the version.
+	//
+	// e.g.
+	// bpPropertySet.AddPropertyWithTag("libs", []string{"member1", "member2"}, builder.SdkMemberReferencePropertyTag(true))
+	SdkMemberReferencePropertyTag(required bool) BpPropertyTag
 }
+
+type BpPropertyTag interface{}
 
 // A set of properties for use in a .bp file.
 type BpPropertySet interface {
@@ -190,8 +225,11 @@ type BpPropertySet interface {
 	// * bool
 	// * BpPropertySet
 	//
-	// It is an error is multiples properties with the same name are added.
+	// It is an error if multiple properties with the same name are added.
 	AddProperty(name string, value interface{})
+
+	// Add a property with an associated tag
+	AddPropertyWithTag(name string, value interface{}, tag BpPropertyTag)
 
 	// Add a property set with the specified name and return so that additional
 	// properties can be added.
@@ -211,6 +249,25 @@ type SdkMember interface {
 
 	// All the variants required by the SDK.
 	Variants() []SdkAware
+}
+
+type SdkMemberTypeDependencyTag interface {
+	blueprint.DependencyTag
+
+	SdkMemberType() SdkMemberType
+}
+
+type sdkMemberDependencyTag struct {
+	blueprint.BaseDependencyTag
+	memberType SdkMemberType
+}
+
+func (t *sdkMemberDependencyTag) SdkMemberType() SdkMemberType {
+	return t.memberType
+}
+
+func DependencyTagForSdkMemberType(memberType SdkMemberType) SdkMemberTypeDependencyTag {
+	return &sdkMemberDependencyTag{memberType: memberType}
 }
 
 // Interface that must be implemented for every type that can be a member of an
@@ -237,10 +294,21 @@ type SdkMemberType interface {
 	// The name of the member type property on an sdk module.
 	SdkPropertyName() string
 
-	// Add dependencies from the SDK module to all the variants the member
-	// contributes to the SDK. The exact set of variants required is determined
-	// by the SDK and its properties. The dependencies must be added with the
-	// supplied tag.
+	// True if the member type supports the sdk/sdk_snapshot, false otherwise.
+	UsableWithSdkAndSdkSnapshot() bool
+
+	// Return true if modules of this type can have dependencies which should be
+	// treated as if they are sdk members.
+	//
+	// Any dependency that is to be treated as a member of the sdk needs to implement
+	// SdkAware and be added with an SdkMemberTypeDependencyTag tag.
+	HasTransitiveSdkMembers() bool
+
+	// Add dependencies from the SDK module to all the module variants the member
+	// type contributes to the SDK. `names` is the list of module names given in
+	// the member type property (as returned by SdkPropertyName()) in the SDK
+	// module. The exact set of variants required is determined by the SDK and its
+	// properties. The dependencies must be added with the supplied tag.
 	//
 	// The BottomUpMutatorContext provided is for the SDK module.
 	AddDependencies(mctx BottomUpMutatorContext, dependencyTag blueprint.DependencyTag, names []string)
@@ -259,15 +327,72 @@ type SdkMemberType interface {
 	//
 	// The SdkMember is guaranteed to contain variants for which the
 	// IsInstance(Module) method returned true.
+	//
+	// deprecated Use AddPrebuiltModule() instead.
 	BuildSnapshot(sdkModuleContext ModuleContext, builder SnapshotBuilder, member SdkMember)
+
+	// Add a prebuilt module that the sdk will populate.
+	//
+	// Returning nil from this will cause the sdk module type to use the deprecated BuildSnapshot
+	// method to build the snapshot. That method is deprecated because it requires the SdkMemberType
+	// implementation to do all the word.
+	//
+	// Otherwise, returning a non-nil value from this will cause the sdk module type to do the
+	// majority of the work to generate the snapshot. The sdk module code generates the snapshot
+	// as follows:
+	//
+	// * A properties struct of type SdkMemberProperties is created for each variant and
+	//   populated with information from the variant by calling PopulateFromVariant(SdkAware)
+	//   on the struct.
+	//
+	// * An additional properties struct is created into which the common properties will be
+	//   added.
+	//
+	// * The variant property structs are analysed to find exported (capitalized) fields which
+	//   have common values. Those fields are cleared and the common value added to the common
+	//   properties. A field annotated with a tag of `sdk:"keep"` will be treated as if it
+	//   was not capitalized, i.e. not optimized for common values.
+	//
+	// * The sdk module type populates the BpModule structure, creating the arch specific
+	//   structure and calls AddToPropertySet(...) on the properties struct to add the member
+	//   specific properties in the correct place in the structure.
+	//
+	AddPrebuiltModule(sdkModuleContext ModuleContext, builder SnapshotBuilder, member SdkMember) BpModule
+
+	// Create a structure into which variant specific properties can be added.
+	CreateVariantPropertiesStruct() SdkMemberProperties
 }
 
+// Base type for SdkMemberType implementations.
 type SdkMemberTypeBase struct {
-	PropertyName string
+	PropertyName         string
+	SupportsSdk          bool
+	TransitiveSdkMembers bool
 }
 
 func (b *SdkMemberTypeBase) SdkPropertyName() string {
 	return b.PropertyName
+}
+
+func (b *SdkMemberTypeBase) UsableWithSdkAndSdkSnapshot() bool {
+	return b.SupportsSdk
+}
+
+func (b *SdkMemberTypeBase) HasTransitiveSdkMembers() bool {
+	return b.TransitiveSdkMembers
+}
+
+func (b *SdkMemberTypeBase) BuildSnapshot(sdkModuleContext ModuleContext, builder SnapshotBuilder, member SdkMember) {
+	panic("override AddPrebuiltModule")
+}
+
+func (b *SdkMemberTypeBase) AddPrebuiltModule(sdkModuleContext ModuleContext, builder SnapshotBuilder, member SdkMember) BpModule {
+	// Returning nil causes the legacy BuildSnapshot method to be used.
+	return nil
+}
+
+func (b *SdkMemberTypeBase) CreateVariantPropertiesStruct() SdkMemberProperties {
+	panic("override me")
 }
 
 // Encapsulates the information about registered SdkMemberTypes.
@@ -279,22 +404,8 @@ type SdkMemberTypesRegistry struct {
 	key OnceKey
 }
 
-func (r *SdkMemberTypesRegistry) RegisteredTypes() []SdkMemberType {
-	return r.list
-}
-
-func (r *SdkMemberTypesRegistry) UniqueOnceKey() OnceKey {
-	// Use the pointer to the registry as the unique key.
-	return NewCustomOnceKey(r)
-}
-
-// The set of registered SdkMemberTypes.
-var SdkMemberTypes = &SdkMemberTypesRegistry{}
-
-// Register an SdkMemberType object to allow them to be used in the sdk and sdk_snapshot module
-// types.
-func RegisterSdkMemberType(memberType SdkMemberType) {
-	oldList := SdkMemberTypes.list
+func (r *SdkMemberTypesRegistry) copyAndAppend(memberType SdkMemberType) *SdkMemberTypesRegistry {
+	oldList := r.list
 
 	// Copy the slice just in case this is being read while being modified, e.g. when testing.
 	list := make([]SdkMemberType, 0, len(oldList)+1)
@@ -319,8 +430,80 @@ func RegisterSdkMemberType(memberType SdkMemberType) {
 	key := NewOnceKey(strings.Join(properties, "|"))
 
 	// Create a new registry so the pointer uniquely identifies the set of registered types.
-	SdkMemberTypes = &SdkMemberTypesRegistry{
+	return &SdkMemberTypesRegistry{
 		list: list,
 		key:  key,
 	}
+}
+
+func (r *SdkMemberTypesRegistry) RegisteredTypes() []SdkMemberType {
+	return r.list
+}
+
+func (r *SdkMemberTypesRegistry) UniqueOnceKey() OnceKey {
+	// Use the pointer to the registry as the unique key.
+	return NewCustomOnceKey(r)
+}
+
+// The set of registered SdkMemberTypes, one for sdk module and one for module_exports.
+var ModuleExportsMemberTypes = &SdkMemberTypesRegistry{}
+var SdkMemberTypes = &SdkMemberTypesRegistry{}
+
+// Register an SdkMemberType object to allow them to be used in the sdk and sdk_snapshot module
+// types.
+func RegisterSdkMemberType(memberType SdkMemberType) {
+	// All member types are usable with module_exports.
+	ModuleExportsMemberTypes = ModuleExportsMemberTypes.copyAndAppend(memberType)
+
+	// Only those that explicitly indicate it are usable with sdk.
+	if memberType.UsableWithSdkAndSdkSnapshot() {
+		SdkMemberTypes = SdkMemberTypes.copyAndAppend(memberType)
+	}
+}
+
+// Base structure for all implementations of SdkMemberProperties.
+//
+// Contains common properties that apply across many different member types. These
+// are not affected by the optimization to extract common values.
+type SdkMemberPropertiesBase struct {
+	// The setting to use for the compile_multilib property.
+	Compile_multilib string `sdk:"keep"`
+
+	// The number of unique os types supported by the member variants.
+	Os_count int `sdk:"keep"`
+
+	// The os type for which these properties refer.
+	Os OsType `sdk:"keep"`
+}
+
+// The os prefix to use for any file paths in the sdk.
+//
+// Is an empty string if the member only provides variants for a single os type, otherwise
+// is the OsType.Name.
+func (b *SdkMemberPropertiesBase) OsPrefix() string {
+	if b.Os_count == 1 {
+		return ""
+	} else {
+		return b.Os.Name
+	}
+}
+
+func (b *SdkMemberPropertiesBase) Base() *SdkMemberPropertiesBase {
+	return b
+}
+
+// Interface to be implemented on top of a structure that contains variant specific
+// information.
+//
+// Struct fields that are capitalized are examined for common values to extract. Fields
+// that are not capitalized are assumed to be arch specific.
+type SdkMemberProperties interface {
+	// Access the base structure.
+	Base() *SdkMemberPropertiesBase
+
+	// Populate the structure with information from the variant.
+	PopulateFromVariant(variant SdkAware)
+
+	// Add the information from the structure to the property set.
+	AddToPropertySet(sdkModuleContext ModuleContext, builder SnapshotBuilder, propertySet BpPropertySet)
 }

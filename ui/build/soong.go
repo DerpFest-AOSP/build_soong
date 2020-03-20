@@ -15,11 +15,15 @@
 package build
 
 import (
+	"io/ioutil"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 
+	soong_metrics_proto "android/soong/ui/metrics/metrics_proto"
+
+	"github.com/golang/protobuf/proto"
 	"github.com/google/blueprint/microfactory"
 
 	"android/soong/ui/metrics"
@@ -119,10 +123,42 @@ func runSoong(ctx Context, config Config) {
 			"-j", strconv.Itoa(config.Parallel()),
 			"--frontend_file", fifo,
 			"-f", filepath.Join(config.SoongOutDir(), file))
+		cmd.Environment.Set("SOONG_SANDBOX_SOONG_BUILD", "true")
 		cmd.Sandbox = soongSandbox
 		cmd.RunAndStreamOrFatal()
 	}
 
 	ninja("minibootstrap", ".minibootstrap/build.ninja")
 	ninja("bootstrap", ".bootstrap/build.ninja")
+
+	soongBuildMetrics := loadSoongBuildMetrics(ctx, config)
+	logSoongBuildMetrics(ctx, soongBuildMetrics)
+
+	if ctx.Metrics != nil {
+		ctx.Metrics.SetSoongBuildMetrics(soongBuildMetrics)
+	}
+}
+
+func loadSoongBuildMetrics(ctx Context, config Config) *soong_metrics_proto.SoongBuildMetrics {
+	soongBuildMetricsFile := filepath.Join(config.OutDir(), "soong", "soong_build_metrics.pb")
+	buf, err := ioutil.ReadFile(soongBuildMetricsFile)
+	if err != nil {
+		ctx.Fatalf("Failed to load %s: %s", soongBuildMetricsFile, err)
+	}
+	soongBuildMetrics := &soong_metrics_proto.SoongBuildMetrics{}
+	err = proto.Unmarshal(buf, soongBuildMetrics)
+	if err != nil {
+		ctx.Fatalf("Failed to unmarshal %s: %s", soongBuildMetricsFile, err)
+	}
+	return soongBuildMetrics
+}
+
+func logSoongBuildMetrics(ctx Context, metrics *soong_metrics_proto.SoongBuildMetrics) {
+	ctx.Verbosef("soong_build metrics:")
+	ctx.Verbosef(" modules: %v", metrics.GetModules())
+	ctx.Verbosef(" variants: %v", metrics.GetVariants())
+	ctx.Verbosef(" max heap size: %v MB", metrics.GetMaxHeapSize()/1e6)
+	ctx.Verbosef(" total allocation count: %v", metrics.GetTotalAllocCount())
+	ctx.Verbosef(" total allocation size: %v MB", metrics.GetTotalAllocSize()/1e6)
+
 }

@@ -15,9 +15,9 @@
 package androidmk
 
 import (
-	"android/soong/android"
 	mkparser "android/soong/androidmk/parser"
 	"fmt"
+	"sort"
 	"strings"
 
 	bpparser "github.com/google/blueprint/parser"
@@ -350,7 +350,13 @@ func splitAndAssign(ctx variableAssignmentContext, splitFunc listSplitFunc, name
 		return err
 	}
 
-	for _, nameClassification := range android.SortedStringKeys(namesByClassification) {
+	var classifications []string
+	for classification := range namesByClassification {
+		classifications = append(classifications, classification)
+	}
+	sort.Strings(classifications)
+
+	for _, nameClassification := range classifications {
 		name := namesByClassification[nameClassification]
 		if component, ok := lists[nameClassification]; ok && !emptyList(component) {
 			err = setVariable(ctx.file, ctx.append, ctx.prefix, name, component, true)
@@ -377,11 +383,15 @@ func local32BitOnly(ctx variableAssignmentContext) error {
 	if err != nil {
 		return err
 	}
-	if val.(*bpparser.Bool).Value {
+	boolValue, ok := val.(*bpparser.Bool)
+	if !ok {
+		return fmt.Errorf("value should evaluate to boolean literal")
+	}
+	if boolValue.Value {
 		thirtyTwo := &bpparser.String{
 			Value: "32",
 		}
-		setVariable(ctx.file, false, ctx.prefix, "compile_multilib", thirtyTwo, true)
+		return setVariable(ctx.file, false, ctx.prefix, "compile_multilib", thirtyTwo, true)
 	}
 	return nil
 }
@@ -819,8 +829,6 @@ func skip(ctx variableAssignmentContext) error {
 var propertyPrefixes = []struct{ mk, bp string }{
 	{"arm", "arch.arm"},
 	{"arm64", "arch.arm64"},
-	{"mips", "arch.mips"},
-	{"mips64", "arch.mips64"},
 	{"x86", "arch.x86"},
 	{"x86_64", "arch.x86_64"},
 	{"32", "multilib.lib32"},

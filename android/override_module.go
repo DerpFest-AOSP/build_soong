@@ -121,13 +121,13 @@ type OverridableModuleBase struct {
 	// override information is propagated and aggregated correctly.
 	overridesProperty *[]string
 
-	properties overridableModuleProperties
+	overridableModuleProperties overridableModuleProperties
 }
 
 func InitOverridableModule(m OverridableModule, overridesProperty *[]string) {
 	m.setOverridableProperties(m.(Module).GetProperties())
 	m.setOverridesProperty(overridesProperty)
-	m.AddProperties(&m.moduleBase().properties)
+	m.AddProperties(&m.moduleBase().overridableModuleProperties)
 }
 
 func (o *OverridableModuleBase) moduleBase() *OverridableModuleBase {
@@ -155,11 +155,6 @@ func (b *OverridableModuleBase) setOverridesProperty(overridesProperty *[]string
 
 // Overrides a base module with the given OverrideModule.
 func (b *OverridableModuleBase) override(ctx BaseModuleContext, o OverrideModule) {
-	// Adds the base module to the overrides property, if exists, of the overriding module. See the
-	// comment on OverridableModuleBase.overridesProperty for details.
-	if b.overridesProperty != nil {
-		*b.overridesProperty = append(*b.overridesProperty, ctx.ModuleName())
-	}
 	for _, p := range b.overridableProperties {
 		for _, op := range o.getOverridingProperties() {
 			if proptools.TypeEqual(p, op) {
@@ -174,7 +169,12 @@ func (b *OverridableModuleBase) override(ctx BaseModuleContext, o OverrideModule
 			}
 		}
 	}
-	b.properties.OverriddenBy = o.Name()
+	// Adds the base module to the overrides property, if exists, of the overriding module. See the
+	// comment on OverridableModuleBase.overridesProperty for details.
+	if b.overridesProperty != nil {
+		*b.overridesProperty = append(*b.overridesProperty, ctx.ModuleName())
+	}
+	b.overridableModuleProperties.OverriddenBy = o.Name()
 }
 
 // GetOverriddenBy returns the name of the override module that has overridden this module.
@@ -182,7 +182,7 @@ func (b *OverridableModuleBase) override(ctx BaseModuleContext, o OverrideModule
 // of bar is created and its properties are overriden by foo. This method returns bar when called from
 // the new local variant. It returns "" when called from the original variant of bar.
 func (b *OverridableModuleBase) GetOverriddenBy() string {
-	return b.properties.OverriddenBy
+	return b.overridableModuleProperties.OverriddenBy
 }
 
 func (b *OverridableModuleBase) OverridablePropertiesDepsMutator(ctx BottomUpMutatorContext) {

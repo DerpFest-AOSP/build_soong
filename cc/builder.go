@@ -46,7 +46,7 @@ var (
 var (
 	pctx = android.NewPackageContext("android/soong/cc")
 
-	cc = pctx.AndroidRemoteStaticRule("cc", android.SUPPORTS_BOTH,
+	cc = pctx.AndroidRemoteStaticRule("cc", android.RemoteRuleSupports{Goma: true, RBE: true},
 		blueprint.RuleParams{
 			Depfile:     "${out}.d",
 			Deps:        blueprint.DepsGCC,
@@ -55,9 +55,9 @@ var (
 		},
 		"ccCmd", "cFlags")
 
-	ccNoDeps = pctx.AndroidRemoteStaticRule("ccNoDeps", android.SUPPORTS_GOMA,
+	ccNoDeps = pctx.AndroidStaticRule("ccNoDeps",
 		blueprint.RuleParams{
-			Command:     "$relPwd ${config.CcWrapper}$ccCmd -c $cFlags -o $out $in",
+			Command:     "$relPwd $ccCmd -c $cFlags -o $out $in",
 			CommandDeps: []string{"$ccCmd"},
 		},
 		"ccCmd", "cFlags")
@@ -178,7 +178,7 @@ var (
 
 	windres = pctx.AndroidStaticRule("windres",
 		blueprint.RuleParams{
-			Command:     "$windresCmd $flags -I$$(dirname $in) -i $in -o $out",
+			Command:     "$windresCmd $flags -I$$(dirname $in) -i $in -o $out --preprocessor \"${config.ClangBin}/clang -E -xc-header -DRC_INVOKED\"",
 			CommandDeps: []string{"$windresCmd"},
 		},
 		"windresCmd", "flags")
@@ -238,9 +238,13 @@ var (
 	_ = pctx.SourcePathVariable("kytheVnames", "build/soong/vnames.json")
 	_ = pctx.VariableFunc("kytheCorpus",
 		func(ctx android.PackageVarContext) string { return ctx.Config().XrefCorpusName() })
+	_ = pctx.VariableFunc("kytheCuEncoding",
+		func(ctx android.PackageVarContext) string { return ctx.Config().XrefCuEncoding() })
 	kytheExtract = pctx.StaticRule("kythe",
 		blueprint.RuleParams{
-			Command:     "rm -f $out && KYTHE_CORPUS=${kytheCorpus} KYTHE_OUTPUT_FILE=$out KYTHE_VNAMES=$kytheVnames $cxxExtractor $cFlags $in ",
+			Command: `rm -f $out && ` +
+				`KYTHE_CORPUS=${kytheCorpus} KYTHE_OUTPUT_FILE=$out KYTHE_VNAMES=$kytheVnames KYTHE_KZIP_ENCODING=${kytheCuEncoding} ` +
+				`$cxxExtractor $cFlags $in `,
 			CommandDeps: []string{"$cxxExtractor", "$kytheVnames"},
 		},
 		"cFlags")

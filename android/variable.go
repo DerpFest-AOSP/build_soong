@@ -25,7 +25,7 @@ import (
 
 func init() {
 	PreDepsMutators(func(ctx RegisterMutatorsContext) {
-		ctx.BottomUp("variable", variableMutator).Parallel()
+		ctx.BottomUp("variable", VariableMutator).Parallel()
 	})
 }
 
@@ -43,8 +43,10 @@ type variableProperties struct {
 		} `android:"arch_variant"`
 
 		Malloc_not_svelte struct {
-			Cflags      []string `android:"arch_variant"`
-			Shared_libs []string `android:"arch_variant"`
+			Cflags              []string `android:"arch_variant"`
+			Shared_libs         []string `android:"arch_variant"`
+			Whole_static_libs   []string `android:"arch_variant"`
+			Exclude_static_libs []string `android:"arch_variant"`
 		} `android:"arch_variant"`
 
 		Safestack struct {
@@ -123,18 +125,23 @@ type variableProperties struct {
 		Experimental_mte struct {
 			Cflags []string `android:"arch_variant"`
 		} `android:"arch_variant"`
+
+		Native_coverage struct {
+			Src          *string  `android:"arch_variant"`
+			Srcs         []string `android:"arch_variant"`
+			Exclude_srcs []string `android:"arch_variant"`
+		} `android:"arch_variant"`
 	} `android:"arch_variant"`
 }
 
-var zeroProductVariables interface{} = variableProperties{}
+var defaultProductVariables interface{} = variableProperties{}
 
 type productVariables struct {
 	// Suffix to add to generated Makefiles
 	Make_suffix *string `json:",omitempty"`
 
-	BuildId             *string `json:",omitempty"`
-	BuildNumberFromFile *string `json:",omitempty"`
-	DateFromFile        *string `json:",omitempty"`
+	BuildId         *string `json:",omitempty"`
+	BuildNumberFile *string `json:",omitempty"`
 
 	Platform_version_name                     *string  `json:",omitempty"`
 	Platform_sdk_version                      *int     `json:",omitempty"`
@@ -181,9 +188,11 @@ type productVariables struct {
 	CrossHostArch          *string `json:",omitempty"`
 	CrossHostSecondaryArch *string `json:",omitempty"`
 
-	DeviceResourceOverlays     []string `json:",omitempty"`
-	ProductResourceOverlays    []string `json:",omitempty"`
-	EnforceRROTargets          []string `json:",omitempty"`
+	DeviceResourceOverlays  []string `json:",omitempty"`
+	ProductResourceOverlays []string `json:",omitempty"`
+	EnforceRROTargets       []string `json:",omitempty"`
+	// TODO(b/150820813) Some modules depend on static overlay, remove this after eliminating the dependency.
+	EnforceRROExemptedTargets  []string `json:",omitempty"`
 	EnforceRROExcludedOverlays []string `json:",omitempty"`
 
 	AAPTCharacteristics *string  `json:",omitempty"`
@@ -204,6 +213,9 @@ type productVariables struct {
 	Binder32bit                      *bool `json:",omitempty"`
 	UseGoma                          *bool `json:",omitempty"`
 	UseRBE                           *bool `json:",omitempty"`
+	UseRBEJAVAC                      *bool `json:",omitempty"`
+	UseRBER8                         *bool `json:",omitempty"`
+	UseRBED8                         *bool `json:",omitempty"`
 	Debuggable                       *bool `json:",omitempty"`
 	Eng                              *bool `json:",omitempty"`
 	Treble_linker_namespaces         *bool `json:",omitempty"`
@@ -219,7 +231,8 @@ type productVariables struct {
 	UncompressPrivAppDex             *bool    `json:",omitempty"`
 	ModulesLoadedByPrivilegedModules []string `json:",omitempty"`
 
-	BootJars []string `json:",omitempty"`
+	BootJars          []string `json:",omitempty"`
+	UpdatableBootJars []string `json:",omitempty"`
 
 	IntegerOverflowExcludePaths []string `json:",omitempty"`
 
@@ -228,9 +241,6 @@ type productVariables struct {
 	CFIIncludePaths []string `json:",omitempty"`
 
 	DisableScudo *bool `json:",omitempty"`
-
-	EnableXOM       *bool    `json:",omitempty"`
-	XOMExcludePaths []string `json:",omitempty"`
 
 	Experimental_mte *bool `json:",omitempty"`
 
@@ -242,7 +252,9 @@ type productVariables struct {
 	ClangTidy  *bool   `json:",omitempty"`
 	TidyChecks *string `json:",omitempty"`
 
-	NativeCoverage       *bool    `json:",omitempty"`
+	NativeLineCoverage   *bool    `json:",omitempty"`
+	Native_coverage      *bool    `json:",omitempty"`
+	ClangCoverage        *bool    `json:",omitempty"`
 	CoveragePaths        []string `json:",omitempty"`
 	CoverageExcludePaths []string `json:",omitempty"`
 
@@ -288,6 +300,7 @@ type productVariables struct {
 	Exclude_draft_ndk_apis *bool `json:",omitempty"`
 
 	Flatten_apex *bool `json:",omitempty"`
+	Aml_abis     *bool `json:",omitempty"`
 
 	DexpreoptGlobalConfig *string `json:",omitempty"`
 
@@ -306,6 +319,8 @@ type productVariables struct {
 	ProductPrivateSepolicyDirs []string `json:",omitempty"`
 	ProductCompatibleProperty  *bool    `json:",omitempty"`
 
+	ProductVndkVersion *string `json:",omitempty"`
+
 	TargetFSConfigGen []string `json:",omitempty"`
 
 	MissingUsesLibraries []string `json:",omitempty"`
@@ -313,6 +328,8 @@ type productVariables struct {
 	EnforceProductPartitionInterface *bool `json:",omitempty"`
 
 	InstallExtraFlattenedApexes *bool `json:",omitempty"`
+
+	BoardUsesRecoveryAsBoot *bool `json:",omitempty"`
 }
 
 func boolPtr(v bool) *bool {
@@ -329,7 +346,7 @@ func stringPtr(v string) *string {
 
 func (v *productVariables) SetDefaultConfig() {
 	*v = productVariables{
-		BuildNumberFromFile: stringPtr("123456789"),
+		BuildNumberFile: stringPtr("build_number.txt"),
 
 		Platform_version_name:             stringPtr("Q"),
 		Platform_sdk_version:              intPtr(28),
@@ -367,7 +384,7 @@ func (v *productVariables) SetDefaultConfig() {
 	}
 }
 
-func variableMutator(mctx BottomUpMutatorContext) {
+func VariableMutator(mctx BottomUpMutatorContext) {
 	var module Module
 	var ok bool
 	if module, ok = mctx.Module().(Module); !ok {
@@ -382,11 +399,9 @@ func variableMutator(mctx BottomUpMutatorContext) {
 	}
 
 	variableValues := reflect.ValueOf(a.variableProperties).Elem().FieldByName("Product_variables")
-	zeroValues := reflect.ValueOf(zeroProductVariables).FieldByName("Product_variables")
 
 	for i := 0; i < variableValues.NumField(); i++ {
 		variableValue := variableValues.Field(i)
-		zeroValue := zeroValues.Field(i)
 		name := variableValues.Type().Field(i).Name
 		property := "product_variables." + proptools.PropertyNameForField(name)
 
@@ -404,10 +419,9 @@ func variableMutator(mctx BottomUpMutatorContext) {
 		}
 
 		// Check if any properties were set for the module
-		if reflect.DeepEqual(variableValue.Interface(), zeroValue.Interface()) {
+		if variableValue.IsZero() {
 			continue
 		}
-
 		a.setVariableProperties(mctx, property, variableValue, val.Interface())
 	}
 }
@@ -523,6 +537,20 @@ func sliceToTypeArray(s []interface{}) interface{} {
 		ret.Index(i).Set(reflect.ValueOf(reflect.TypeOf(e)))
 	}
 	return ret.Interface()
+}
+
+func initProductVariableModule(m Module) {
+	base := m.base()
+
+	// Allow tests to override the default product variables
+	if base.variableProperties == nil {
+		base.variableProperties = defaultProductVariables
+	}
+	// Filter the product variables properties to the ones that exist on this module
+	base.variableProperties = createVariableProperties(m.GetProperties(), base.variableProperties)
+	if base.variableProperties != nil {
+		m.AddProperties(base.variableProperties)
+	}
 }
 
 // createVariableProperties takes the list of property structs for a module and returns a property struct that

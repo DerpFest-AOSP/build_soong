@@ -104,17 +104,20 @@ func runKati(ctx Context, config Config, extraSuffix string, args []string, envF
 	envFunc(cmd.Environment)
 
 	if _, ok := cmd.Environment.Get("BUILD_USERNAME"); !ok {
-		u, err := user.Current()
-		if err != nil {
-			ctx.Println("Failed to get current user")
+		username := "unknown"
+		if u, err := user.Current(); err == nil {
+			username = u.Username
+		} else {
+			ctx.Println("Failed to get current user:", err)
 		}
-		cmd.Environment.Set("BUILD_USERNAME", u.Username)
+		cmd.Environment.Set("BUILD_USERNAME", username)
 	}
 
 	if _, ok := cmd.Environment.Get("BUILD_HOSTNAME"); !ok {
 		hostname, err := os.Hostname()
 		if err != nil {
-			ctx.Println("Failed to read hostname")
+			ctx.Println("Failed to read hostname:", err)
+			hostname = "unknown"
 		}
 		cmd.Environment.Set("BUILD_HOSTNAME", hostname)
 	}
@@ -153,6 +156,7 @@ func runKatiBuild(ctx Context, config Config) {
 	runKati(ctx, config, katiBuildSuffix, args, func(env *Environment) {})
 
 	cleanCopyHeaders(ctx, config)
+	cleanOldInstalledFiles(ctx, config)
 }
 
 func cleanCopyHeaders(ctx Context, config Config) {
@@ -190,6 +194,23 @@ func cleanCopyHeaders(ctx Context, config Config) {
 			}
 			return nil
 		})
+}
+
+func cleanOldInstalledFiles(ctx Context, config Config) {
+	ctx.BeginTrace("clean", "clean old installed files")
+	defer ctx.EndTrace()
+
+	// We shouldn't be removing files from one side of the two-step asan builds
+	var suffix string
+	if v, ok := config.Environment().Get("SANITIZE_TARGET"); ok {
+		if sanitize := strings.Fields(v); inList("address", sanitize) {
+			suffix = "_asan"
+		}
+	}
+
+	cleanOldFiles(ctx, config.ProductOut(), ".installable_files"+suffix)
+
+	cleanOldFiles(ctx, config.HostOut(), ".installable_test_files")
 }
 
 func runKatiPackage(ctx Context, config Config) {

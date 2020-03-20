@@ -18,12 +18,29 @@ import (
 	"android/soong/android"
 )
 
-func GatherRequiredDepsForTest(os android.OsType) string {
+func RegisterRequiredBuildComponentsForTest(ctx android.RegistrationContext) {
+	RegisterPrebuiltBuildComponents(ctx)
+	android.RegisterPrebuiltMutators(ctx)
+
+	RegisterCCBuildComponents(ctx)
+	RegisterBinaryBuildComponents(ctx)
+	RegisterLibraryBuildComponents(ctx)
+	RegisterLibraryHeadersBuildComponents(ctx)
+
+	ctx.RegisterModuleType("toolchain_library", ToolchainLibraryFactory)
+	ctx.RegisterModuleType("llndk_library", LlndkLibraryFactory)
+	ctx.RegisterModuleType("cc_object", ObjectFactory)
+	ctx.RegisterModuleType("ndk_prebuilt_shared_stl", NdkPrebuiltSharedStlFactory)
+	ctx.RegisterModuleType("ndk_prebuilt_object", NdkPrebuiltObjectFactory)
+}
+
+func GatherRequiredDepsForTest(oses ...android.OsType) string {
 	ret := `
 		toolchain_library {
 			name: "libatomic",
 			vendor_available: true,
 			recovery_available: true,
+			native_bridge_supported: true,
 			src: "",
 		}
 
@@ -38,6 +55,7 @@ func GatherRequiredDepsForTest(os android.OsType) string {
 			name: "libclang_rt.builtins-arm-android",
 			vendor_available: true,
 			recovery_available: true,
+			native_bridge_supported: true,
 			src: "",
 		}
 
@@ -45,6 +63,7 @@ func GatherRequiredDepsForTest(os android.OsType) string {
 			name: "libclang_rt.builtins-aarch64-android",
 			vendor_available: true,
 			recovery_available: true,
+			native_bridge_supported: true,
 			src: "",
 		}
 
@@ -52,6 +71,7 @@ func GatherRequiredDepsForTest(os android.OsType) string {
 			name: "libclang_rt.builtins-i686-android",
 			vendor_available: true,
 			recovery_available: true,
+			native_bridge_supported: true,
 			src: "",
 		}
 
@@ -59,6 +79,7 @@ func GatherRequiredDepsForTest(os android.OsType) string {
 			name: "libclang_rt.builtins-x86_64-android",
 			vendor_available: true,
 			recovery_available: true,
+			native_bridge_supported: true,
 			src: "",
 		}
 
@@ -97,6 +118,15 @@ func GatherRequiredDepsForTest(os android.OsType) string {
 			src: "",
 		}
 
+		// Needed for sanitizer
+		cc_prebuilt_library_shared {
+			name: "libclang_rt.ubsan_standalone-aarch64-android",
+			vendor_available: true,
+			recovery_available: true,
+			system_shared_libs: [],
+			srcs: [""],
+		}
+
 		toolchain_library {
 			name: "libgcc",
 			vendor_available: true,
@@ -115,8 +145,12 @@ func GatherRequiredDepsForTest(os android.OsType) string {
 			name: "libc",
 			no_libcrt: true,
 			nocrt: true,
+			stl: "none",
 			system_shared_libs: [],
 			recovery_available: true,
+			stubs: {
+				versions: ["27", "28", "29"],
+			},
 		}
 		llndk_library {
 			name: "libc",
@@ -126,8 +160,16 @@ func GatherRequiredDepsForTest(os android.OsType) string {
 			name: "libm",
 			no_libcrt: true,
 			nocrt: true,
+			stl: "none",
 			system_shared_libs: [],
 			recovery_available: true,
+			stubs: {
+				versions: ["27", "28", "29"],
+			},
+			apex_available: [
+				"//apex_available:platform",
+				"myapex"
+			],
 		}
 		llndk_library {
 			name: "libm",
@@ -137,8 +179,16 @@ func GatherRequiredDepsForTest(os android.OsType) string {
 			name: "libdl",
 			no_libcrt: true,
 			nocrt: true,
+			stl: "none",
 			system_shared_libs: [],
 			recovery_available: true,
+			stubs: {
+				versions: ["27", "28", "29"],
+			},
+			apex_available: [
+				"//apex_available:platform",
+				"myapex"
+			],
 		}
 		llndk_library {
 			name: "libdl",
@@ -164,6 +214,7 @@ func GatherRequiredDepsForTest(os android.OsType) string {
 			stl: "none",
 			vendor_available: true,
 			recovery_available: true,
+			host_supported: true,
 		}
 		cc_library {
 			name: "libc++",
@@ -173,10 +224,15 @@ func GatherRequiredDepsForTest(os android.OsType) string {
 			stl: "none",
 			vendor_available: true,
 			recovery_available: true,
+			host_supported: true,
 			vndk: {
 				enabled: true,
 				support_system_process: true,
 			},
+			apex_available: [
+				"//apex_available:platform",
+				"myapex"
+			],
 		}
 		cc_library {
 			name: "libc++demangle",
@@ -202,6 +258,7 @@ func GatherRequiredDepsForTest(os android.OsType) string {
 			name: "crtbegin_so",
 			recovery_available: true,
 			vendor_available: true,
+			native_bridge_supported: true,
 			stl: "none",
 		}
 
@@ -209,18 +266,23 @@ func GatherRequiredDepsForTest(os android.OsType) string {
 			name: "crtbegin_dynamic",
 			recovery_available: true,
 			vendor_available: true,
+			native_bridge_supported: true,
+			stl: "none",
 		}
 
 		cc_object {
 			name: "crtbegin_static",
 			recovery_available: true,
 			vendor_available: true,
+			native_bridge_supported: true,
+			stl: "none",
 		}
 
 		cc_object {
 			name: "crtend_so",
 			recovery_available: true,
 			vendor_available: true,
+			native_bridge_supported: true,
 			stl: "none",
 		}
 
@@ -228,14 +290,60 @@ func GatherRequiredDepsForTest(os android.OsType) string {
 			name: "crtend_android",
 			recovery_available: true,
 			vendor_available: true,
+			native_bridge_supported: true,
+			stl: "none",
 		}
 
 		cc_library {
 			name: "libprotobuf-cpp-lite",
 		}
-		`
-	if os == android.Fuchsia {
-		ret += `
+
+		cc_library {
+			name: "ndk_libunwind",
+			sdk_version: "current",
+			stl: "none",
+			system_shared_libs: [],
+		}
+
+		cc_library {
+			name: "libc.ndk.current",
+			sdk_version: "current",
+			stl: "none",
+			system_shared_libs: [],
+		}
+
+		cc_library {
+			name: "libm.ndk.current",
+			sdk_version: "current",
+			stl: "none",
+			system_shared_libs: [],
+		}
+
+		cc_library {
+			name: "libdl.ndk.current",
+			sdk_version: "current",
+			stl: "none",
+			system_shared_libs: [],
+		}
+
+		ndk_prebuilt_object {
+			name: "ndk_crtbegin_so.27",
+			sdk_version: "27",
+		}
+
+		ndk_prebuilt_object {
+			name: "ndk_crtend_so.27",
+			sdk_version: "27",
+		}
+
+		ndk_prebuilt_shared_stl {
+			name: "ndk_libc++_shared",
+		}
+	`
+
+	for _, os := range oses {
+		if os == android.Fuchsia {
+			ret += `
 		cc_library {
 			name: "libbioniccompat",
 			stl: "none",
@@ -245,8 +353,36 @@ func GatherRequiredDepsForTest(os android.OsType) string {
 			stl: "none",
 		}
 		`
+		}
+		if os == android.Windows {
+			ret += `
+		toolchain_library {
+			name: "libwinpthread",
+			host_supported: true,
+			enabled: false,
+			target: {
+				windows: {
+					enabled: true,
+				},
+			},
+			src: "",
+		}
+		`
+		}
 	}
 	return ret
+}
+
+func GatherRequiredFilesForTest(fs map[string][]byte) {
+	fs["prebuilts/ndk/current/sources/cxx-stl/llvm-libc++/libs/arm64-v8a/libc++_shared.so"] = nil
+	fs["prebuilts/ndk/current/platforms/android-27/arch-arm/usr/lib/crtbegin_so.o"] = nil
+	fs["prebuilts/ndk/current/platforms/android-27/arch-arm/usr/lib/crtend_so.o"] = nil
+	fs["prebuilts/ndk/current/platforms/android-27/arch-arm64/usr/lib/crtbegin_so.o"] = nil
+	fs["prebuilts/ndk/current/platforms/android-27/arch-arm64/usr/lib/crtend_so.o"] = nil
+	fs["prebuilts/ndk/current/platforms/android-27/arch-x86/usr/lib/crtbegin_so.o"] = nil
+	fs["prebuilts/ndk/current/platforms/android-27/arch-x86/usr/lib/crtend_so.o"] = nil
+	fs["prebuilts/ndk/current/platforms/android-27/arch-x86_64/usr/lib64/crtbegin_so.o"] = nil
+	fs["prebuilts/ndk/current/platforms/android-27/arch-x86_64/usr/lib64/crtend_so.o"] = nil
 }
 
 func TestConfig(buildDir string, os android.OsType, env map[string]string,
@@ -269,6 +405,8 @@ func TestConfig(buildDir string, os android.OsType, env map[string]string,
 		"liba.so":     nil,
 	}
 
+	GatherRequiredFilesForTest(mockFS)
+
 	for k, v := range fs {
 		mockFS[k] = v
 	}
@@ -285,35 +423,18 @@ func TestConfig(buildDir string, os android.OsType, env map[string]string,
 
 func CreateTestContext() *android.TestContext {
 	ctx := android.NewTestArchContext()
-	ctx.RegisterModuleType("cc_defaults", defaultsFactory)
-	ctx.RegisterModuleType("cc_binary", BinaryFactory)
-	ctx.RegisterModuleType("cc_binary_host", binaryHostFactory)
 	ctx.RegisterModuleType("cc_fuzz", FuzzFactory)
-	ctx.RegisterModuleType("cc_library", LibraryFactory)
-	ctx.RegisterModuleType("cc_library_shared", LibrarySharedFactory)
-	ctx.RegisterModuleType("cc_library_static", LibraryStaticFactory)
-	ctx.RegisterModuleType("cc_library_headers", LibraryHeaderFactory)
 	ctx.RegisterModuleType("cc_test", TestFactory)
-	ctx.RegisterModuleType("toolchain_library", ToolchainLibraryFactory)
-	ctx.RegisterModuleType("llndk_library", LlndkLibraryFactory)
 	ctx.RegisterModuleType("llndk_headers", llndkHeadersFactory)
 	ctx.RegisterModuleType("ndk_library", NdkLibraryFactory)
 	ctx.RegisterModuleType("vendor_public_library", vendorPublicLibraryFactory)
-	ctx.RegisterModuleType("cc_object", ObjectFactory)
 	ctx.RegisterModuleType("filegroup", android.FileGroupFactory)
 	ctx.RegisterModuleType("vndk_prebuilt_shared", VndkPrebuiltSharedFactory)
 	ctx.RegisterModuleType("vndk_libraries_txt", VndkLibrariesTxtFactory)
-	ctx.PreDepsMutators(func(ctx android.RegisterMutatorsContext) {
-		ctx.BottomUp("link", LinkageMutator).Parallel()
-		ctx.BottomUp("vndk", VndkMutator).Parallel()
-		ctx.BottomUp("version", VersionMutator).Parallel()
-		ctx.BottomUp("begin", BeginMutator).Parallel()
-	})
-	ctx.PostDepsMutators(func(ctx android.RegisterMutatorsContext) {
-		ctx.TopDown("double_loadable", checkDoubleLoadableLibraries).Parallel()
-	})
+	RegisterRequiredBuildComponentsForTest(ctx)
 	ctx.PreArchMutators(android.RegisterDefaultsPreArchMutators)
 	ctx.RegisterSingletonType("vndk-snapshot", VndkSnapshotSingleton)
+	ctx.RegisterSingletonType("vendor-snapshot", VendorSnapshotSingleton)
 
 	return ctx
 }

@@ -85,6 +85,10 @@ func (mod *Module) CoreVariantNeeded(ctx android.BaseModuleContext) bool {
 	return true
 }
 
+func (mod *Module) RamdiskVariantNeeded(android.BaseModuleContext) bool {
+	return mod.InRamdisk()
+}
+
 func (mod *Module) RecoveryVariantNeeded(android.BaseModuleContext) bool {
 	return mod.InRecovery()
 }
@@ -150,6 +154,10 @@ func (mod *Module) Toc() android.OptionalPath {
 		}
 	}
 	panic(fmt.Errorf("Toc() called on non-library module: %q", mod.BaseModuleName()))
+}
+
+func (mod *Module) OnlyInRamdisk() bool {
+	return false
 }
 
 func (mod *Module) OnlyInRecovery() bool {
@@ -314,6 +322,10 @@ func (mod *Module) SetBuildStubs() {
 }
 
 func (mod *Module) SetStubsVersions(string) {
+	panic("SetStubsVersions not yet implemented for rust modules")
+}
+
+func (mod *Module) StubsVersion() string {
 	panic("SetStubsVersions not yet implemented for rust modules")
 }
 
@@ -610,21 +622,24 @@ func (mod *Module) depsToPaths(ctx android.ModuleContext) PathDeps {
 			linkFile := ccDep.OutputFile()
 			linkPath := linkPathFromFilePath(linkFile.Path())
 			libName := libNameFromFilePath(linkFile.Path())
+			depFlag := "-l" + libName
+
 			if !linkFile.Valid() {
 				ctx.ModuleErrorf("Invalid output file when adding dep %q to %q", depName, ctx.ModuleName())
 			}
 
 			exportDep := false
-
 			switch depTag {
 			case cc.StaticDepTag:
+				depFlag = "-lstatic=" + libName
 				depPaths.linkDirs = append(depPaths.linkDirs, linkPath)
-				depPaths.depFlags = append(depPaths.depFlags, "-l"+libName)
+				depPaths.depFlags = append(depPaths.depFlags, depFlag)
 				directStaticLibDeps = append(directStaticLibDeps, ccDep)
 				mod.Properties.AndroidMkStaticLibs = append(mod.Properties.AndroidMkStaticLibs, depName)
 			case cc.SharedDepTag:
+				depFlag = "-ldylib=" + libName
 				depPaths.linkDirs = append(depPaths.linkDirs, linkPath)
-				depPaths.depFlags = append(depPaths.depFlags, "-l"+libName)
+				depPaths.depFlags = append(depPaths.depFlags, depFlag)
 				directSharedLibDeps = append(directSharedLibDeps, ccDep)
 				mod.Properties.AndroidMkSharedLibs = append(mod.Properties.AndroidMkSharedLibs, depName)
 				exportDep = true
@@ -637,10 +652,10 @@ func (mod *Module) depsToPaths(ctx android.ModuleContext) PathDeps {
 			// Make sure these dependencies are propagated
 			if lib, ok := mod.compiler.(*libraryDecorator); ok && exportDep {
 				lib.linkDirs = append(lib.linkDirs, linkPath)
-				lib.depFlags = append(lib.depFlags, "-l"+libName)
+				lib.depFlags = append(lib.depFlags, depFlag)
 			} else if procMacro, ok := mod.compiler.(*procMacroDecorator); ok && exportDep {
 				procMacro.linkDirs = append(procMacro.linkDirs, linkPath)
-				procMacro.depFlags = append(procMacro.depFlags, "-l"+libName)
+				procMacro.depFlags = append(procMacro.depFlags, depFlag)
 			}
 
 		}
@@ -692,13 +707,15 @@ func (mod *Module) InstallInData() bool {
 func linkPathFromFilePath(filepath android.Path) string {
 	return strings.Split(filepath.String(), filepath.Base())[0]
 }
+
 func libNameFromFilePath(filepath android.Path) string {
-	libName := strings.Split(filepath.Base(), filepath.Ext())[0]
+	libName := strings.TrimSuffix(filepath.Base(), filepath.Ext())
 	if strings.HasPrefix(libName, "lib") {
 		libName = libName[3:]
 	}
 	return libName
 }
+
 func (mod *Module) DepsMutator(actx android.BottomUpMutatorContext) {
 	ctx := &depsContext{
 		BottomUpMutatorContext: actx,

@@ -38,7 +38,8 @@ var (
 	// this, all java rules write into separate directories and then are combined into a .jar file
 	// (if the rule produces .class files) or a .srcjar file (if the rule produces .java files).
 	// .srcjar files are unzipped into a temporary directory when compiled with javac.
-	javac = pctx.AndroidRemoteStaticRule("javac", android.SUPPORTS_GOMA,
+	// TODO(b/143658984): goma can't handle the --system argument to javac.
+	javac = pctx.AndroidRemoteStaticRule("javac", android.RemoteRuleSupports{Goma: false, RBE: true, RBEFlag: android.RBE_JAVAC},
 		blueprint.RuleParams{
 			Command: `rm -rf "$outDir" "$annoDir" "$srcJarDir" && mkdir -p "$outDir" "$annoDir" "$srcJarDir" && ` +
 				`${config.ZipSyncCmd} -d $srcJarDir -l $srcJarDir/list -f "*.java" $srcJars && ` +
@@ -64,6 +65,8 @@ var (
 
 	_ = pctx.VariableFunc("kytheCorpus",
 		func(ctx android.PackageVarContext) string { return ctx.Config().XrefCorpusName() })
+	_ = pctx.VariableFunc("kytheCuEncoding",
+		func(ctx android.PackageVarContext) string { return ctx.Config().XrefCuEncoding() })
 	_ = pctx.SourcePathVariable("kytheVnames", "build/soong/vnames.json")
 	// Run it with -add-opens=java.base/java.nio=ALL-UNNAMED to avoid JDK9's warning about
 	// "Illegal reflective access by com.google.protobuf.Utf8$UnsafeProcessor ...
@@ -76,6 +79,7 @@ var (
 				`KYTHE_ROOT_DIRECTORY=. KYTHE_OUTPUT_FILE=$out ` +
 				`KYTHE_CORPUS=${kytheCorpus} ` +
 				`KYTHE_VNAMES=${kytheVnames} ` +
+				`KYTHE_KZIP_ENCODING=${kytheCuEncoding} ` +
 				`${config.SoongJavacWrapper} ${config.JavaCmd} ` +
 				`--add-opens=java.base/java.nio=ALL-UNNAMED ` +
 				`-jar ${config.JavaKytheExtractorJar} ` +

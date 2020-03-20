@@ -41,9 +41,9 @@ var (
 var pgoProfileProjectsConfigKey = android.NewOnceKey("PgoProfileProjects")
 
 const profileInstrumentFlag = "-fprofile-generate=/data/local/tmp"
-const profileSamplingFlag = "-gline-tables-only"
+const profileSamplingFlag = "-gmlt -fdebug-info-for-profiling"
 const profileUseInstrumentFormat = "-fprofile-use=%s"
-const profileUseSamplingFormat = "-fprofile-sample-use=%s"
+const profileUseSamplingFormat = "-fprofile-sample-accurate -fprofile-sample-use=%s"
 
 func getPgoProfileProjects(config android.DeviceConfig) []string {
 	return config.OnceStringSlice(pgoProfileProjectsConfigKey, func() []string {
@@ -177,6 +177,10 @@ func (props *PgoProperties) addProfileUseFlags(ctx ModuleContext, flags Flags) F
 		// if profileFile gets updated
 		flags.CFlagsDeps = append(flags.CFlagsDeps, profileFilePath)
 		flags.LdFlagsDeps = append(flags.LdFlagsDeps, profileFilePath)
+
+		if props.isSampling() {
+			flags.Local.LdFlags = append(flags.Local.LdFlags, "-Wl,-mllvm,-no-warn-sample-unused=true")
+		}
 	}
 	return flags
 }
@@ -208,11 +212,6 @@ func (props *PgoProperties) isPGO(ctx BaseModuleContext) bool {
 		}
 		missingProps := strings.Join(missing, ", ")
 		ctx.ModuleErrorf("PGO specification is missing properties: " + missingProps)
-	}
-
-	// Sampling not supported yet
-	if isSampling {
-		ctx.PropertyErrorf("pgo.sampling", "\"sampling\" is not supported yet)")
 	}
 
 	if isSampling && isInstrumentation {
@@ -255,6 +254,12 @@ func (pgo *pgo) begin(ctx BaseModuleContext) {
 				break
 			}
 		}
+	}
+
+	// PGO profile use is not feasible for a Clang coverage build because
+	// -fprofile-use and -fprofile-instr-generate are incompatible.
+	if ctx.DeviceConfig().ClangCoverageEnabled() {
+		return
 	}
 
 	if !ctx.Config().IsEnvTrue("ANDROID_PGO_NO_PROFILE_USE") &&

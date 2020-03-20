@@ -1,15 +1,17 @@
 package android
 
 import (
+	"reflect"
 	"testing"
 
 	"github.com/google/blueprint"
 )
 
 var visibilityTests = []struct {
-	name           string
-	fs             map[string][]byte
-	expectedErrors []string
+	name                string
+	fs                  map[string][]byte
+	expectedErrors      []string
+	effectiveVisibility map[qualifiedModuleName][]string
 }{
 	{
 		name: "invalid visibility: empty list",
@@ -493,6 +495,9 @@ var visibilityTests = []struct {
 					deps: ["libexample"],
 				}`),
 		},
+		effectiveVisibility: map[qualifiedModuleName][]string{
+			qualifiedModuleName{pkg: "top", name: "libexample"}: {"//visibility:public"},
+		},
 	},
 	{
 		name: "//visibility:public mixed with other from different defaults 1",
@@ -853,15 +858,74 @@ var visibilityTests = []struct {
 				` not visible to this module`,
 		},
 	},
+	{
+		name: "verify that prebuilt dependencies are ignored for visibility reasons (not preferred)",
+		fs: map[string][]byte{
+			"prebuilts/Blueprints": []byte(`
+				prebuilt {
+					name: "module",
+					visibility: ["//top/other"],
+				}`),
+			"top/sources/source_file": nil,
+			"top/sources/Blueprints": []byte(`
+				source {
+					name: "module",
+					visibility: ["//top/other"],
+				}`),
+			"top/other/source_file": nil,
+			"top/other/Blueprints": []byte(`
+				source {
+					name: "other",
+					deps: [":module"],
+				}`),
+		},
+	},
+	{
+		name: "verify that prebuilt dependencies are ignored for visibility reasons (preferred)",
+		fs: map[string][]byte{
+			"prebuilts/Blueprints": []byte(`
+				prebuilt {
+					name: "module",
+					visibility: ["//top/other"],
+					prefer: true,
+				}`),
+			"top/sources/source_file": nil,
+			"top/sources/Blueprints": []byte(`
+				source {
+					name: "module",
+					visibility: ["//top/other"],
+				}`),
+			"top/other/source_file": nil,
+			"top/other/Blueprints": []byte(`
+				source {
+					name: "other",
+					deps: [":module"],
+				}`),
+		},
+	},
 }
 
 func TestVisibility(t *testing.T) {
 	for _, test := range visibilityTests {
 		t.Run(test.name, func(t *testing.T) {
-			_, errs := testVisibility(buildDir, test.fs)
+			ctx, errs := testVisibility(buildDir, test.fs)
 
 			CheckErrorsAgainstExpectations(t, errs, test.expectedErrors)
+
+			if test.effectiveVisibility != nil {
+				checkEffectiveVisibility(t, ctx, test.effectiveVisibility)
+			}
 		})
+	}
+}
+
+func checkEffectiveVisibility(t *testing.T, ctx *TestContext, effectiveVisibility map[qualifiedModuleName][]string) {
+	for moduleName, expectedRules := range effectiveVisibility {
+		rule := effectiveVisibilityRules(ctx.config, moduleName)
+		stringRules := rule.Strings()
+		if !reflect.DeepEqual(expectedRules, stringRules) {
+			t.Errorf("effective rules mismatch: expected %q, found %q", expectedRules, stringRules)
+		}
 	}
 }
 
@@ -871,10 +935,12 @@ func testVisibility(buildDir string, fs map[string][]byte) (*TestContext, []erro
 	config := TestArchConfig(buildDir, nil, "", fs)
 
 	ctx := NewTestArchContext()
-	ctx.RegisterModuleType("package", PackageFactory)
 	ctx.RegisterModuleType("mock_library", newMockLibraryModule)
 	ctx.RegisterModuleType("mock_defaults", defaultsFactory)
-	ctx.PreArchMutators(RegisterPackageRenamer)
+
+	// Order of the following method calls is significant.
+	RegisterPackageBuildComponents(ctx)
+	registerTestPrebuiltBuildComponents(ctx)
 	ctx.PreArchMutators(RegisterVisibilityRuleChecker)
 	ctx.PreArchMutators(RegisterDefaultsPreArchMutators)
 	ctx.PreArchMutators(RegisterVisibilityRuleGatherer)

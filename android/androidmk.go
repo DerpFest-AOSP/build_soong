@@ -29,7 +29,11 @@ import (
 )
 
 func init() {
-	RegisterSingletonType("androidmk", AndroidMkSingleton)
+	RegisterAndroidMkBuildComponents(InitRegistrationContext)
+}
+
+func RegisterAndroidMkBuildComponents(ctx RegistrationContext) {
+	ctx.RegisterSingletonType("androidmk", AndroidMkSingleton)
 }
 
 // Deprecated: consider using AndroidMkEntriesProvider instead, especially if you're not going to
@@ -236,8 +240,8 @@ func (a *AndroidMkEntries) fillInEntries(config Config, bpPath string, mod bluep
 		}
 	}
 
-	if amod.noticeFile.Valid() {
-		a.SetString("LOCAL_NOTICE_FILE", amod.noticeFile.String())
+	if len(amod.noticeFiles) > 0 {
+		a.SetString("LOCAL_NOTICE_FILE", strings.Join(amod.noticeFiles.Strings(), " "))
 	}
 
 	if host {
@@ -323,7 +327,7 @@ func (c *androidMkSingleton) GenerateBuildActions(ctx SingletonContext) {
 		return
 	}
 
-	err := translateAndroidMk(ctx, transMk.String(), androidMkModulesList)
+	err := translateAndroidMk(ctx, absolutePath(transMk.String()), androidMkModulesList)
 	if err != nil {
 		ctx.Errorf(err.Error())
 	}
@@ -364,8 +368,8 @@ func translateAndroidMk(ctx SingletonContext, mkFile string, mods []blueprint.Mo
 	}
 
 	// Don't write to the file if it hasn't changed
-	if _, err := os.Stat(mkFile); !os.IsNotExist(err) {
-		if data, err := ioutil.ReadFile(mkFile); err == nil {
+	if _, err := os.Stat(absolutePath(mkFile)); !os.IsNotExist(err) {
+		if data, err := ioutil.ReadFile(absolutePath(mkFile)); err == nil {
 			matches := buf.Len() == len(data)
 
 			if matches {
@@ -383,7 +387,7 @@ func translateAndroidMk(ctx SingletonContext, mkFile string, mods []blueprint.Mo
 		}
 	}
 
-	return ioutil.WriteFile(mkFile, buf.Bytes(), 0666)
+	return ioutil.WriteFile(absolutePath(mkFile), buf.Bytes(), 0666)
 }
 
 func translateAndroidMkModule(ctx SingletonContext, w io.Writer, mod blueprint.Module) error {

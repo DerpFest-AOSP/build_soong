@@ -49,7 +49,7 @@ var ClangUnknownCflags = sorted([]string{
 	"-Wunused-but-set-variable",
 	"-fdiagnostics-color",
 
-	// arm + arm64 + mips + mips64
+	// arm + arm64
 	"-fgcse-after-reload",
 	"-frerun-cse-after-loop",
 	"-frename-registers",
@@ -67,11 +67,6 @@ var ClangUnknownCflags = sorted([]string{
 	"-fno-partial-inlining",
 	"-fno-tree-copy-prop",
 	"-fno-tree-loop-optimize",
-
-	// mips + mips64
-	"-msynci",
-	"-mno-synci",
-	"-mno-fused-madd",
 
 	// x86 + x86_64
 	"-finline-limit=300",
@@ -169,6 +164,10 @@ func init() {
 		"-Wno-reorder-init-list",
 		// http://b/145211066
 		"-Wno-implicit-int-float-conversion",
+		// New warnings to be fixed after clang-r377782.
+		"-Wno-int-in-bool-context",          // http://b/148287349
+		"-Wno-sizeof-array-div",             // http://b/148815709
+		"-Wno-tautological-overlap-compare", // http://b/148815696
 	}, " "))
 
 	// Extra cflags for external third-party projects to disable warnings that

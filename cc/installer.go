@@ -72,7 +72,11 @@ func (installer *baseInstaller) installDir(ctx ModuleContext) android.InstallPat
 		dir = filepath.Join(dir, ctx.Arch().ArchType.String())
 	}
 	if installer.location == InstallInData && ctx.useVndk() {
-		dir = filepath.Join(dir, "vendor")
+		if ctx.inProduct() {
+			dir = filepath.Join(dir, "product")
+		} else {
+			dir = filepath.Join(dir, "vendor")
+		}
 	}
 	return android.PathForModuleInstall(ctx, dir, installer.subDir,
 		installer.relativeInstallPath(), installer.relative)
@@ -80,6 +84,11 @@ func (installer *baseInstaller) installDir(ctx ModuleContext) android.InstallPat
 
 func (installer *baseInstaller) install(ctx ModuleContext, file android.Path) {
 	installer.path = ctx.InstallFile(installer.installDir(ctx), file.Base(), file)
+}
+
+func (installer *baseInstaller) everInstallable() bool {
+	// Most cc modules are installable.
+	return true
 }
 
 func (installer *baseInstaller) inData() bool {

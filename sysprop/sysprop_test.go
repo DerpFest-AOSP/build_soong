@@ -60,25 +60,13 @@ func testContext(config android.Config) *android.TestContext {
 	java.RegisterAppBuildComponents(ctx)
 	java.RegisterSystemModulesBuildComponents(ctx)
 
-	ctx.PreArchMutators(android.RegisterPrebuiltsPreArchMutators)
-	ctx.PreArchMutators(android.RegisterPrebuiltsPostDepsMutators)
 	ctx.PreArchMutators(android.RegisterDefaultsPreArchMutators)
 	ctx.PreArchMutators(func(ctx android.RegisterMutatorsContext) {
 		ctx.BottomUp("sysprop_deps", syspropDepsMutator).Parallel()
 	})
 
-	ctx.RegisterModuleType("cc_library", cc.LibraryFactory)
-	ctx.RegisterModuleType("cc_library_headers", cc.LibraryHeaderFactory)
-	ctx.RegisterModuleType("cc_library_static", cc.LibraryFactory)
-	ctx.RegisterModuleType("cc_object", cc.ObjectFactory)
-	ctx.RegisterModuleType("llndk_library", cc.LlndkLibraryFactory)
-	ctx.RegisterModuleType("toolchain_library", cc.ToolchainLibraryFactory)
+	cc.RegisterRequiredBuildComponentsForTest(ctx)
 	ctx.PreDepsMutators(func(ctx android.RegisterMutatorsContext) {
-		ctx.BottomUp("link", cc.LinkageMutator).Parallel()
-		ctx.BottomUp("vndk", cc.VndkMutator).Parallel()
-		ctx.BottomUp("version", cc.VersionMutator).Parallel()
-		ctx.BottomUp("begin", cc.BeginMutator).Parallel()
-		ctx.BottomUp("sysprop_cc", cc.SyspropMutator).Parallel()
 		ctx.BottomUp("sysprop_java", java.SyspropMutator).Parallel()
 	})
 
@@ -173,6 +161,7 @@ func TestSyspropLibrary(t *testing.T) {
 			api_packages: ["android.sysprop"],
 			property_owner: "Platform",
 			vendor_available: true,
+			host_supported: true,
 		}
 
 		sysprop_library {
@@ -256,6 +245,11 @@ func TestSyspropLibrary(t *testing.T) {
 			static_libs: ["sysprop-platform", "sysprop-vendor"],
 		}
 
+		cc_library {
+			name: "libbase",
+			host_supported: true,
+		}
+
 		cc_library_headers {
 			name: "libbase_headers",
 			vendor_available: true,
@@ -268,6 +262,12 @@ func TestSyspropLibrary(t *testing.T) {
 			nocrt: true,
 			system_shared_libs: [],
 			recovery_available: true,
+			host_supported: true,
+		}
+
+		cc_binary_host {
+			name: "hostbin",
+			static_libs: ["sysprop-platform"],
 		}
 
 		llndk_library {

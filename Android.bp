@@ -36,8 +36,10 @@ bootstrap_go_package {
         "blueprint",
         "blueprint-bootstrap",
         "soong",
+        "soong-android-soongconfig",
         "soong-env",
         "soong-shared",
+        "soong-ui-metrics_proto",
     ],
     srcs: [
         "android/androidmk.go",
@@ -53,6 +55,7 @@ bootstrap_go_package {
         "android/hooks.go",
         "android/image.go",
         "android/makevars.go",
+        "android/metrics.go",
         "android/module.go",
         "android/mutator.go",
         "android/namespace.go",
@@ -69,9 +72,11 @@ bootstrap_go_package {
         "android/proto.go",
         "android/register.go",
         "android/rule_builder.go",
+        "android/sandbox.go",
         "android/sdk.go",
         "android/sh_binary.go",
         "android/singleton.go",
+        "android/soong_config_modules.go",
         "android/testing.go",
         "android/util.go",
         "android/variable.go",
@@ -100,10 +105,25 @@ bootstrap_go_package {
         "android/prebuilt_test.go",
         "android/prebuilt_etc_test.go",
         "android/rule_builder_test.go",
+        "android/soong_config_modules_test.go",
         "android/util_test.go",
         "android/variable_test.go",
         "android/visibility_test.go",
         "android/vts_config_test.go",
+    ],
+}
+
+bootstrap_go_package {
+    name: "soong-android-soongconfig",
+    pkgPath: "android/soong/android/soongconfig",
+    deps: [
+        "blueprint",
+        "blueprint-parser",
+        "blueprint-proptools",
+    ],
+    srcs: [
+        "android/soongconfig/config.go",
+        "android/soongconfig/modules.go",
     ],
 }
 
@@ -123,8 +143,6 @@ bootstrap_go_package {
         "cc/config/arm_device.go",
         "cc/config/arm64_device.go",
         "cc/config/arm64_fuchsia_device.go",
-        "cc/config/mips_device.go",
-        "cc/config/mips64_device.go",
         "cc/config/x86_device.go",
         "cc/config/x86_64_device.go",
         "cc/config/x86_64_fuchsia_device.go",
@@ -155,6 +173,7 @@ bootstrap_go_package {
         "cc/androidmk.go",
         "cc/builder.go",
         "cc/cc.go",
+        "cc/ccdeps.go",
         "cc/check.go",
         "cc/coverage.go",
         "cc/gen.go",
@@ -167,14 +186,15 @@ bootstrap_go_package {
         "cc/rs.go",
         "cc/sanitize.go",
         "cc/sabi.go",
+        "cc/snapshot_utils.go",
         "cc/stl.go",
         "cc/strip.go",
         "cc/sysprop.go",
         "cc/tidy.go",
         "cc/util.go",
+        "cc/vendor_snapshot.go",
         "cc/vndk.go",
         "cc/vndk_prebuilt.go",
-        "cc/xom.go",
 
         "cc/cflag_artifacts.go",
         "cc/cmakelists.go",
@@ -184,8 +204,10 @@ bootstrap_go_package {
         "cc/linker.go",
 
         "cc/binary.go",
+        "cc/binary_sdk_member.go",
         "cc/fuzz.go",
         "cc/library.go",
+        "cc/library_headers.go",
         "cc/library_sdk_member.go",
         "cc/object.go",
         "cc/test.go",
@@ -211,6 +233,7 @@ bootstrap_go_package {
         "cc/compiler_test.go",
         "cc/gen_test.go",
         "cc/genrule_test.go",
+        "cc/library_headers_test.go",
         "cc/library_test.go",
         "cc/object_test.go",
         "cc/prebuilt_test.go",
@@ -471,6 +494,7 @@ bootstrap_go_package {
     ],
     testSrcs: [
         "apex/apex_test.go",
+        "apex/vndk_test.go",
     ],
     pluginFor: ["soong_build"],
 }
@@ -507,11 +531,14 @@ bootstrap_go_package {
     ],
     srcs: [
         "sdk/bp.go",
+        "sdk/exports.go",
         "sdk/sdk.go",
         "sdk/update.go",
     ],
     testSrcs: [
+        "sdk/bp_test.go",
         "sdk/cc_sdk_test.go",
+        "sdk/exports_test.go",
         "sdk/java_sdk_test.go",
         "sdk/sdk_test.go",
         "sdk/testing.go",
@@ -544,6 +571,7 @@ toolchain_library {
     name: "libatomic",
     defaults: ["linux_bionic_supported"],
     vendor_available: true,
+    ramdisk_available: true,
     recovery_available: true,
     native_bridge_supported: true,
 
@@ -590,8 +618,10 @@ toolchain_library {
     name: "libgcc_stripped",
     defaults: ["linux_bionic_supported"],
     vendor_available: true,
+    ramdisk_available: true,
     recovery_available: true,
     native_bridge_supported: true,
+    sdk_version: "current",
 
     arch: {
         arm: {

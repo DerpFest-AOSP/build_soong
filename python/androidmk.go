@@ -76,6 +76,10 @@ func (p *testDecorator) AndroidMk(base *Module, ret *android.AndroidMkData) {
 					p.testConfig.String())
 			}
 		}
+
+		if !BoolDefault(p.binaryProperties.Auto_gen_config, true) {
+			fmt.Fprintln(w, "LOCAL_DISABLE_AUTO_GENERATE_TEST_CONFIG := true")
+		}
 	})
 	base.subAndroidMk(ret, p.binaryDecorator.pythonInstaller)
 }
@@ -96,5 +100,6 @@ func (installer *pythonInstaller) AndroidMk(base *Module, ret *android.AndroidMk
 		fmt.Fprintln(w, "LOCAL_MODULE_PATH := "+path)
 		fmt.Fprintln(w, "LOCAL_MODULE_STEM := "+stem)
 		fmt.Fprintln(w, "LOCAL_SHARED_LIBRARIES := "+strings.Join(installer.androidMkSharedLibs, " "))
+		fmt.Fprintln(w, "LOCAL_CHECK_ELF_FILES := false")
 	})
 }

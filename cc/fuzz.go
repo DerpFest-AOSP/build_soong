@@ -355,10 +355,10 @@ func (s *fuzzPackager) GenerateBuildActions(ctx android.SingletonContext) {
 			return
 		}
 
-		// Discard vendor-NDK-linked + recovery modules, they're duplicates of
+		// Discard vendor-NDK-linked + ramdisk + recovery modules, they're duplicates of
 		// fuzz targets we're going to package anyway.
 		if !ccModule.Enabled() || ccModule.Properties.PreventInstall ||
-			ccModule.UseVndk() || ccModule.InRecovery() {
+			ccModule.UseVndk() || ccModule.InRamdisk() || ccModule.InRecovery() {
 			return
 		}
 
@@ -366,8 +366,6 @@ func (s *fuzzPackager) GenerateBuildActions(ctx android.SingletonContext) {
 		if !ccModule.ExportedToMake() {
 			return
 		}
-
-		s.fuzzTargets[module.Name()] = true
 
 		hostOrTargetString := "target"
 		if ccModule.Host() {
@@ -458,6 +456,17 @@ func (s *fuzzPackager) GenerateBuildActions(ctx android.SingletonContext) {
 		builder.Build(pctx, ctx, "create-"+fuzzZip.String(),
 			"Package "+module.Name()+" for "+archString+"-"+hostOrTargetString)
 
+		// Don't add modules to 'make haiku' that are set to not be exported to the
+		// fuzzing infrastructure.
+		if config := fuzzModule.Properties.Fuzz_config; config != nil {
+			if ccModule.Host() && !BoolDefault(config.Fuzz_on_haiku_host, true) {
+				return
+			} else if !BoolDefault(config.Fuzz_on_haiku_device, true) {
+				return
+			}
+		}
+
+		s.fuzzTargets[module.Name()] = true
 		archDirs[archOs] = append(archDirs[archOs], fileToZip{fuzzZip, ""})
 	})
 
