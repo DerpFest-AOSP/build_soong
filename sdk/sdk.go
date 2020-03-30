@@ -50,15 +50,17 @@ type sdk struct {
 	// list properties, e.g. java_libs.
 	dynamicMemberTypeListProperties interface{}
 
-	// The set of exported members.
-	exportedMembers map[string]struct{}
-
 	// Information about the OsType specific member variants associated with this variant.
 	//
-	// Set by OsType specific variants when their GenerateAndroidBuildActions is invoked
-	// and used by the CommonOS variant when its GenerateAndroidBuildActions is invoked, which
-	// is guaranteed to occur afterwards.
+	// Set by OsType specific variants in the collectMembers() method and used by the
+	// CommonOS variant when building the snapshot. That work is all done on separate
+	// calls to the sdk.GenerateAndroidBuildActions method which is guaranteed to be
+	// called for the OsType specific variants before the CommonOS variant (because
+	// the latter depends on the former).
 	memberRefs []sdkMemberRef
+
+	// The multilib variants that are used by this sdk variant.
+	multilibUsages multilibUsage
 
 	properties sdkProperties
 
@@ -233,26 +235,19 @@ func (s *sdk) memberListProperties() []*sdkMemberListProperty {
 }
 
 func (s *sdk) getExportedMembers() map[string]struct{} {
-	if s.exportedMembers == nil {
-		// Collect all the exported members.
-		s.exportedMembers = make(map[string]struct{})
+	// Collect all the exported members.
+	exportedMembers := make(map[string]struct{})
 
-		for _, memberListProperty := range s.memberListProperties() {
-			names := memberListProperty.getter(s.dynamicMemberTypeListProperties)
+	for _, memberListProperty := range s.memberListProperties() {
+		names := memberListProperty.getter(s.dynamicMemberTypeListProperties)
 
-			// Every member specified explicitly in the properties is exported by the sdk.
-			for _, name := range names {
-				s.exportedMembers[name] = struct{}{}
-			}
+		// Every member specified explicitly in the properties is exported by the sdk.
+		for _, name := range names {
+			exportedMembers[name] = struct{}{}
 		}
 	}
 
-	return s.exportedMembers
-}
-
-func (s *sdk) isInternalMember(memberName string) bool {
-	_, ok := s.getExportedMembers()[memberName]
-	return !ok
+	return exportedMembers
 }
 
 func (s *sdk) snapshot() bool {
@@ -269,8 +264,8 @@ func (s *sdk) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 	// This method is guaranteed to be called on OsType specific variants before it is called
 	// on their corresponding CommonOS variant.
 	if !s.IsCommonOSVariant() {
-		// Collect the OsType specific members are add them to the OsType specific variant.
-		s.memberRefs = s.collectMembers(ctx)
+		// Update the OsType specific sdk variant with information about its members.
+		s.collectMembers(ctx)
 	} else {
 		// Get the OsType specific variants on which the CommonOS depends.
 		osSpecificVariants := android.GetOsSpecificVariantsOfCommonOSVariant(ctx)

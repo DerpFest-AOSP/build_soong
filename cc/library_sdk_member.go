@@ -18,7 +18,9 @@ import (
 	"path/filepath"
 
 	"android/soong/android"
+
 	"github.com/google/blueprint"
+	"github.com/google/blueprint/proptools"
 )
 
 // This file contains support for using cc library modules within an sdk.
@@ -41,10 +43,20 @@ var staticLibrarySdkMemberType = &librarySdkMemberType{
 	linkTypes:          []string{"static"},
 }
 
+var staticAndSharedLibrarySdkMemberType = &librarySdkMemberType{
+	SdkMemberTypeBase: android.SdkMemberTypeBase{
+		PropertyName: "native_libs",
+		SupportsSdk:  true,
+	},
+	prebuiltModuleType: "cc_prebuilt_library",
+	linkTypes:          []string{"static", "shared"},
+}
+
 func init() {
 	// Register sdk member types.
 	android.RegisterSdkMemberType(sharedLibrarySdkMemberType)
 	android.RegisterSdkMemberType(staticLibrarySdkMemberType)
+	android.RegisterSdkMemberType(staticAndSharedLibrarySdkMemberType)
 }
 
 type librarySdkMemberType struct {
@@ -52,7 +64,10 @@ type librarySdkMemberType struct {
 
 	prebuiltModuleType string
 
-	// The set of link types supported, set of "static", "shared".
+	noOutputFiles bool // True if there are no srcs files.
+
+	// The set of link types supported. A set of "static", "shared", or nil to
+	// skip link type variations.
 	linkTypes []string
 }
 
@@ -95,8 +110,8 @@ func (mt *librarySdkMemberType) IsInstance(module android.Module) bool {
 	return false
 }
 
-func (mt *librarySdkMemberType) AddPrebuiltModule(sdkModuleContext android.ModuleContext, builder android.SnapshotBuilder, member android.SdkMember) android.BpModule {
-	pbm := builder.AddPrebuiltModule(member, mt.prebuiltModuleType)
+func (mt *librarySdkMemberType) AddPrebuiltModule(ctx android.SdkMemberContext, member android.SdkMember) android.BpModule {
+	pbm := ctx.SnapshotBuilder().AddPrebuiltModule(member, mt.prebuiltModuleType)
 
 	ccModule := member.Variants()[0].(*Module)
 
@@ -104,12 +119,12 @@ func (mt *librarySdkMemberType) AddPrebuiltModule(sdkModuleContext android.Modul
 	if sdkVersion != "" {
 		pbm.AddProperty("sdk_version", sdkVersion)
 	}
-	return pbm
-}
 
-func (mt *librarySdkMemberType) FinalizeModule(sdkModuleContext android.ModuleContext, builder android.SnapshotBuilder, member android.SdkMember, bpModule android.BpModule) {
-	bpModule.AddProperty("stl", "none")
-	bpModule.AddProperty("system_shared_libs", []string{})
+	stl := ccModule.stl.Properties.Stl
+	if stl != nil {
+		pbm.AddProperty("stl", proptools.String(stl))
+	}
+	return pbm
 }
 
 func (mt *librarySdkMemberType) CreateVariantPropertiesStruct() android.SdkMemberProperties {
@@ -191,6 +206,16 @@ func addPossiblyArchSpecificProperties(sdkModuleContext android.ModuleContext, b
 		nativeLibraryPath := nativeLibraryPathFor(libInfo)
 		builder.CopyToSnapshot(libInfo.outputFile, nativeLibraryPath)
 		outputProperties.AddProperty("srcs", []string{nativeLibraryPath})
+	}
+
+	if len(libInfo.SharedLibs) > 0 {
+		outputProperties.AddPropertyWithTag("shared_libs", libInfo.SharedLibs, builder.SdkMemberReferencePropertyTag(false))
+	}
+
+	// SystemSharedLibs needs to be propagated if it's a list, even if it's empty,
+	// so check for non-nil instead of nonzero length.
+	if libInfo.SystemSharedLibs != nil {
+		outputProperties.AddPropertyWithTag("system_shared_libs", libInfo.SystemSharedLibs, builder.SdkMemberReferencePropertyTag(false))
 	}
 
 	// Map from property name to the include dirs to add to the prebuilt module in the snapshot.
@@ -299,16 +324,27 @@ type nativeLibInfoProperties struct {
 	// This field is exported as its contents may not be arch specific.
 	ExportedFlags []string
 
+	// The set of shared libraries
+	//
+	// This field is exported as its contents may not be arch specific.
+	SharedLibs []string
+
+	// The set of system shared libraries. Note nil and [] are semantically
+	// distinct - see BaseLinkerProperties.System_shared_libs.
+	//
+	// This field is exported as its contents may not be arch specific.
+	SystemSharedLibs []string
+
 	// outputFile is not exported as it is always arch specific.
 	outputFile android.Path
 }
 
-func (p *nativeLibInfoProperties) PopulateFromVariant(variant android.SdkAware) {
+func (p *nativeLibInfoProperties) PopulateFromVariant(ctx android.SdkMemberContext, variant android.Module) {
 	ccModule := variant.(*Module)
 
 	// If the library has some link types then it produces an output binary file, otherwise it
 	// is header only.
-	if p.memberType.linkTypes != nil {
+	if !p.memberType.noOutputFiles {
 		p.outputFile = ccModule.OutputFile().Path()
 	}
 
@@ -319,13 +355,23 @@ func (p *nativeLibInfoProperties) PopulateFromVariant(variant android.SdkAware) 
 
 	p.name = variant.Name()
 	p.archType = ccModule.Target().Arch.ArchType.String()
-	p.ExportedIncludeDirs = exportedIncludeDirs
-	p.exportedGeneratedIncludeDirs = exportedGeneratedIncludeDirs
-	p.ExportedSystemIncludeDirs = ccModule.ExportedSystemIncludeDirs()
+
+	// Make sure that the include directories are unique.
+	p.ExportedIncludeDirs = android.FirstUniquePaths(exportedIncludeDirs)
+	p.exportedGeneratedIncludeDirs = android.FirstUniquePaths(exportedGeneratedIncludeDirs)
+	p.ExportedSystemIncludeDirs = android.FirstUniquePaths(ccModule.ExportedSystemIncludeDirs())
+
 	p.ExportedFlags = ccModule.ExportedFlags()
+	if ccModule.linker != nil {
+		specifiedDeps := specifiedDeps{}
+		specifiedDeps = ccModule.linker.linkerSpecifiedDeps(specifiedDeps)
+
+		p.SharedLibs = specifiedDeps.sharedLibs
+		p.SystemSharedLibs = specifiedDeps.systemSharedLibs
+	}
 	p.exportedGeneratedHeaders = ccModule.ExportedGeneratedHeaders()
 }
 
-func (p *nativeLibInfoProperties) AddToPropertySet(sdkModuleContext android.ModuleContext, builder android.SnapshotBuilder, propertySet android.BpPropertySet) {
-	addPossiblyArchSpecificProperties(sdkModuleContext, builder, p, propertySet)
+func (p *nativeLibInfoProperties) AddToPropertySet(ctx android.SdkMemberContext, propertySet android.BpPropertySet) {
+	addPossiblyArchSpecificProperties(ctx.SdkModuleContext(), ctx.SnapshotBuilder(), p, propertySet)
 }

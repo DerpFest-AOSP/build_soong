@@ -195,6 +195,7 @@ func LibraryFactory() android.Module {
 	module.sdkMemberTypes = []android.SdkMemberType{
 		sharedLibrarySdkMemberType,
 		staticLibrarySdkMemberType,
+		staticAndSharedLibrarySdkMemberType,
 	}
 	return module.Init()
 }
@@ -748,10 +749,12 @@ func (library *libraryDecorator) compilerDeps(ctx DepsContext, deps Deps) Deps {
 
 func (library *libraryDecorator) linkerDeps(ctx DepsContext, deps Deps) Deps {
 	if library.static() {
+		// Compare with nil because an empty list needs to be propagated.
 		if library.StaticProperties.Static.System_shared_libs != nil {
 			library.baseLinker.Properties.System_shared_libs = library.StaticProperties.Static.System_shared_libs
 		}
 	} else if library.shared() {
+		// Compare with nil because an empty list needs to be propagated.
 		if library.SharedProperties.Shared.System_shared_libs != nil {
 			library.baseLinker.Properties.System_shared_libs = library.SharedProperties.Shared.System_shared_libs
 		}
@@ -815,6 +818,34 @@ func (library *libraryDecorator) linkerDeps(ctx DepsContext, deps Deps) Deps {
 	}
 
 	return deps
+}
+
+func (library *libraryDecorator) linkerSpecifiedDeps(specifiedDeps specifiedDeps) specifiedDeps {
+	specifiedDeps = library.baseLinker.linkerSpecifiedDeps(specifiedDeps)
+	var properties StaticOrSharedProperties
+	if library.static() {
+		properties = library.StaticProperties.Static
+	} else if library.shared() {
+		properties = library.SharedProperties.Shared
+	}
+
+	specifiedDeps.sharedLibs = append(specifiedDeps.sharedLibs, properties.Shared_libs...)
+
+	// Must distinguish nil and [] in system_shared_libs - ensure that [] in
+	// either input list doesn't come out as nil.
+	if specifiedDeps.systemSharedLibs == nil {
+		specifiedDeps.systemSharedLibs = properties.System_shared_libs
+	} else {
+		specifiedDeps.systemSharedLibs = append(specifiedDeps.systemSharedLibs, properties.System_shared_libs...)
+	}
+
+	specifiedDeps.sharedLibs = android.FirstUniqueStrings(specifiedDeps.sharedLibs)
+	if len(specifiedDeps.systemSharedLibs) > 0 {
+		// Skip this if systemSharedLibs is either nil or [], to ensure they are
+		// retained.
+		specifiedDeps.systemSharedLibs = android.FirstUniqueStrings(specifiedDeps.systemSharedLibs)
+	}
+	return specifiedDeps
 }
 
 func (library *libraryDecorator) linkStatic(ctx ModuleContext,
@@ -1312,7 +1343,7 @@ var charsNotForMacro = regexp.MustCompile("[^a-zA-Z0-9_]+")
 
 func versioningMacroName(moduleName string) string {
 	macroName := charsNotForMacro.ReplaceAllString(moduleName, "_")
-	macroName = strings.ToUpper(moduleName)
+	macroName = strings.ToUpper(macroName)
 	return "__" + macroName + "_API__"
 }
 
@@ -1353,6 +1384,8 @@ func reuseStaticLibrary(mctx android.BottomUpMutatorContext, static, shared *Mod
 			len(sharedCompiler.SharedProperties.Shared.Static_libs) == 0 &&
 			len(staticCompiler.StaticProperties.Static.Shared_libs) == 0 &&
 			len(sharedCompiler.SharedProperties.Shared.Shared_libs) == 0 &&
+			// Compare System_shared_libs properties with nil because empty lists are
+			// semantically significant for them.
 			staticCompiler.StaticProperties.Static.System_shared_libs == nil &&
 			sharedCompiler.SharedProperties.Shared.System_shared_libs == nil {
 
@@ -1469,6 +1502,19 @@ func checkVersions(ctx android.BaseModuleContext, versions []string) {
 	}
 }
 
+func createVersionVariations(mctx android.BottomUpMutatorContext, versions []string) {
+	// "" is for the non-stubs variant
+	versions = append([]string{""}, versions...)
+
+	modules := mctx.CreateVariations(versions...)
+	for i, m := range modules {
+		if versions[i] != "" {
+			m.(LinkableInterface).SetBuildStubs()
+			m.(LinkableInterface).SetStubsVersions(versions[i])
+		}
+	}
+}
+
 // Version mutator splits a module into the mandatory non-stubs variant
 // (which is unnamed) and zero or more stubs variants.
 func VersionMutator(mctx android.BottomUpMutatorContext) {
@@ -1480,24 +1526,30 @@ func VersionMutator(mctx android.BottomUpMutatorContext) {
 				return
 			}
 
-			// save the list of versions for later use
 			stubsVersionsLock.Lock()
 			defer stubsVersionsLock.Unlock()
+			// save the list of versions for later use
 			stubsVersionsFor(mctx.Config())[mctx.ModuleName()] = versions
 
-			// "" is for the non-stubs variant
-			versions = append([]string{""}, versions...)
-
-			modules := mctx.CreateVariations(versions...)
-			for i, m := range modules {
-				if versions[i] != "" {
-					m.(LinkableInterface).SetBuildStubs()
-					m.(LinkableInterface).SetStubsVersions(versions[i])
-				}
-			}
-		} else {
-			mctx.CreateVariations("")
+			createVersionVariations(mctx, versions)
+			return
 		}
+
+		if c, ok := library.(*Module); ok && c.IsStubs() {
+			stubsVersionsLock.Lock()
+			defer stubsVersionsLock.Unlock()
+			// For LLNDK llndk_library, we borrow vstubs.ersions from its implementation library.
+			// Since llndk_library has dependency to its implementation library,
+			// we can safely access stubsVersionsFor() with its baseModuleName.
+			versions := stubsVersionsFor(mctx.Config())[c.BaseModuleName()]
+			// save the list of versions for later use
+			stubsVersionsFor(mctx.Config())[mctx.ModuleName()] = versions
+
+			createVersionVariations(mctx, versions)
+			return
+		}
+
+		mctx.CreateVariations("")
 		return
 	}
 	if genrule, ok := mctx.Module().(*genrule.Module); ok {

@@ -126,7 +126,6 @@ func makeApexAvailableWhitelist() map[string][]string {
 		"libpcre2",
 		"libprocessgroup_headers",
 		"libqemu_pipe",
-		"libselinux",
 		"libsystem_headers",
 		"libutils_headers",
 	}
@@ -524,7 +523,6 @@ func makeApexAvailableWhitelist() map[string][]string {
 		"libprocessgroup",
 		"libprocessgroup_headers",
 		"libprocinfo",
-		"libselinux",
 		"libsonivox",
 		"libspeexresampler",
 		"libspeexresampler",
@@ -1059,11 +1057,9 @@ func apexDepsMutator(mctx android.TopDownMutatorContext) {
 	var apexBundles []android.ApexInfo
 	var directDep bool
 	if a, ok := mctx.Module().(*apexBundle); ok && !a.vndkApex {
-		minSdkVersion := a.minSdkVersion(mctx)
 		apexBundles = []android.ApexInfo{android.ApexInfo{
-			ApexName:               mctx.ModuleName(),
-			LegacyAndroid10Support: proptools.Bool(a.properties.Legacy_android10_support),
-			MinSdkVersion:          minSdkVersion,
+			ApexName:      mctx.ModuleName(),
+			MinSdkVersion: a.minSdkVersion(mctx),
 		}}
 		directDep = true
 	} else if am, ok := mctx.Module().(android.ApexModule); ok {
@@ -1307,10 +1303,6 @@ type apexBundleProperties struct {
 	// Should be only used in tests#.
 	Test_only_no_hashtree *bool
 
-	// Whether this APEX should support Android10. Default is false. If this is set true, then apex_manifest.json is bundled as well
-	// because Android10 requires legacy apex_manifest.json instead of apex_manifest.pb
-	Legacy_android10_support *bool
-
 	IsCoverageVariant bool `blueprint:"mutated"`
 
 	// Whether this APEX is considered updatable or not. When set to true, this will enforce additional
@@ -1359,6 +1351,10 @@ type overridableProperties struct {
 
 	// Logging Parent value
 	Logging_parent string
+
+	// Apex Container Package Name.
+	// Override value for attribute package:name in AndroidManifest.xml
+	Package_name string
 }
 
 type apexPackaging int
@@ -2024,6 +2020,13 @@ func (a *apexBundle) minSdkVersion(ctx android.BaseModuleContext) int {
 func (a *apexBundle) checkApexAvailability(ctx android.ModuleContext) {
 	// Let's be practical. Availability for test, host, and the VNDK apex isn't important
 	if ctx.Host() || a.testApex || a.vndkApex {
+		return
+	}
+
+	// Coverage build adds additional dependencies for the coverage-only runtime libraries.
+	// Requiring them and their transitive depencies with apex_available is not right
+	// because they just add noise.
+	if ctx.Config().IsEnvTrue("EMMA_INSTRUMENT") || a.IsNativeCoverageNeeded(ctx) {
 		return
 	}
 

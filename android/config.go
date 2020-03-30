@@ -863,16 +863,7 @@ func (c *config) LibartImgHostBaseAddress() string {
 }
 
 func (c *config) LibartImgDeviceBaseAddress() string {
-	archType := Common
-	if len(c.Targets[Android]) > 0 {
-		archType = c.Targets[Android][0].Arch.ArchType
-	}
-	switch archType {
-	default:
-		return "0x70000000"
-	case Mips, Mips64:
-		return "0x5C000000"
-	}
+	return "0x70000000"
 }
 
 func (c *config) ArtUseReadBarrier() bool {
@@ -881,6 +872,13 @@ func (c *config) ArtUseReadBarrier() bool {
 
 func (c *config) EnforceRROForModule(name string) bool {
 	enforceList := c.productVariables.EnforceRROTargets
+	// TODO(b/150820813) Some modules depend on static overlay, remove this after eliminating the dependency.
+	exemptedList := c.productVariables.EnforceRROExemptedTargets
+	if exemptedList != nil {
+		if InList(name, exemptedList) {
+			return false
+		}
+	}
 	if enforceList != nil {
 		if InList("*", enforceList) {
 			return true
@@ -1032,6 +1030,10 @@ func (c *deviceConfig) BtConfigIncludeDir() string {
 
 func (c *deviceConfig) DeviceKernelHeaderDirs() []string {
 	return c.config.productVariables.DeviceKernelHeaders
+}
+
+func (c *deviceConfig) SamplingPGO() bool {
+	return Bool(c.config.productVariables.SamplingPGO)
 }
 
 func (c *config) NativeLineCoverage() bool {

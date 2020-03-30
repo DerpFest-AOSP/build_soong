@@ -198,6 +198,11 @@ func sharedLibraryInstallLocation(
 	return installLocation
 }
 
+// Get the device-only shared library symbols install directory.
+func sharedLibrarySymbolsInstallLocation(libraryPath android.Path, archString string) string {
+	return filepath.Join("$(PRODUCT_OUT)/symbols/data/fuzz/", archString, "/lib/", libraryPath.Base())
+}
+
 func (fuzz *fuzzBinary) install(ctx ModuleContext, file android.Path) {
 	fuzz.binaryDecorator.baseInstaller.dir = filepath.Join(
 		"fuzz", ctx.Target().Arch.ArchType.String(), ctx.ModuleName())
@@ -269,6 +274,12 @@ func (fuzz *fuzzBinary) install(ctx ModuleContext, file android.Path) {
 		fuzz.installedSharedDeps = append(fuzz.installedSharedDeps,
 			sharedLibraryInstallLocation(
 				lib, ctx.Host(), ctx.Arch().ArchType.String()))
+
+		// Also add the dependency on the shared library symbols dir.
+		if !ctx.Host() {
+			fuzz.installedSharedDeps = append(fuzz.installedSharedDeps,
+				sharedLibrarySymbolsInstallLocation(lib, ctx.Arch().ArchType.String()))
+		}
 	}
 }
 
@@ -367,8 +378,6 @@ func (s *fuzzPackager) GenerateBuildActions(ctx android.SingletonContext) {
 			return
 		}
 
-		s.fuzzTargets[module.Name()] = true
-
 		hostOrTargetString := "target"
 		if ccModule.Host() {
 			hostOrTargetString = "host"
@@ -421,12 +430,24 @@ func (s *fuzzPackager) GenerateBuildActions(ctx android.SingletonContext) {
 				continue
 			}
 			sharedLibraryInstalled[installDestination] = true
+
 			// Escape all the variables, as the install destination here will be called
 			// via. $(eval) in Make.
 			installDestination = strings.ReplaceAll(
 				installDestination, "$", "$$")
 			s.sharedLibInstallStrings = append(s.sharedLibInstallStrings,
 				library.String()+":"+installDestination)
+
+			// Ensure that on device, the library is also reinstalled to the /symbols/
+			// dir. Symbolized DSO's are always installed to the device when fuzzing, but
+			// we want symbolization tools (like `stack`) to be able to find the symbols
+			// in $ANDROID_PRODUCT_OUT/symbols automagically.
+			if !ccModule.Host() {
+				symbolsInstallDestination := sharedLibrarySymbolsInstallLocation(library, archString)
+				symbolsInstallDestination = strings.ReplaceAll(symbolsInstallDestination, "$", "$$")
+				s.sharedLibInstallStrings = append(s.sharedLibInstallStrings,
+					library.String()+":"+symbolsInstallDestination)
+			}
 		}
 
 		// The executable.
@@ -458,6 +479,17 @@ func (s *fuzzPackager) GenerateBuildActions(ctx android.SingletonContext) {
 		builder.Build(pctx, ctx, "create-"+fuzzZip.String(),
 			"Package "+module.Name()+" for "+archString+"-"+hostOrTargetString)
 
+		// Don't add modules to 'make haiku' that are set to not be exported to the
+		// fuzzing infrastructure.
+		if config := fuzzModule.Properties.Fuzz_config; config != nil {
+			if ccModule.Host() && !BoolDefault(config.Fuzz_on_haiku_host, true) {
+				return
+			} else if !BoolDefault(config.Fuzz_on_haiku_device, true) {
+				return
+			}
+		}
+
+		s.fuzzTargets[module.Name()] = true
 		archDirs[archOs] = append(archDirs[archOs], fileToZip{fuzzZip, ""})
 	})
 

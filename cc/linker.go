@@ -438,11 +438,10 @@ func (linker *baseLinker) linkerFlags(ctx ModuleContext, flags Flags) Flags {
 		}
 	}
 
-	if ctx.useSdk() && (ctx.Arch().ArchType != android.Mips && ctx.Arch().ArchType != android.Mips64) {
+	if ctx.useSdk() {
 		// The bionic linker now has support gnu style hashes (which are much faster!), but shipping
 		// to older devices requires the old style hash. Fortunately, we can build with both and
 		// it'll work anywhere.
-		// This is not currently supported on MIPS architectures.
 		flags.Global.LdFlags = append(flags.Global.LdFlags, "-Wl,--hash-style=both")
 	}
 
@@ -488,6 +487,20 @@ func (linker *baseLinker) linkerFlags(ctx ModuleContext, flags Flags) Flags {
 func (linker *baseLinker) link(ctx ModuleContext,
 	flags Flags, deps PathDeps, objs Objects) android.Path {
 	panic(fmt.Errorf("baseLinker doesn't know how to link"))
+}
+
+func (linker *baseLinker) linkerSpecifiedDeps(specifiedDeps specifiedDeps) specifiedDeps {
+	specifiedDeps.sharedLibs = append(specifiedDeps.sharedLibs, linker.Properties.Shared_libs...)
+
+	// Must distinguish nil and [] in system_shared_libs - ensure that [] in
+	// either input list doesn't come out as nil.
+	if specifiedDeps.systemSharedLibs == nil {
+		specifiedDeps.systemSharedLibs = linker.Properties.System_shared_libs
+	} else {
+		specifiedDeps.systemSharedLibs = append(specifiedDeps.systemSharedLibs, linker.Properties.System_shared_libs...)
+	}
+
+	return specifiedDeps
 }
 
 // Injecting version symbols

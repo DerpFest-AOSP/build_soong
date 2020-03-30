@@ -328,6 +328,9 @@ func (compiler *baseCompiler) compilerFlags(ctx ModuleContext, flags Flags, deps
 		if Bool(compiler.Properties.Use_apex_name_macro) {
 			flags.Global.CommonFlags = append(flags.Global.CommonFlags, "-D__ANDROID_APEX_"+makeDefineString(ctx.apexName())+"__")
 		}
+		if ctx.Device() {
+			flags.Global.CommonFlags = append(flags.Global.CommonFlags, "-D__ANDROID_SDK_VERSION__="+strconv.Itoa(ctx.apexSdkVersion()))
+		}
 	}
 
 	instructionSet := String(compiler.Properties.Instruction_set)

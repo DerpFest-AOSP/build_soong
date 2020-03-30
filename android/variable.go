@@ -188,9 +188,11 @@ type productVariables struct {
 	CrossHostArch          *string `json:",omitempty"`
 	CrossHostSecondaryArch *string `json:",omitempty"`
 
-	DeviceResourceOverlays     []string `json:",omitempty"`
-	ProductResourceOverlays    []string `json:",omitempty"`
-	EnforceRROTargets          []string `json:",omitempty"`
+	DeviceResourceOverlays  []string `json:",omitempty"`
+	ProductResourceOverlays []string `json:",omitempty"`
+	EnforceRROTargets       []string `json:",omitempty"`
+	// TODO(b/150820813) Some modules depend on static overlay, remove this after eliminating the dependency.
+	EnforceRROExemptedTargets  []string `json:",omitempty"`
 	EnforceRROExcludedOverlays []string `json:",omitempty"`
 
 	AAPTCharacteristics *string  `json:",omitempty"`
@@ -249,6 +251,8 @@ type productVariables struct {
 
 	ClangTidy  *bool   `json:",omitempty"`
 	TidyChecks *string `json:",omitempty"`
+
+	SamplingPGO  *bool   `json:",omitempty"`
 
 	NativeLineCoverage   *bool    `json:",omitempty"`
 	Native_coverage      *bool    `json:",omitempty"`
