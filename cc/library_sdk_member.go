@@ -43,10 +43,20 @@ var staticLibrarySdkMemberType = &librarySdkMemberType{
 	linkTypes:          []string{"static"},
 }
 
+var staticAndSharedLibrarySdkMemberType = &librarySdkMemberType{
+	SdkMemberTypeBase: android.SdkMemberTypeBase{
+		PropertyName: "native_libs",
+		SupportsSdk:  true,
+	},
+	prebuiltModuleType: "cc_prebuilt_library",
+	linkTypes:          []string{"static", "shared"},
+}
+
 func init() {
 	// Register sdk member types.
 	android.RegisterSdkMemberType(sharedLibrarySdkMemberType)
 	android.RegisterSdkMemberType(staticLibrarySdkMemberType)
+	android.RegisterSdkMemberType(staticAndSharedLibrarySdkMemberType)
 }
 
 type librarySdkMemberType struct {
@@ -100,8 +110,8 @@ func (mt *librarySdkMemberType) IsInstance(module android.Module) bool {
 	return false
 }
 
-func (mt *librarySdkMemberType) AddPrebuiltModule(sdkModuleContext android.ModuleContext, builder android.SnapshotBuilder, member android.SdkMember) android.BpModule {
-	pbm := builder.AddPrebuiltModule(member, mt.prebuiltModuleType)
+func (mt *librarySdkMemberType) AddPrebuiltModule(ctx android.SdkMemberContext, member android.SdkMember) android.BpModule {
+	pbm := ctx.SnapshotBuilder().AddPrebuiltModule(member, mt.prebuiltModuleType)
 
 	ccModule := member.Variants()[0].(*Module)
 
@@ -202,7 +212,9 @@ func addPossiblyArchSpecificProperties(sdkModuleContext android.ModuleContext, b
 		outputProperties.AddPropertyWithTag("shared_libs", libInfo.SharedLibs, builder.SdkMemberReferencePropertyTag(false))
 	}
 
-	if len(libInfo.SystemSharedLibs) > 0 {
+	// SystemSharedLibs needs to be propagated if it's a list, even if it's empty,
+	// so check for non-nil instead of nonzero length.
+	if libInfo.SystemSharedLibs != nil {
 		outputProperties.AddPropertyWithTag("system_shared_libs", libInfo.SystemSharedLibs, builder.SdkMemberReferencePropertyTag(false))
 	}
 
@@ -317,7 +329,8 @@ type nativeLibInfoProperties struct {
 	// This field is exported as its contents may not be arch specific.
 	SharedLibs []string
 
-	// The set of system shared libraries
+	// The set of system shared libraries. Note nil and [] are semantically
+	// distinct - see BaseLinkerProperties.System_shared_libs.
 	//
 	// This field is exported as its contents may not be arch specific.
 	SystemSharedLibs []string
@@ -326,7 +339,7 @@ type nativeLibInfoProperties struct {
 	outputFile android.Path
 }
 
-func (p *nativeLibInfoProperties) PopulateFromVariant(variant android.SdkAware) {
+func (p *nativeLibInfoProperties) PopulateFromVariant(ctx android.SdkMemberContext, variant android.Module) {
 	ccModule := variant.(*Module)
 
 	// If the library has some link types then it produces an output binary file, otherwise it
@@ -342,9 +355,12 @@ func (p *nativeLibInfoProperties) PopulateFromVariant(variant android.SdkAware) 
 
 	p.name = variant.Name()
 	p.archType = ccModule.Target().Arch.ArchType.String()
-	p.ExportedIncludeDirs = exportedIncludeDirs
-	p.exportedGeneratedIncludeDirs = exportedGeneratedIncludeDirs
-	p.ExportedSystemIncludeDirs = ccModule.ExportedSystemIncludeDirs()
+
+	// Make sure that the include directories are unique.
+	p.ExportedIncludeDirs = android.FirstUniquePaths(exportedIncludeDirs)
+	p.exportedGeneratedIncludeDirs = android.FirstUniquePaths(exportedGeneratedIncludeDirs)
+	p.ExportedSystemIncludeDirs = android.FirstUniquePaths(ccModule.ExportedSystemIncludeDirs())
+
 	p.ExportedFlags = ccModule.ExportedFlags()
 	if ccModule.linker != nil {
 		specifiedDeps := specifiedDeps{}
@@ -356,6 +372,6 @@ func (p *nativeLibInfoProperties) PopulateFromVariant(variant android.SdkAware) 
 	p.exportedGeneratedHeaders = ccModule.ExportedGeneratedHeaders()
 }
 
-func (p *nativeLibInfoProperties) AddToPropertySet(sdkModuleContext android.ModuleContext, builder android.SnapshotBuilder, propertySet android.BpPropertySet) {
-	addPossiblyArchSpecificProperties(sdkModuleContext, builder, p, propertySet)
+func (p *nativeLibInfoProperties) AddToPropertySet(ctx android.SdkMemberContext, propertySet android.BpPropertySet) {
+	addPossiblyArchSpecificProperties(ctx.SdkModuleContext(), ctx.SnapshotBuilder(), p, propertySet)
 }

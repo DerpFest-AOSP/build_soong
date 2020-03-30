@@ -30,9 +30,9 @@ func systemServerClasspath(ctx android.MakeVarsContext) []string {
 	return ctx.Config().OnceStringSlice(systemServerClasspathKey, func() []string {
 		global := dexpreopt.GetGlobalConfig(ctx)
 		var systemServerClasspathLocations []string
-		var dexpreoptJars = *DexpreoptedSystemServerJars(ctx.Config())
-		// 1) The jars that are dexpreopted.
-		for _, m := range dexpreoptJars {
+		nonUpdatable := dexpreopt.NonUpdatableSystemServerJars(ctx, global)
+		// 1) Non-updatable jars.
+		for _, m := range nonUpdatable {
 			systemServerClasspathLocations = append(systemServerClasspathLocations,
 				filepath.Join("/system/framework", m+".jar"))
 		}
@@ -40,13 +40,6 @@ func systemServerClasspath(ctx android.MakeVarsContext) []string {
 		for _, m := range global.UpdatableSystemServerJars {
 			systemServerClasspathLocations = append(systemServerClasspathLocations,
 				dexpreopt.GetJarLocationFromApexJarPair(m))
-		}
-		// 3) The jars from make (which are not updatable, not preopted).
-		for _, m := range dexpreopt.NonUpdatableSystemServerJars(ctx, global) {
-			if !android.InList(m, dexpreoptJars) {
-				systemServerClasspathLocations = append(systemServerClasspathLocations,
-					filepath.Join("/system/framework", m+".jar"))
-			}
 		}
 		if len(systemServerClasspathLocations) != len(global.SystemServerJars)+len(global.UpdatableSystemServerJars) {
 			panic(fmt.Errorf("Wrong number of system server jars, got %d, expected %d",
@@ -122,7 +115,6 @@ func genBootImageConfigs(ctx android.PathContext) map[string]*bootImageConfig {
 		// ART config for the primary boot image in the ART apex.
 		// It includes the Core Libraries.
 		artCfg := bootImageConfig{
-			extension:        false,
 			name:             artBootImageName,
 			stem:             "boot",
 			installSubdir:    artSubdir,
@@ -134,7 +126,7 @@ func genBootImageConfigs(ctx android.PathContext) map[string]*bootImageConfig {
 		// Framework config for the boot image extension.
 		// It includes framework libraries and depends on the ART config.
 		frameworkCfg := bootImageConfig{
-			extension:        true,
+			extends:          &artCfg,
 			name:             frameworkBootImageName,
 			stem:             "boot",
 			installSubdir:    frameworkSubdir,
@@ -155,8 +147,6 @@ func genBootImageConfigs(ctx android.PathContext) map[string]*bootImageConfig {
 
 			// expands to <stem>.art for primary image and <stem>-<1st module>.art for extension
 			imageName := c.firstModuleNameOrStem() + ".art"
-
-			c.imageLocations = []string{c.dir.Join(ctx, "android", c.installSubdir, imageName).String()}
 
 			// The path to bootclasspath dex files needs to be known at module
 			// GenerateAndroidBuildAction time, before the bootclasspath modules have been compiled.
@@ -189,7 +179,6 @@ func genBootImageConfigs(ctx android.PathContext) map[string]*bootImageConfig {
 		for i := range targets {
 			frameworkCfg.variants[i].primaryImages = artCfg.variants[i].images
 		}
-		frameworkCfg.imageLocations = append(artCfg.imageLocations, frameworkCfg.imageLocations...)
 
 		return configs
 	}).(map[string]*bootImageConfig)

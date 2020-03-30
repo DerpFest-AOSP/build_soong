@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 
 	"android/soong/android"
+
 	"github.com/google/blueprint"
 )
 
@@ -63,9 +64,8 @@ func (mt *binarySdkMemberType) IsInstance(module android.Module) bool {
 	return false
 }
 
-func (mt *binarySdkMemberType) AddPrebuiltModule(sdkModuleContext android.ModuleContext, builder android.SnapshotBuilder, member android.SdkMember) android.BpModule {
-	pbm := builder.AddPrebuiltModule(member, "cc_prebuilt_binary")
-	return pbm
+func (mt *binarySdkMemberType) AddPrebuiltModule(ctx android.SdkMemberContext, member android.SdkMember) android.BpModule {
+	return ctx.SnapshotBuilder().AddPrebuiltModule(member, "cc_prebuilt_binary")
 }
 
 func (mt *binarySdkMemberType) CreateVariantPropertiesStruct() android.SdkMemberProperties {
@@ -107,7 +107,7 @@ type nativeBinaryInfoProperties struct {
 	SystemSharedLibs []string
 }
 
-func (p *nativeBinaryInfoProperties) PopulateFromVariant(variant android.SdkAware) {
+func (p *nativeBinaryInfoProperties) PopulateFromVariant(ctx android.SdkMemberContext, variant android.Module) {
 	ccModule := variant.(*Module)
 
 	p.archType = ccModule.Target().Arch.ArchType.String()
@@ -122,11 +122,12 @@ func (p *nativeBinaryInfoProperties) PopulateFromVariant(variant android.SdkAwar
 	}
 }
 
-func (p *nativeBinaryInfoProperties) AddToPropertySet(sdkModuleContext android.ModuleContext, builder android.SnapshotBuilder, propertySet android.BpPropertySet) {
+func (p *nativeBinaryInfoProperties) AddToPropertySet(ctx android.SdkMemberContext, propertySet android.BpPropertySet) {
 	if p.Compile_multilib != "" {
 		propertySet.AddProperty("compile_multilib", p.Compile_multilib)
 	}
 
+	builder := ctx.SnapshotBuilder()
 	if p.outputFile != nil {
 		propertySet.AddProperty("srcs", []string{nativeBinaryPathFor(*p)})
 
@@ -137,7 +138,9 @@ func (p *nativeBinaryInfoProperties) AddToPropertySet(sdkModuleContext android.M
 		propertySet.AddPropertyWithTag("shared_libs", p.SharedLibs, builder.SdkMemberReferencePropertyTag(false))
 	}
 
-	if len(p.SystemSharedLibs) > 0 {
+	// SystemSharedLibs needs to be propagated if it's a list, even if it's empty,
+	// so check for non-nil instead of nonzero length.
+	if p.SystemSharedLibs != nil {
 		propertySet.AddPropertyWithTag("system_shared_libs", p.SystemSharedLibs, builder.SdkMemberReferencePropertyTag(false))
 	}
 }
