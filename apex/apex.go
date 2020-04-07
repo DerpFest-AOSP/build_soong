@@ -94,16 +94,9 @@ func makeApexAvailableWhitelist() map[string][]string {
 	// Module separator
 	//
 	m["com.android.adbd"] = []string{
-		"adbd",
-		"libadbconnection_server",
-		"libadbd",
 		"libadbd_auth",
-		"libadbd_core",
-		"libadbd_services",
-		"libasyncio",
 		"libbuildversion",
 		"libcap",
-		"libdiagnose_usb",
 		"libmdnssd",
 		"libminijail",
 		"libminijail_gen_constants",
@@ -114,7 +107,6 @@ func makeApexAvailableWhitelist() map[string][]string {
 		"libpackagelistparser",
 		"libpcre2",
 		"libprocessgroup_headers",
-		"libqemu_pipe",
 	}
 	//
 	// Module separator
@@ -819,22 +811,6 @@ func makeApexAvailableWhitelist() map[string][]string {
 		"libprofile-extras",
 		"libprofile-extras_ndk",
 		"libunwind_llvm",
-		"ndk_crtbegin_dynamic.27",
-		"ndk_crtbegin_so.16",
-		"ndk_crtbegin_so.19",
-		"ndk_crtbegin_so.21",
-		"ndk_crtbegin_so.24",
-		"ndk_crtbegin_so.27",
-		"ndk_crtend_android.27",
-		"ndk_crtend_so.16",
-		"ndk_crtend_so.19",
-		"ndk_crtend_so.21",
-		"ndk_crtend_so.24",
-		"ndk_crtend_so.27",
-		"ndk_libandroid_support",
-		"ndk_libc++_static",
-		"ndk_libc++abi",
-		"ndk_libunwind",
 	}
 	return m
 }
@@ -1791,9 +1767,13 @@ func (c *flattenedApexContext) InstallBypassMake() bool {
 	return true
 }
 
+// Function called while walking an APEX's payload dependencies.
+//
+// Return true if the `to` module should be visited, false otherwise.
+type payloadDepsCallback func(ctx android.ModuleContext, from blueprint.Module, to android.ApexModule, externalDep bool) bool
+
 // Visit dependencies that contributes to the payload of this APEX
-func (a *apexBundle) walkPayloadDeps(ctx android.ModuleContext,
-	do func(ctx android.ModuleContext, from blueprint.Module, to android.ApexModule, externalDep bool)) {
+func (a *apexBundle) walkPayloadDeps(ctx android.ModuleContext, do payloadDepsCallback) {
 	ctx.WalkDeps(func(child, parent android.Module) bool {
 		am, ok := child.(android.ApexModule)
 		if !ok || !am.CanHaveApexVariants() {
@@ -1803,22 +1783,18 @@ func (a *apexBundle) walkPayloadDeps(ctx android.ModuleContext,
 		// Check for the direct dependencies that contribute to the payload
 		if dt, ok := ctx.OtherModuleDependencyTag(child).(dependencyTag); ok {
 			if dt.payload {
-				do(ctx, parent, am, false /* externalDep */)
-				return true
+				return do(ctx, parent, am, false /* externalDep */)
 			}
+			// As soon as the dependency graph crosses the APEX boundary, don't go further.
 			return false
 		}
 
 		// Check for the indirect dependencies if it is considered as part of the APEX
 		if am.ApexName() != "" {
-			do(ctx, parent, am, false /* externalDep */)
-			return true
+			return do(ctx, parent, am, false /* externalDep */)
 		}
 
-		do(ctx, parent, am, true /* externalDep */)
-
-		// As soon as the dependency graph crosses the APEX boundary, don't go further.
-		return false
+		return do(ctx, parent, am, true /* externalDep */)
 	})
 }
 
@@ -1848,28 +1824,36 @@ func (a *apexBundle) checkApexAvailability(ctx android.ModuleContext) {
 		return
 	}
 
-	a.walkPayloadDeps(ctx, func(ctx android.ModuleContext, from blueprint.Module, to android.ApexModule, externalDep bool) {
+	a.walkPayloadDeps(ctx, func(ctx android.ModuleContext, from blueprint.Module, to android.ApexModule, externalDep bool) bool {
+		if externalDep {
+			// As soon as the dependency graph crosses the APEX boundary, don't go further.
+			return false
+		}
+
 		apexName := ctx.ModuleName()
 		fromName := ctx.OtherModuleName(from)
 		toName := ctx.OtherModuleName(to)
-		if externalDep || to.AvailableFor(apexName) || whitelistedApexAvailable(apexName, toName) {
-			return
+		if to.AvailableFor(apexName) || whitelistedApexAvailable(apexName, toName) {
+			return true
 		}
 		message := ""
 		for _, m := range ctx.GetWalkPath()[1:] {
 			message = fmt.Sprintf("%s\n    -> %s", message, m.String())
 		}
 		ctx.ModuleErrorf("%q requires %q that is not available for the APEX. Dependency path:%s", fromName, toName, message)
+		// Visit this module's dependencies to check and report any issues with their availability.
+		return true
 	})
 }
 
 // Collects the list of module names that directly or indirectly contributes to the payload of this APEX
 func (a *apexBundle) collectDepsInfo(ctx android.ModuleContext) {
 	a.depInfos = make(map[string]depInfo)
-	a.walkPayloadDeps(ctx, func(ctx android.ModuleContext, from blueprint.Module, to android.ApexModule, externalDep bool) {
+	a.walkPayloadDeps(ctx, func(ctx android.ModuleContext, from blueprint.Module, to android.ApexModule, externalDep bool) bool {
 		if from.Name() == to.Name() {
 			// This can happen for cc.reuseObjTag. We are not interested in tracking this.
-			return
+			// As soon as the dependency graph crosses the APEX boundary, don't go further.
+			return !externalDep
 		}
 
 		if info, exists := a.depInfos[to.Name()]; exists {
@@ -1885,6 +1869,9 @@ func (a *apexBundle) collectDepsInfo(ctx android.ModuleContext) {
 				isExternal: externalDep,
 			}
 		}
+
+		// As soon as the dependency graph crosses the APEX boundary, don't go further.
+		return !externalDep
 	})
 }
 
