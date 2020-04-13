@@ -227,6 +227,16 @@ var neverallowTests = []struct {
 		},
 	},
 	{
+		name: "sdk_version: \"none\" on android_*stubs_current stub",
+		fs: map[string][]byte{
+			"frameworks/base/Android.bp": []byte(`
+				java_library {
+					name: "android_stubs_current",
+					sdk_version: "none",
+				}`),
+		},
+	},
+	{
 		name: "sdk_version: \"none\" outside core libraries",
 		fs: map[string][]byte{
 			"Android.bp": []byte(`
@@ -247,6 +257,50 @@ var neverallowTests = []struct {
 					name: "outside_core_libraries",
 					sdk_version: "current",
 				}`),
+		},
+	},
+	// CC sdk rule tests
+	{
+		name: `"sdk_variant_only" outside whitelist`,
+		fs: map[string][]byte{
+			"Android.bp": []byte(`
+				cc_library {
+					name: "outside_whitelist",
+					sdk_version: "current",
+					sdk_variant_only: true,
+				}`),
+		},
+		expectedErrors: []string{
+			`module "outside_whitelist": violates neverallow`,
+		},
+	},
+	{
+		name: `"sdk_variant_only: false" outside whitelist`,
+		fs: map[string][]byte{
+			"Android.bp": []byte(`
+				cc_library {
+					name: "outside_whitelist",
+					sdk_version: "current",
+					sdk_variant_only: false,
+				}`),
+		},
+		expectedErrors: []string{
+			`module "outside_whitelist": violates neverallow`,
+		},
+	},
+	{
+		name: `"platform" outside whitelist`,
+		fs: map[string][]byte{
+			"Android.bp": []byte(`
+				cc_library {
+					name: "outside_whitelist",
+					platform: {
+						shared_libs: ["libfoo"],
+					},
+				}`),
+		},
+		expectedErrors: []string{
+			`module "outside_whitelist": violates neverallow`,
 		},
 	},
 }
@@ -289,6 +343,8 @@ type mockCcLibraryProperties struct {
 	Include_dirs     []string
 	Vendor_available *bool
 	Static_libs      []string
+	Sdk_version      *string
+	Sdk_variant_only *bool
 
 	Vndk struct {
 		Enabled                *bool
@@ -304,6 +360,10 @@ type mockCcLibraryProperties struct {
 		Treble_linker_namespaces struct {
 			Cflags []string
 		}
+	}
+
+	Platform struct {
+		Shared_libs []string
 	}
 }
 

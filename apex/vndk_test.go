@@ -8,6 +8,59 @@ import (
 	"android/soong/android"
 )
 
+func TestVndkApexForVndkLite(t *testing.T) {
+	ctx, _ := testApex(t, `
+		apex_vndk {
+			name: "myapex",
+			key: "myapex.key",
+		}
+
+		apex_key {
+			name: "myapex.key",
+			public_key: "testkey.avbpubkey",
+			private_key: "testkey.pem",
+		}
+
+		cc_library {
+			name: "libvndk",
+			srcs: ["mylib.cpp"],
+			vendor_available: true,
+			vndk: {
+				enabled: true,
+			},
+			system_shared_libs: [],
+			stl: "none",
+			apex_available: [ "myapex" ],
+		}
+
+		cc_library {
+			name: "libvndksp",
+			srcs: ["mylib.cpp"],
+			vendor_available: true,
+			vndk: {
+				enabled: true,
+				support_system_process: true,
+			},
+			system_shared_libs: [],
+			stl: "none",
+			apex_available: [ "myapex" ],
+		}
+	`+vndkLibrariesTxtFiles("current"), func(fs map[string][]byte, config android.Config) {
+		config.TestProductVariables.DeviceVndkVersion = proptools.StringPtr("")
+	})
+	// VNDK-Lite contains only core variants of VNDK-Sp libraries
+	ensureExactContents(t, ctx, "myapex", "android_common_image", []string{
+		"lib/libvndksp.so",
+		"lib/libc++.so",
+		"lib64/libvndksp.so",
+		"lib64/libc++.so",
+		"etc/llndk.libraries.VER.txt",
+		"etc/vndkcore.libraries.VER.txt",
+		"etc/vndksp.libraries.VER.txt",
+		"etc/vndkprivate.libraries.VER.txt",
+	})
+}
+
 func TestVndkApexUsesVendorVariant(t *testing.T) {
 	bp := `
 		apex_vndk {
@@ -90,6 +143,7 @@ func TestVndkApexUsesVendorVariant(t *testing.T) {
 				system_shared_libs: [],
 				stl: "none",
 				notice: "custom_notice",
+				sdk_version: "current",
 			}
 			cc_library {
 				name: "libprofile-clang-extras_ndk",
@@ -98,6 +152,7 @@ func TestVndkApexUsesVendorVariant(t *testing.T) {
 				system_shared_libs: [],
 				stl: "none",
 				notice: "custom_notice",
+				sdk_version: "current",
 			}
 		`, func(fs map[string][]byte, config android.Config) {
 			config.TestProductVariables.Native_coverage = proptools.BoolPtr(true)

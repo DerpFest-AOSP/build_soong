@@ -90,6 +90,7 @@ func testSdkContext(bp string, fs map[string][]byte) (*android.TestContext, andr
 	// from java package
 	java.RegisterJavaBuildComponents(ctx)
 	java.RegisterAppBuildComponents(ctx)
+	java.RegisterSdkLibraryBuildComponents(ctx)
 	java.RegisterStubsBuildComponents(ctx)
 	java.RegisterSystemModulesBuildComponents(ctx)
 
@@ -338,14 +339,15 @@ func checkAllOtherCopyRules(expected string) snapshotBuildInfoChecker {
 	}
 }
 
-// Check that the specified path is in the list of zips to merge with the intermediate zip.
-func checkMergeZip(expected string) snapshotBuildInfoChecker {
+// Check that the specified paths match the list of zips to merge with the intermediate zip.
+func checkMergeZips(expected ...string) snapshotBuildInfoChecker {
 	return func(info *snapshotBuildInfo) {
 		info.r.t.Helper()
 		if info.intermediateZip == "" {
 			info.r.t.Errorf("No intermediate zip file was created")
 		}
-		ensureListContains(info.r.t, info.mergeZips, expected)
+
+		info.r.AssertDeepEquals("mismatching merge zip files", expected, info.mergeZips)
 	}
 }
 
