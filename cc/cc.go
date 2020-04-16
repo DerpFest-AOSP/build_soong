@@ -404,6 +404,7 @@ type installer interface {
 	inSanitizerDir() bool
 	hostToolPath() android.OptionalPath
 	relativeInstallPath() string
+	skipInstall(mod *Module)
 }
 
 type xref interface {
@@ -1118,7 +1119,7 @@ func (ctx *moduleContextImpl) sdkVersion() string {
 	if ctx.ctx.Device() {
 		if ctx.useVndk() {
 			vndkVer := ctx.mod.VndkVersion()
-			if inList(vndkVer, ctx.ctx.Config().PlatformVersionCombinedCodenames()) {
+			if inList(vndkVer, ctx.ctx.Config().PlatformVersionActiveCodenames()) {
 				return "current"
 			}
 			return vndkVer
@@ -2637,6 +2638,14 @@ func (c *Module) InstallInRamdisk() bool {
 
 func (c *Module) InstallInRecovery() bool {
 	return c.InRecovery()
+}
+
+func (c *Module) SkipInstall() {
+	if c.installer == nil {
+		c.ModuleBase.SkipInstall()
+		return
+	}
+	c.installer.skipInstall(c)
 }
 
 func (c *Module) HostToolPath() android.OptionalPath {
