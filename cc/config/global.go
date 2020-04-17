@@ -18,6 +18,7 @@ import (
 	"strings"
 
 	"android/soong/android"
+	"android/soong/remoteexec"
 )
 
 var (
@@ -127,8 +128,8 @@ var (
 
 	// prebuilts/clang default settings.
 	ClangDefaultBase         = "prebuilts/clang/host"
-	ClangDefaultVersion      = "clang-r377782c"
-	ClangDefaultShortVersion = "10.0.5"
+	ClangDefaultVersion      = "clang-r377782d"
+	ClangDefaultShortVersion = "10.0.6"
 
 	// Directories with warnings from Android.bp files.
 	WarningAllowedProjects = []string{
@@ -255,6 +256,9 @@ func init() {
 		}
 		return ""
 	})
+
+	pctx.VariableFunc("RECXXLinksPool", envOverrideFunc("RBE_CXX_LINKS_POOL", remoteexec.DefaultPool))
+	pctx.VariableFunc("RECXXLinksExecStrategy", envOverrideFunc("RBE_CXX_LINKS_EXEC_STRATEGY", remoteexec.LocalExecStrategy))
 }
 
 var HostPrebuiltTag = pctx.VariableConfigMethod("HostPrebuiltTag", android.Config.PrebuiltOS)
@@ -267,4 +271,13 @@ func bionicHeaders(kernelArch string) string {
 		"-isystem bionic/libc/kernel/android/scsi",
 		"-isystem bionic/libc/kernel/android/uapi",
 	}, " ")
+}
+
+func envOverrideFunc(envVar, defaultVal string) func(ctx android.PackageVarContext) string {
+	return func(ctx android.PackageVarContext) string {
+		if override := ctx.Config().Getenv(envVar); override != "" {
+			return override
+		}
+		return defaultVal
+	}
 }

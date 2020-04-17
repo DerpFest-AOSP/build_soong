@@ -86,7 +86,7 @@ func RegisterJavaBuildComponents(ctx android.RegistrationContext) {
 	ctx.RegisterSingletonType("kythe_java_extract", kytheExtractJavaFactory)
 }
 
-func (j *Module) checkSdkVersion(ctx android.ModuleContext) {
+func (j *Module) checkSdkVersions(ctx android.ModuleContext) {
 	if j.SocSpecific() || j.DeviceSpecific() ||
 		(j.ProductSpecific() && ctx.Config().EnforceProductPartitionInterface()) {
 		if sc, ok := ctx.Module().(sdkContext); ok {
@@ -96,6 +96,18 @@ func (j *Module) checkSdkVersion(ctx android.ModuleContext) {
 			}
 		}
 	}
+
+	ctx.VisitDirectDeps(func(module android.Module) {
+		tag := ctx.OtherModuleDependencyTag(module)
+		switch module.(type) {
+		// TODO(satayev): cover other types as well, e.g. imports
+		case *Library, *AndroidLibrary:
+			switch tag {
+			case bootClasspathTag, libTag, staticLibTag, java9LibTag:
+				checkLinkType(ctx, j, module.(linkTypeContext), tag.(dependencyTag))
+			}
+		}
+	})
 }
 
 func (j *Module) checkPlatformAPI(ctx android.ModuleContext) {
@@ -325,6 +337,10 @@ type CompilerDeviceProperties struct {
 
 	UncompressDex bool `blueprint:"mutated"`
 	IsSDKLibrary  bool `blueprint:"mutated"`
+
+	// If true, generate the signature file of APK Signing Scheme V4, along side the signed APK file.
+	// Defaults to false.
+	V4_signature *bool
 }
 
 func (me *CompilerDeviceProperties) EffectiveOptimizeEnabled() bool {
@@ -894,15 +910,7 @@ func (j *Module) collectDeps(ctx android.ModuleContext) deps {
 			// Handled by AndroidApp.collectAppDeps
 			return
 		}
-		switch module.(type) {
-		case *Library, *AndroidLibrary:
-			if to, ok := module.(linkTypeContext); ok {
-				switch tag {
-				case bootClasspathTag, libTag, staticLibTag:
-					checkLinkType(ctx, j, to, tag.(dependencyTag))
-				}
-			}
-		}
+
 		switch dep := module.(type) {
 		case SdkLibraryDependency:
 			switch tag {
@@ -1756,11 +1764,6 @@ func (j *Module) DepIsInSameApex(ctx android.BaseModuleContext, dep android.Modu
 	if staticLibTag == ctx.OtherModuleDependencyTag(dep) {
 		return true
 	}
-	// Also, a dependency to an sdk member is also considered as such. This is required because
-	// sdk members should be mutated into APEXes. Refer to sdk.sdkDepsReplaceMutator.
-	if sa, ok := dep.(android.SdkAware); ok && sa.IsInAnySdk() {
-		return true
-	}
 	return false
 }
 
@@ -1819,7 +1822,7 @@ func shouldUncompressDex(ctx android.ModuleContext, dexpreopter *dexpreopter) bo
 }
 
 func (j *Library) GenerateAndroidBuildActions(ctx android.ModuleContext) {
-	j.checkSdkVersion(ctx)
+	j.checkSdkVersions(ctx)
 	j.dexpreopter.installPath = android.PathForModuleInstall(ctx, "framework", j.Stem()+".jar")
 	j.dexpreopter.isSDKLibrary = j.deviceProperties.IsSDKLibrary
 	j.dexpreopter.uncompressedDex = shouldUncompressDex(ctx, &j.dexpreopter)
@@ -2507,11 +2510,6 @@ func (j *Import) SrcJarArgs() ([]string, android.Paths) {
 func (j *Import) DepIsInSameApex(ctx android.BaseModuleContext, dep android.Module) bool {
 	// dependencies other than the static linkage are all considered crossing APEX boundary
 	if staticLibTag == ctx.OtherModuleDependencyTag(dep) {
-		return true
-	}
-	// Also, a dependency to an sdk member is also considered as such. This is required because
-	// sdk members should be mutated into APEXes. Refer to sdk.sdkDepsReplaceMutator.
-	if sa, ok := dep.(android.SdkAware); ok && sa.IsInAnySdk() {
 		return true
 	}
 	return false

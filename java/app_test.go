@@ -264,6 +264,108 @@ func TestAndroidAppLinkType(t *testing.T) {
 	`)
 }
 
+func TestUpdatableApps(t *testing.T) {
+	testCases := []struct {
+		name          string
+		bp            string
+		expectedError string
+	}{
+		{
+			name: "Stable public SDK",
+			bp: `android_app {
+					name: "foo",
+					srcs: ["a.java"],
+					sdk_version: "29",
+					updatable: true,
+				}`,
+		},
+		{
+			name: "Stable system SDK",
+			bp: `android_app {
+					name: "foo",
+					srcs: ["a.java"],
+					sdk_version: "system_29",
+					updatable: true,
+				}`,
+		},
+		{
+			name: "Current public SDK",
+			bp: `android_app {
+					name: "foo",
+					srcs: ["a.java"],
+					sdk_version: "current",
+					updatable: true,
+				}`,
+		},
+		{
+			name: "Current system SDK",
+			bp: `android_app {
+					name: "foo",
+					srcs: ["a.java"],
+					sdk_version: "system_current",
+					updatable: true,
+				}`,
+		},
+		{
+			name: "Current module SDK",
+			bp: `android_app {
+					name: "foo",
+					srcs: ["a.java"],
+					sdk_version: "module_current",
+					updatable: true,
+				}`,
+		},
+		{
+			name: "Current core SDK",
+			bp: `android_app {
+					name: "foo",
+					srcs: ["a.java"],
+					sdk_version: "core_current",
+					updatable: true,
+				}`,
+		},
+		{
+			name: "No Platform APIs",
+			bp: `android_app {
+					name: "foo",
+					srcs: ["a.java"],
+					platform_apis: true,
+					updatable: true,
+				}`,
+			expectedError: "Updatable apps must use stable SDKs",
+		},
+		{
+			name: "No Core Platform APIs",
+			bp: `android_app {
+					name: "foo",
+					srcs: ["a.java"],
+					sdk_version: "core_platform",
+					updatable: true,
+				}`,
+			expectedError: "Updatable apps must use stable SDKs",
+		},
+		{
+			name: "No unspecified APIs",
+			bp: `android_app {
+					name: "foo",
+					srcs: ["a.java"],
+					updatable: true,
+				}`,
+			expectedError: "Updatable apps must use stable SDK",
+		},
+	}
+
+	for _, test := range testCases {
+		t.Run(test.name, func(t *testing.T) {
+			if test.expectedError == "" {
+				testJava(t, test.bp)
+			} else {
+				testJavaError(t, test.expectedError, test.bp)
+			}
+		})
+	}
+}
+
 func TestResourceDirs(t *testing.T) {
 	testCases := []struct {
 		name      string
@@ -791,6 +893,7 @@ func TestJNIABI(t *testing.T) {
 		cc_library {
 			name: "libjni",
 			system_shared_libs: [],
+			sdk_version: "current",
 			stl: "none",
 		}
 
@@ -928,26 +1031,26 @@ func TestJNIPackaging(t *testing.T) {
 
 		android_test {
 			name: "test",
-			sdk_version: "core_platform",
+			sdk_version: "current",
 			jni_libs: ["libjni"],
 		}
 
 		android_test {
 			name: "test_noembed",
-			sdk_version: "core_platform",
+			sdk_version: "current",
 			jni_libs: ["libjni"],
 			use_embedded_native_libs: false,
 		}
 
 		android_test_helper_app {
 			name: "test_helper",
-			sdk_version: "core_platform",
+			sdk_version: "current",
 			jni_libs: ["libjni"],
 		}
 
 		android_test_helper_app {
 			name: "test_helper_noembed",
-			sdk_version: "core_platform",
+			sdk_version: "current",
 			jni_libs: ["libjni"],
 			use_embedded_native_libs: false,
 		}
@@ -978,6 +1081,10 @@ func TestJNIPackaging(t *testing.T) {
 			if jniLibZip.Rule != nil {
 				if g, w := !strings.Contains(jniLibZip.Args["jarArgs"], "-L 0"), test.compressed; g != w {
 					t.Errorf("expected jni compressed %v, got %v", w, g)
+				}
+
+				if !strings.Contains(jniLibZip.Implicits[0].String(), "_sdk_") {
+					t.Errorf("expected input %q to use sdk variant", jniLibZip.Implicits[0].String())
 				}
 			}
 		})
@@ -1067,6 +1174,66 @@ func TestCertificates(t *testing.T) {
 
 			signapk := foo.Output("foo.apk")
 			signFlags := signapk.Args["certificates"]
+			if test.expected != signFlags {
+				t.Errorf("Incorrect signing flags, expected: %q, got: %q", test.expected, signFlags)
+			}
+		})
+	}
+}
+
+func TestRequestV4SigningFlag(t *testing.T) {
+	testCases := []struct {
+		name     string
+		bp       string
+		expected string
+	}{
+		{
+			name: "default",
+			bp: `
+				android_app {
+					name: "foo",
+					srcs: ["a.java"],
+					sdk_version: "current",
+				}
+			`,
+			expected: "",
+		},
+		{
+			name: "default",
+			bp: `
+				android_app {
+					name: "foo",
+					srcs: ["a.java"],
+					sdk_version: "current",
+					v4_signature: false,
+				}
+			`,
+			expected: "",
+		},
+		{
+			name: "module certificate property",
+			bp: `
+				android_app {
+					name: "foo",
+					srcs: ["a.java"],
+					sdk_version: "current",
+					v4_signature: true,
+				}
+			`,
+			expected: "--enable-v4",
+		},
+	}
+
+	for _, test := range testCases {
+		t.Run(test.name, func(t *testing.T) {
+			config := testAppConfig(nil, test.bp, nil)
+			ctx := testContext()
+
+			run(t, ctx, config)
+			foo := ctx.ModuleForTests("foo", "android_common")
+
+			signapk := foo.Output("foo.apk")
+			signFlags := signapk.Args["flags"]
 			if test.expected != signFlags {
 				t.Errorf("Incorrect signing flags, expected: %q, got: %q", test.expected, signFlags)
 			}
@@ -2284,11 +2451,17 @@ func checkAapt2LinkFlag(t *testing.T, aapt2Flags, flagName, expectedValue string
 }
 
 func TestRuntimeResourceOverlay(t *testing.T) {
-	ctx, config := testJava(t, `
+	fs := map[string][]byte{
+		"baz/res/res/values/strings.xml": nil,
+		"bar/res/res/values/strings.xml": nil,
+	}
+	bp := `
 		runtime_resource_overlay {
 			name: "foo",
 			certificate: "platform",
 			product_specific: true,
+			static_libs: ["bar"],
+			resource_libs: ["baz"],
 			aaptflags: ["--keep-raw-values"],
 		}
 
@@ -2298,7 +2471,21 @@ func TestRuntimeResourceOverlay(t *testing.T) {
 			product_specific: true,
 			theme: "faza",
 		}
-		`)
+
+		android_library {
+			name: "bar",
+			resource_dirs: ["bar/res"],
+		}
+
+		android_app {
+			name: "baz",
+			sdk_version: "current",
+			resource_dirs: ["baz/res"],
+		}
+		`
+	config := testAppConfig(nil, bp, fs)
+	ctx := testContext()
+	run(t, ctx, config)
 
 	m := ctx.ModuleForTests("foo", "android_common")
 
@@ -2308,6 +2495,19 @@ func TestRuntimeResourceOverlay(t *testing.T) {
 	absentFlags := android.RemoveListFromList(expectedFlags, strings.Split(aapt2Flags, " "))
 	if len(absentFlags) > 0 {
 		t.Errorf("expected values, %q are missing in aapt2 link flags, %q", absentFlags, aapt2Flags)
+	}
+
+	// Check overlay.list output for static_libs dependency.
+	overlayList := m.Output("aapt2/overlay.list").Inputs.Strings()
+	staticLibPackage := buildDir + "/.intermediates/bar/android_common/package-res.apk"
+	if !inList(staticLibPackage, overlayList) {
+		t.Errorf("Stactic lib res package %q missing in overlay list: %q", staticLibPackage, overlayList)
+	}
+
+	// Check AAPT2 link flags for resource_libs dependency.
+	resourceLibFlag := "-I " + buildDir + "/.intermediates/baz/android_common/package-res.apk"
+	if !strings.Contains(aapt2Flags, resourceLibFlag) {
+		t.Errorf("Resource lib flag %q missing in aapt2 link flags: %q", resourceLibFlag, aapt2Flags)
 	}
 
 	// Check cert signing flag.

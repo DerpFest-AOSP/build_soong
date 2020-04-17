@@ -269,6 +269,11 @@ func addPossiblyArchSpecificProperties(sdkModuleContext android.ModuleContext, b
 	for property, dirs := range includeDirs {
 		outputProperties.AddProperty(property, dirs)
 	}
+
+	if len(libInfo.StubsVersion) > 0 {
+		stubsSet := outputProperties.AddPropertySet("stubs")
+		stubsSet.AddProperty("versions", []string{libInfo.StubsVersion})
+	}
 }
 
 const (
@@ -335,6 +340,10 @@ type nativeLibInfoProperties struct {
 	// This field is exported as its contents may not be arch specific.
 	SystemSharedLibs []string
 
+	// The specific stubs version for the lib variant, or empty string if stubs
+	// are not in use.
+	StubsVersion string
+
 	// outputFile is not exported as it is always arch specific.
 	outputFile android.Path
 }
@@ -370,6 +379,10 @@ func (p *nativeLibInfoProperties) PopulateFromVariant(ctx android.SdkMemberConte
 		p.SystemSharedLibs = specifiedDeps.systemSharedLibs
 	}
 	p.exportedGeneratedHeaders = ccModule.ExportedGeneratedHeaders()
+
+	if ccModule.HasStubsVariants() {
+		p.StubsVersion = ccModule.StubsVersion()
+	}
 }
 
 func (p *nativeLibInfoProperties) AddToPropertySet(ctx android.SdkMemberContext, propertySet android.BpPropertySet) {

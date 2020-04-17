@@ -110,6 +110,10 @@ type appProperties struct {
 	PreventInstall    bool `blueprint:"mutated"`
 	HideFromMake      bool `blueprint:"mutated"`
 	IsCoverageVariant bool `blueprint:"mutated"`
+
+	// Whether this app is considered mainline updatable or not. When set to true, this will enforce
+	// additional rules for making sure that the APK is truly updatable. Default is false.
+	Updatable *bool
 }
 
 // android_app properties that can be overridden by override_android_app
@@ -214,6 +218,13 @@ func (a *AndroidApp) DepsMutator(ctx android.BottomUpMutatorContext) {
 	for _, jniTarget := range ctx.MultiTargets() {
 		variation := append(jniTarget.Variations(),
 			blueprint.Variation{Mutator: "link", Variation: "shared"})
+
+		// If the app builds against an Android SDK use the SDK variant of JNI dependencies
+		// unless jni_uses_platform_apis is set.
+		if a.sdkVersion().specified() && a.sdkVersion().kind != sdkCorePlatform &&
+			!Bool(a.appProperties.Jni_uses_platform_apis) {
+			variation = append(variation, blueprint.Variation{Mutator: "sdk", Variation: "sdk"})
+		}
 		ctx.AddFarVariationDependencies(variation, tag, a.appProperties.Jni_libs...)
 	}
 
@@ -242,9 +253,19 @@ func (a *AndroidTestHelperApp) GenerateAndroidBuildActions(ctx android.ModuleCon
 }
 
 func (a *AndroidApp) GenerateAndroidBuildActions(ctx android.ModuleContext) {
-	a.checkPlatformAPI(ctx)
-	a.checkSdkVersion(ctx)
+	a.checkAppSdkVersions(ctx)
 	a.generateAndroidBuildActions(ctx)
+}
+
+func (a *AndroidApp) checkAppSdkVersions(ctx android.ModuleContext) {
+	if Bool(a.appProperties.Updatable) {
+		if !a.sdkVersion().stable() {
+			ctx.PropertyErrorf("sdk_version", "Updatable apps must use stable SDKs, found %v", a.sdkVersion())
+		}
+	}
+
+	a.checkPlatformAPI(ctx)
+	a.checkSdkVersions(ctx)
 }
 
 // Returns true if the native libraries should be stored in the APK uncompressed and the
@@ -385,7 +406,18 @@ func (a *AndroidApp) jniBuildActions(jniLibs []jniLib, ctx android.ModuleContext
 			TransformJniLibsToJar(ctx, jniJarFile, jniLibs, a.useEmbeddedNativeLibs(ctx))
 			for _, jni := range jniLibs {
 				if jni.coverageFile.Valid() {
-					a.jniCoverageOutputs = append(a.jniCoverageOutputs, jni.coverageFile.Path())
+					// Only collect coverage for the first target arch if this is a multilib target.
+					// TODO(jungjw): Ideally, we want to collect both reports, but that would cause coverage
+					// data file path collisions since the current coverage file path format doesn't contain
+					// arch-related strings. This is fine for now though; the code coverage team doesn't use
+					// multi-arch targets such as test_suite_* for coverage collections yet.
+					//
+					// Work with the team to come up with a new format that handles multilib modules properly
+					// and change this.
+					if len(ctx.Config().Targets[android.Android]) == 1 ||
+						ctx.Config().Targets[android.Android][0].Arch.ArchType == jni.target.Arch.ArchType {
+						a.jniCoverageOutputs = append(a.jniCoverageOutputs, jni.coverageFile.Path())
+					}
 				}
 			}
 		} else {
@@ -529,14 +561,28 @@ func (a *AndroidApp) generateAndroidBuildActions(ctx android.ModuleContext) {
 
 	// Build a final signed app package.
 	packageFile := android.PathForModuleOut(ctx, a.installApkName+".apk")
-	CreateAndSignAppPackage(ctx, packageFile, a.exportPackage, jniJarFile, dexJarFile, certificates, apkDeps)
+	v4SigningRequested := Bool(a.Module.deviceProperties.V4_signature)
+	var v4SignatureFile android.WritablePath = nil
+	if v4SigningRequested {
+		v4SignatureFile = android.PathForModuleOut(ctx, a.installApkName+".apk.idsig")
+	}
+	CreateAndSignAppPackage(ctx, packageFile, a.exportPackage, jniJarFile, dexJarFile, certificates, apkDeps, v4SignatureFile)
 	a.outputFile = packageFile
+	if v4SigningRequested {
+		a.extraOutputFiles = append(a.extraOutputFiles, v4SignatureFile)
+	}
 
 	for _, split := range a.aapt.splits {
 		// Sign the split APKs
 		packageFile := android.PathForModuleOut(ctx, a.installApkName+"_"+split.suffix+".apk")
-		CreateAndSignAppPackage(ctx, packageFile, split.path, nil, nil, certificates, apkDeps)
+		if v4SigningRequested {
+			v4SignatureFile = android.PathForModuleOut(ctx, a.installApkName+"_"+split.suffix+".apk.idsig")
+		}
+		CreateAndSignAppPackage(ctx, packageFile, split.path, nil, nil, certificates, apkDeps, v4SignatureFile)
 		a.extraOutputFiles = append(a.extraOutputFiles, packageFile)
+		if v4SigningRequested {
+			a.extraOutputFiles = append(a.extraOutputFiles, v4SignatureFile)
+		}
 	}
 
 	// Build an app bundle.
@@ -1156,7 +1202,7 @@ func (a *AndroidAppImport) generateAndroidBuildActions(ctx android.ModuleContext
 		}
 		a.certificate = certificates[0]
 		signed := android.PathForModuleOut(ctx, "signed", ctx.ModuleName()+".apk")
-		SignAppPackage(ctx, signed, dexOutput, certificates)
+		SignAppPackage(ctx, signed, dexOutput, certificates, nil)
 		a.outputFile = signed
 	} else {
 		alignedApk := android.PathForModuleOut(ctx, "zip-aligned", ctx.ModuleName()+".apk")
@@ -1337,6 +1383,12 @@ type RuntimeResourceOverlayProperties struct {
 	// if not blank, set the minimum version of the sdk that the compiled artifacts will run against.
 	// Defaults to sdk_version if not set.
 	Min_sdk_version *string
+
+	// list of android_library modules whose resources are extracted and linked against statically
+	Static_libs []string
+
+	// list of android_app modules whose resources are extracted and linked against
+	Resource_libs []string
 }
 
 func (r *RuntimeResourceOverlay) DepsMutator(ctx android.BottomUpMutatorContext) {
@@ -1349,6 +1401,9 @@ func (r *RuntimeResourceOverlay) DepsMutator(ctx android.BottomUpMutatorContext)
 	if cert != "" {
 		ctx.AddDependency(ctx.Module(), certificateTag, cert)
 	}
+
+	ctx.AddVariationDependencies(nil, staticLibTag, r.properties.Static_libs...)
+	ctx.AddVariationDependencies(nil, libTag, r.properties.Resource_libs...)
 }
 
 func (r *RuntimeResourceOverlay) GenerateAndroidBuildActions(ctx android.ModuleContext) {
@@ -1361,7 +1416,7 @@ func (r *RuntimeResourceOverlay) GenerateAndroidBuildActions(ctx android.ModuleC
 	_, certificates := collectAppDeps(ctx, false, false)
 	certificates = processMainCert(r.ModuleBase, String(r.properties.Certificate), certificates, ctx)
 	signed := android.PathForModuleOut(ctx, "signed", r.Name()+".apk")
-	SignAppPackage(ctx, signed, r.aapt.exportPackage, certificates)
+	SignAppPackage(ctx, signed, r.aapt.exportPackage, certificates, nil)
 	r.certificate = certificates[0]
 
 	r.outputFile = signed

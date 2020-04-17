@@ -376,7 +376,7 @@ type libraryDecorator struct {
 	useCoreVariant       bool
 	checkSameCoreVariant bool
 
-	// Decorated interafaces
+	// Decorated interfaces
 	*baseCompiler
 	*baseLinker
 	*baseInstaller
@@ -1237,7 +1237,7 @@ func (library *libraryDecorator) install(ctx ModuleContext, file android.Path) {
 	if Bool(library.Properties.Static_ndk_lib) && library.static() &&
 		!ctx.useVndk() && !ctx.inRamdisk() && !ctx.inRecovery() && ctx.Device() &&
 		library.baseLinker.sanitize.isUnsanitizedVariant() &&
-		!library.buildStubs() {
+		!library.buildStubs() && ctx.sdkVersion() == "" {
 		installPath := getNdkSysrootBase(ctx).Join(
 			ctx, "usr/lib", config.NDKTriple(ctx.toolchain()), file.Base())
 
@@ -1327,6 +1327,18 @@ func (library *libraryDecorator) availableFor(what string) bool {
 		return false
 	}
 	return android.CheckAvailableForApex(what, list)
+}
+
+func (library *libraryDecorator) skipInstall(mod *Module) {
+	if library.static() && library.buildStatic() && !library.buildStubs() {
+		// If we're asked to skip installation of a static library (in particular
+		// when it's not //apex_available:platform) we still want an AndroidMk entry
+		// for it to ensure we get the relevant NOTICE file targets (cf.
+		// notice_files.mk) that other libraries might depend on. AndroidMkEntries
+		// always sets LOCAL_UNINSTALLABLE_MODULE for these entries.
+		return
+	}
+	mod.ModuleBase.SkipInstall()
 }
 
 var versioningMacroNamesListKey = android.NewOnceKey("versioningMacroNamesList")
