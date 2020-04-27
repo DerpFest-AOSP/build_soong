@@ -112,7 +112,9 @@ type appProperties struct {
 	IsCoverageVariant bool `blueprint:"mutated"`
 
 	// Whether this app is considered mainline updatable or not. When set to true, this will enforce
-	// additional rules for making sure that the APK is truly updatable. Default is false.
+	// additional rules to make sure an app can safely be updated. Default is false.
+	// Prefer using other specific properties if build behaviour must be changed; avoid using this
+	// flag for anything but neverallow rules (unless the behaviour change is invisible to owners).
 	Updatable *bool
 }
 
@@ -261,6 +263,9 @@ func (a *AndroidApp) checkAppSdkVersions(ctx android.ModuleContext) {
 	if Bool(a.appProperties.Updatable) {
 		if !a.sdkVersion().stable() {
 			ctx.PropertyErrorf("sdk_version", "Updatable apps must use stable SDKs, found %v", a.sdkVersion())
+		}
+		if String(a.deviceProperties.Min_sdk_version) == "" {
+			ctx.PropertyErrorf("updatable", "updatable apps must set min_sdk_version.")
 		}
 	}
 
@@ -509,6 +514,10 @@ func processMainCert(m android.ModuleBase, certPropValue string, certificates []
 	}
 
 	return certificates
+}
+
+func (a *AndroidApp) InstallApkName() string {
+	return a.installApkName
 }
 
 func (a *AndroidApp) generateAndroidBuildActions(ctx android.ModuleContext) {
@@ -982,6 +991,7 @@ func OverrideAndroidTestModuleFactory() android.Module {
 type AndroidAppImport struct {
 	android.ModuleBase
 	android.DefaultableModuleBase
+	android.ApexModuleBase
 	prebuilt android.Prebuilt
 
 	properties   AndroidAppImportProperties
@@ -1134,6 +1144,10 @@ func (a *AndroidAppImport) GenerateAndroidBuildActions(ctx android.ModuleContext
 	a.generateAndroidBuildActions(ctx)
 }
 
+func (a *AndroidAppImport) InstallApkName() string {
+	return a.BaseModuleName()
+}
+
 func (a *AndroidAppImport) generateAndroidBuildActions(ctx android.ModuleContext) {
 	numCertPropsSet := 0
 	if String(a.properties.Certificate) != "" {
@@ -1191,6 +1205,8 @@ func (a *AndroidAppImport) generateAndroidBuildActions(ctx android.ModuleContext
 		dexOutput = dexUncompressed
 	}
 
+	apkFilename := proptools.StringDefault(a.properties.Filename, a.BaseModuleName()+".apk")
+
 	// Sign or align the package
 	// TODO: Handle EXTERNAL
 	if !Bool(a.properties.Presigned) {
@@ -1201,11 +1217,11 @@ func (a *AndroidAppImport) generateAndroidBuildActions(ctx android.ModuleContext
 			ctx.ModuleErrorf("Unexpected number of certificates were extracted: %q", certificates)
 		}
 		a.certificate = certificates[0]
-		signed := android.PathForModuleOut(ctx, "signed", ctx.ModuleName()+".apk")
+		signed := android.PathForModuleOut(ctx, "signed", apkFilename)
 		SignAppPackage(ctx, signed, dexOutput, certificates, nil)
 		a.outputFile = signed
 	} else {
-		alignedApk := android.PathForModuleOut(ctx, "zip-aligned", ctx.ModuleName()+".apk")
+		alignedApk := android.PathForModuleOut(ctx, "zip-aligned", apkFilename)
 		TransformZipAlign(ctx, alignedApk, dexOutput)
 		a.outputFile = alignedApk
 		a.certificate = presignedCertificate
@@ -1213,8 +1229,9 @@ func (a *AndroidAppImport) generateAndroidBuildActions(ctx android.ModuleContext
 
 	// TODO: Optionally compress the output apk.
 
-	a.installPath = ctx.InstallFile(installDir,
-		proptools.StringDefault(a.properties.Filename, a.BaseModuleName()+".apk"), a.outputFile)
+	if a.IsForPlatform() {
+		a.installPath = ctx.InstallFile(installDir, apkFilename, a.outputFile)
+	}
 
 	// TODO: androidmk converter jni libs
 }
@@ -1265,6 +1282,13 @@ func (a *AndroidAppImport) Privileged() bool {
 	return Bool(a.properties.Privileged)
 }
 
+func (a *AndroidAppImport) DepIsInSameApex(ctx android.BaseModuleContext, dep android.Module) bool {
+	// android_app_import might have extra dependencies via uses_libs property.
+	// Don't track the dependency as we don't automatically add those libraries
+	// to the classpath. It should be explicitly added to java_libs property of APEX
+	return false
+}
+
 func createVariantGroupType(variants []string, variantGroupName string) reflect.Type {
 	props := reflect.TypeOf((*AndroidAppImportProperties)(nil))
 
@@ -1311,6 +1335,7 @@ func AndroidAppImportFactory() android.Module {
 		module.processVariants(ctx)
 	})
 
+	android.InitApexModule(module)
 	InitJavaModule(module, android.DeviceSupported)
 	android.InitSingleSourcePrebuiltModule(module, &module.properties, "Apk")
 
@@ -1348,6 +1373,7 @@ func AndroidTestImportFactory() android.Module {
 		module.processVariants(ctx)
 	})
 
+	android.InitApexModule(module)
 	InitJavaModule(module, android.DeviceSupported)
 	android.InitSingleSourcePrebuiltModule(module, &module.properties, "Apk")
 

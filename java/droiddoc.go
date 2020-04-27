@@ -177,36 +177,14 @@ type DroiddocProperties struct {
 	// filegroup or genrule can be included within this property.
 	Knowntags []string `android:"path"`
 
-	// the tag name used to distinguish if the API files belong to public/system/test.
-	Api_tag_name *string
-
 	// the generated public API filename by Doclava.
 	Api_filename *string
-
-	// the generated public Dex API filename by Doclava.
-	Dex_api_filename *string
-
-	// the generated private API filename by Doclava.
-	Private_api_filename *string
-
-	// the generated private Dex API filename by Doclava.
-	Private_dex_api_filename *string
 
 	// the generated removed API filename by Doclava.
 	Removed_api_filename *string
 
 	// the generated removed Dex API filename by Doclava.
 	Removed_dex_api_filename *string
-
-	// mapping of dex signatures to source file and line number. This is a temporary property and
-	// will be deleted; you probably shouldn't be using it.
-	Dex_mapping_filename *string
-
-	// the generated exact API filename by Doclava.
-	Exact_api_filename *string
-
-	// the generated proguard filename by Doclava.
-	Proguard_filename *string
 
 	// if set to false, don't allow droiddoc to generate stubs source files. Defaults to true.
 	Create_stubs *bool
@@ -229,36 +207,14 @@ type DroiddocProperties struct {
 }
 
 type DroidstubsProperties struct {
-	// the tag name used to distinguish if the API files belong to public/system/test.
-	Api_tag_name *string
-
 	// the generated public API filename by Metalava.
 	Api_filename *string
-
-	// the generated public Dex API filename by Metalava.
-	Dex_api_filename *string
-
-	// the generated private API filename by Metalava.
-	Private_api_filename *string
-
-	// the generated private Dex API filename by Metalava.
-	Private_dex_api_filename *string
 
 	// the generated removed API filename by Metalava.
 	Removed_api_filename *string
 
 	// the generated removed Dex API filename by Metalava.
 	Removed_dex_api_filename *string
-
-	// mapping of dex signatures to source file and line number. This is a temporary property and
-	// will be deleted; you probably shouldn't be using it.
-	Dex_mapping_filename *string
-
-	// the generated exact API filename by Metalava.
-	Exact_api_filename *string
-
-	// the generated proguard filename by Metalava.
-	Proguard_filename *string
 
 	Check_api struct {
 		Last_released ApiToCheck
@@ -731,14 +687,9 @@ type Droiddoc struct {
 
 	properties        DroiddocProperties
 	apiFile           android.WritablePath
-	dexApiFile        android.WritablePath
 	privateApiFile    android.WritablePath
-	privateDexApiFile android.WritablePath
 	removedApiFile    android.WritablePath
 	removedDexApiFile android.WritablePath
-	exactApiFile      android.WritablePath
-	apiMappingFile    android.WritablePath
-	proguardFile      android.WritablePath
 
 	checkCurrentApiTimestamp      android.WritablePath
 	updateCurrentApiTimestamp     android.WritablePath
@@ -876,39 +827,9 @@ func (d *Droiddoc) stubsFlags(ctx android.ModuleContext, cmd *android.RuleBuilde
 		cmd.FlagWithOutput("-removedApi ", d.removedApiFile)
 	}
 
-	if String(d.properties.Private_api_filename) != "" {
-		d.privateApiFile = android.PathForModuleOut(ctx, String(d.properties.Private_api_filename))
-		cmd.FlagWithOutput("-privateApi ", d.privateApiFile)
-	}
-
-	if String(d.properties.Dex_api_filename) != "" {
-		d.dexApiFile = android.PathForModuleOut(ctx, String(d.properties.Dex_api_filename))
-		cmd.FlagWithOutput("-dexApi ", d.dexApiFile)
-	}
-
-	if String(d.properties.Private_dex_api_filename) != "" {
-		d.privateDexApiFile = android.PathForModuleOut(ctx, String(d.properties.Private_dex_api_filename))
-		cmd.FlagWithOutput("-privateDexApi ", d.privateDexApiFile)
-	}
-
 	if String(d.properties.Removed_dex_api_filename) != "" {
 		d.removedDexApiFile = android.PathForModuleOut(ctx, String(d.properties.Removed_dex_api_filename))
 		cmd.FlagWithOutput("-removedDexApi ", d.removedDexApiFile)
-	}
-
-	if String(d.properties.Exact_api_filename) != "" {
-		d.exactApiFile = android.PathForModuleOut(ctx, String(d.properties.Exact_api_filename))
-		cmd.FlagWithOutput("-exactApi ", d.exactApiFile)
-	}
-
-	if String(d.properties.Dex_mapping_filename) != "" {
-		d.apiMappingFile = android.PathForModuleOut(ctx, String(d.properties.Dex_mapping_filename))
-		cmd.FlagWithOutput("-apiMapping ", d.apiMappingFile)
-	}
-
-	if String(d.properties.Proguard_filename) != "" {
-		d.proguardFile = android.PathForModuleOut(ctx, String(d.properties.Proguard_filename))
-		cmd.FlagWithOutput("-proguard ", d.proguardFile)
 	}
 
 	if BoolDefault(d.properties.Create_stubs, true) {
@@ -1210,14 +1131,9 @@ type Droidstubs struct {
 	apiFile                 android.WritablePath
 	apiXmlFile              android.WritablePath
 	lastReleasedApiXmlFile  android.WritablePath
-	dexApiFile              android.WritablePath
 	privateApiFile          android.WritablePath
-	privateDexApiFile       android.WritablePath
 	removedApiFile          android.WritablePath
 	removedDexApiFile       android.WritablePath
-	apiMappingFile          android.WritablePath
-	exactApiFile            android.WritablePath
-	proguardFile            android.WritablePath
 	nullabilityWarningsFile android.WritablePath
 
 	checkCurrentApiTimestamp      android.WritablePath
@@ -1322,39 +1238,9 @@ func (d *Droidstubs) stubsFlags(ctx android.ModuleContext, cmd *android.RuleBuil
 		cmd.FlagWithOutput("--removed-api ", d.removedApiFile)
 	}
 
-	if String(d.properties.Private_api_filename) != "" {
-		d.privateApiFile = android.PathForModuleOut(ctx, String(d.properties.Private_api_filename))
-		cmd.FlagWithOutput("--private-api ", d.privateApiFile)
-	}
-
-	if String(d.properties.Dex_api_filename) != "" {
-		d.dexApiFile = android.PathForModuleOut(ctx, String(d.properties.Dex_api_filename))
-		cmd.FlagWithOutput("--dex-api ", d.dexApiFile)
-	}
-
-	if String(d.properties.Private_dex_api_filename) != "" {
-		d.privateDexApiFile = android.PathForModuleOut(ctx, String(d.properties.Private_dex_api_filename))
-		cmd.FlagWithOutput("--private-dex-api ", d.privateDexApiFile)
-	}
-
 	if String(d.properties.Removed_dex_api_filename) != "" {
 		d.removedDexApiFile = android.PathForModuleOut(ctx, String(d.properties.Removed_dex_api_filename))
 		cmd.FlagWithOutput("--removed-dex-api ", d.removedDexApiFile)
-	}
-
-	if String(d.properties.Exact_api_filename) != "" {
-		d.exactApiFile = android.PathForModuleOut(ctx, String(d.properties.Exact_api_filename))
-		cmd.FlagWithOutput("--exact-api ", d.exactApiFile)
-	}
-
-	if String(d.properties.Dex_mapping_filename) != "" {
-		d.apiMappingFile = android.PathForModuleOut(ctx, String(d.properties.Dex_mapping_filename))
-		cmd.FlagWithOutput("--dex-api-mapping ", d.apiMappingFile)
-	}
-
-	if String(d.properties.Proguard_filename) != "" {
-		d.proguardFile = android.PathForModuleOut(ctx, String(d.properties.Proguard_filename))
-		cmd.FlagWithOutput("--proguard ", d.proguardFile)
 	}
 
 	if Bool(d.properties.Write_sdk_values) {
@@ -1654,40 +1540,35 @@ func (d *Droidstubs) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 		apiFile := android.PathForModuleSrc(ctx, String(d.properties.Check_api.Current.Api_file))
 		removedApiFile := android.PathForModuleSrc(ctx, String(d.properties.Check_api.Current.Removed_api_file))
 		baselineFile := android.OptionalPathForModuleSrc(ctx, d.properties.Check_api.Current.Baseline_file)
-		updatedBaselineOutput := android.PathForModuleOut(ctx, "current_baseline.txt")
+
+		if baselineFile.Valid() {
+			ctx.PropertyErrorf("current API check can't have a baseline file. (module %s)", ctx.ModuleName())
+		}
 
 		d.checkCurrentApiTimestamp = android.PathForModuleOut(ctx, "check_current_api.timestamp")
 
 		rule := android.NewRuleBuilder()
 
+		// Diff command line.
+		// -F matches the closest "opening" line, such as "package xxx{"
+		// and "  public class Yyy {".
+		diff := `diff -u -F '{ *$'`
+
 		rule.Command().Text("( true")
+		rule.Command().
+			Text(diff).
+			Input(apiFile).Input(d.apiFile)
 
-		srcJarDir := android.PathForModuleOut(ctx, "current-apicheck", "srcjars")
-		srcJarList := zipSyncCmd(ctx, rule, srcJarDir, d.Javadoc.srcJars)
-
-		cmd := metalavaCmd(ctx, rule, javaVersion, d.Javadoc.srcFiles, srcJarList,
-			deps.bootClasspath, deps.classpath, d.Javadoc.sourcepaths)
-
-		cmd.Flag(d.Javadoc.args).Implicits(d.Javadoc.argFiles).
-			FlagWithInput("--check-compatibility:api:current ", apiFile).
-			FlagWithInput("--check-compatibility:removed:current ", removedApiFile)
-
-		d.inclusionAnnotationsFlags(ctx, cmd)
-		d.mergeAnnoDirFlags(ctx, cmd)
-
-		if baselineFile.Valid() {
-			cmd.FlagWithInput("--baseline ", baselineFile.Path())
-			cmd.FlagWithOutput("--update-baseline ", updatedBaselineOutput)
-		}
-
-		zipSyncCleanupCmd(rule, srcJarDir)
+		rule.Command().
+			Text(diff).
+			Input(removedApiFile).Input(d.removedApiFile)
 
 		msg := fmt.Sprintf(`\n******************************\n`+
 			`You have tried to change the API from what has been previously approved.\n\n`+
 			`To make these errors go away, you have two choices:\n`+
-			`   1. You can add '@hide' javadoc comments to the methods, etc. listed in the\n`+
-			`      errors above.\n\n`+
-			`   2. You can update current.txt by executing the following command:\n`+
+			`   1. You can add '@hide' javadoc comments (and remove @SystemApi/@TestApi/etc)\n`+
+			`      to the new methods, etc. shown in the above diff.\n\n`+
+			`   2. You can update current.txt and/or removed.txt by executing the following command:\n`+
 			`         make %s-update-current-api\n\n`+
 			`      To submit the revised current.txt to the main Android repository,\n`+
 			`      you will need approval.\n`+
@@ -1700,7 +1581,7 @@ func (d *Droidstubs) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 			Text("; exit 38").
 			Text(")")
 
-		rule.Build(pctx, ctx, "metalavaCurrentApiCheck", "metalava check current API")
+		rule.Build(pctx, ctx, "metalavaCurrentApiCheck", "check current API")
 
 		d.updateCurrentApiTimestamp = android.PathForModuleOut(ctx, "update_current_api.timestamp")
 
