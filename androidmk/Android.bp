@@ -19,29 +19,17 @@
 blueprint_go_binary {
     name: "androidmk",
     srcs: [
-        "cmd/androidmk.go",
-    ],
-    deps: [
-        "androidmk-lib",
-    ],
-}
-
-bootstrap_go_package {
-    name: "androidmk-lib",
-    pkgPath: "android/soong/androidmk/androidmk",
-    srcs: [
-        "androidmk/android.go",
-        "androidmk/androidmk.go",
-        "androidmk/values.go",
+        "cmd/androidmk/android.go",
+        "cmd/androidmk/androidmk.go",
+        "cmd/androidmk/values.go",
     ],
     testSrcs: [
-        "androidmk/androidmk_test.go",
+        "cmd/androidmk/androidmk_test.go",
     ],
     deps: [
         "androidmk-parser",
         "blueprint-parser",
         "bpfix-lib",
-        "soong-android",
     ],
 }
 

@@ -22,23 +22,18 @@ import (
 	"unsafe"
 )
 
-func isSmartTerminal(w io.Writer) bool {
+func isTerminal(w io.Writer) bool {
 	if f, ok := w.(*os.File); ok {
-		if term, ok := os.LookupEnv("TERM"); ok && term == "dumb" {
-			return false
-		}
 		var termios syscall.Termios
 		_, _, err := syscall.Syscall6(syscall.SYS_IOCTL, f.Fd(),
 			ioctlGetTermios, uintptr(unsafe.Pointer(&termios)),
 			0, 0, 0)
 		return err == 0
-	} else if _, ok := w.(*fakeSmartTerminal); ok {
-		return true
 	}
 	return false
 }
 
-func termSize(w io.Writer) (width int, height int, ok bool) {
+func termWidth(w io.Writer) (int, bool) {
 	if f, ok := w.(*os.File); ok {
 		var winsize struct {
 			ws_row, ws_column    uint16
@@ -47,11 +42,9 @@ func termSize(w io.Writer) (width int, height int, ok bool) {
 		_, _, err := syscall.Syscall6(syscall.SYS_IOCTL, f.Fd(),
 			syscall.TIOCGWINSZ, uintptr(unsafe.Pointer(&winsize)),
 			0, 0, 0)
-		return int(winsize.ws_column), int(winsize.ws_row), err == 0
-	} else if f, ok := w.(*fakeSmartTerminal); ok {
-		return f.termWidth, f.termHeight, true
+		return int(winsize.ws_column), err == 0
 	}
-	return 0, 0, false
+	return 0, false
 }
 
 // stripAnsiEscapes strips ANSI control codes from a byte array in place.
@@ -105,9 +98,4 @@ func stripAnsiEscapes(input []byte) []byte {
 	}
 
 	return input
-}
-
-type fakeSmartTerminal struct {
-	bytes.Buffer
-	termWidth, termHeight int
 }

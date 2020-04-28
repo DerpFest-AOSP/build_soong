@@ -161,23 +161,16 @@ func Build(ctx Context, config Config, what int) {
 		startGoma(ctx, config)
 	}
 
-	if config.StartRBE() {
-		// Ensure RBE proxy is started
-		startRBE(ctx, config)
-	}
-
 	if what&BuildProductConfig != 0 {
 		// Run make for product config
 		runMakeProductConfig(ctx, config)
 	}
 
-	if inList("installclean", config.Arguments()) ||
-		inList("install-clean", config.Arguments()) {
+	if inList("installclean", config.Arguments()) {
 		installClean(ctx, config, what)
 		ctx.Println("Deleted images and staging directories.")
 		return
-	} else if inList("dataclean", config.Arguments()) ||
-		inList("data-clean", config.Arguments()) {
+	} else if inList("dataclean", config.Arguments()) {
 		dataClean(ctx, config, what)
 		ctx.Println("Deleted data files.")
 		return

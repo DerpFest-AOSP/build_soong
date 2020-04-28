@@ -33,7 +33,7 @@ func init() {
 var (
 	pctx = android.NewPackageContext("android/soong/bpf")
 
-	ccRule = pctx.AndroidRemoteStaticRule("ccRule", android.SUPPORTS_GOMA,
+	cc = pctx.AndroidGomaStaticRule("cc",
 		blueprint.RuleParams{
 			Depfile:     "${out}.d",
 			Deps:        blueprint.DepsGCC,
@@ -82,7 +82,7 @@ func (bpf *bpf) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 		obj := android.ObjPathWithExt(ctx, "", src, "o")
 
 		ctx.Build(pctx, android.BuildParams{
-			Rule:   ccRule,
+			Rule:   cc,
 			Input:  src,
 			Output: obj,
 			Args: map[string]string{
@@ -122,18 +122,13 @@ func (bpf *bpf) AndroidMk() android.AndroidMkData {
 	}
 }
 
-// Implements OutputFileFileProducer interface so that the obj output can be used in the data property
+// Implements SourceFileProducer interface so that the obj output can be used in the data property
 // of other modules.
-func (bpf *bpf) OutputFiles(tag string) (android.Paths, error) {
-	switch tag {
-	case "":
-		return bpf.objs, nil
-	default:
-		return nil, fmt.Errorf("unsupported module reference tag %q", tag)
-	}
+func (bpf *bpf) Srcs() android.Paths {
+	return bpf.objs
 }
 
-var _ android.OutputFileProducer = (*bpf)(nil)
+var _ android.SourceFileProducer = (*bpf)(nil)
 
 func bpfFactory() android.Module {
 	module := &bpf{}

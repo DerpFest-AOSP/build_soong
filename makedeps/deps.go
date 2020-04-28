@@ -57,12 +57,10 @@ func Parse(filename string, r io.Reader) (*Deps, error) {
 				return nil, fmt.Errorf("%sunsupported variable expansion: %v", pos(node), x.Target.Dump())
 			}
 			outputs := x.Target.Words()
-			if len(outputs) > 0 {
-				ret.Output = outputs[0].Value(nil)
-			} else {
-				// TODO(b/141372861): put this back
-				//return nil, fmt.Errorf("%smissing output: %v", pos(node), x)
+			if len(outputs) == 0 {
+				return nil, fmt.Errorf("%smissing output: %v", pos(node), x)
 			}
+			ret.Output = outputs[0].Value(nil)
 
 			if !x.Prerequisites.Const() {
 				return nil, fmt.Errorf("%sunsupported variable expansion: %v", pos(node), x.Prerequisites.Dump())

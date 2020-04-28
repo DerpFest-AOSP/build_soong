@@ -55,14 +55,12 @@ func pathsToAapt2Paths(ctx android.ModuleContext, resPaths android.Paths) androi
 
 var aapt2CompileRule = pctx.AndroidStaticRule("aapt2Compile",
 	blueprint.RuleParams{
-		Command:     `${config.Aapt2Cmd} compile -o $outDir $cFlags $in`,
+		Command:     `${config.Aapt2Cmd} compile -o $outDir $cFlags --legacy $in`,
 		CommandDeps: []string{"${config.Aapt2Cmd}"},
 	},
 	"outDir", "cFlags")
 
-func aapt2Compile(ctx android.ModuleContext, dir android.Path, paths android.Paths,
-	flags []string) android.WritablePaths {
-
+func aapt2Compile(ctx android.ModuleContext, dir android.Path, paths android.Paths) android.WritablePaths {
 	shards := android.ShardPaths(paths, AAPT2_SHARD_SIZE)
 
 	ret := make(android.WritablePaths, 0, len(paths))
@@ -83,7 +81,9 @@ func aapt2Compile(ctx android.ModuleContext, dir android.Path, paths android.Pat
 			Outputs:     outPaths,
 			Args: map[string]string{
 				"outDir": android.PathForModuleOut(ctx, "aapt2", dir.String()).String(),
-				"cFlags": strings.Join(flags, " "),
+				// Always set --pseudo-localize, it will be stripped out later for release
+				// builds that don't want it.
+				"cFlags": "--pseudo-localize",
 			},
 		})
 	}
@@ -94,31 +94,42 @@ func aapt2Compile(ctx android.ModuleContext, dir android.Path, paths android.Pat
 	return ret
 }
 
+func aapt2CompileDirs(ctx android.ModuleContext, flata android.WritablePath, dirs android.Paths, deps android.Paths) {
+	ctx.Build(pctx, android.BuildParams{
+		Rule:        aapt2CompileRule,
+		Description: "aapt2 compile dirs",
+		Implicits:   deps,
+		Output:      flata,
+		Args: map[string]string{
+			"outDir": flata.String(),
+			// Always set --pseudo-localize, it will be stripped out later for release
+			// builds that don't want it.
+			"cFlags": "--pseudo-localize " + android.JoinWithPrefix(dirs.Strings(), "--dir "),
+		},
+	})
+}
+
 var aapt2CompileZipRule = pctx.AndroidStaticRule("aapt2CompileZip",
 	blueprint.RuleParams{
-		Command: `${config.ZipSyncCmd} -d $resZipDir $zipSyncFlags $in && ` +
-			`${config.Aapt2Cmd} compile -o $out $cFlags --dir $resZipDir`,
+		Command: `${config.ZipSyncCmd} -d $resZipDir $in && ` +
+			`${config.Aapt2Cmd} compile -o $out $cFlags --legacy --dir $resZipDir`,
 		CommandDeps: []string{
 			"${config.Aapt2Cmd}",
 			"${config.ZipSyncCmd}",
 		},
-	}, "cFlags", "resZipDir", "zipSyncFlags")
+	}, "cFlags", "resZipDir")
 
-func aapt2CompileZip(ctx android.ModuleContext, flata android.WritablePath, zip android.Path, zipPrefix string,
-	flags []string) {
-
-	if zipPrefix != "" {
-		zipPrefix = "--zip-prefix " + zipPrefix
-	}
+func aapt2CompileZip(ctx android.ModuleContext, flata android.WritablePath, zip android.Path) {
 	ctx.Build(pctx, android.BuildParams{
 		Rule:        aapt2CompileZipRule,
 		Description: "aapt2 compile zip",
 		Input:       zip,
 		Output:      flata,
 		Args: map[string]string{
-			"cFlags":       strings.Join(flags, " "),
-			"resZipDir":    android.PathForModuleOut(ctx, "aapt2", "reszip", flata.Base()).String(),
-			"zipSyncFlags": zipPrefix,
+			// Always set --pseudo-localize, it will be stripped out later for release
+			// builds that don't want it.
+			"cFlags":    "--pseudo-localize",
+			"resZipDir": android.PathForModuleOut(ctx, "aapt2", "reszip", flata.Base()).String(),
 		},
 	})
 }

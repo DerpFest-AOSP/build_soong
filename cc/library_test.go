@@ -24,24 +24,21 @@ func TestLibraryReuse(t *testing.T) {
 		ctx := testCc(t, `
 		cc_library {
 			name: "libfoo",
-			srcs: ["foo.c", "baz.o"],
+			srcs: ["foo.c"],
 		}`)
 
 		libfooShared := ctx.ModuleForTests("libfoo", "android_arm_armv7-a-neon_core_shared").Rule("ld")
 		libfooStatic := ctx.ModuleForTests("libfoo", "android_arm_armv7-a-neon_core_static").Output("libfoo.a")
 
-		if len(libfooShared.Inputs) != 2 {
+		if len(libfooShared.Inputs) != 1 {
 			t.Fatalf("unexpected inputs to libfoo shared: %#v", libfooShared.Inputs.Strings())
 		}
 
-		if len(libfooStatic.Inputs) != 2 {
+		if len(libfooStatic.Inputs) != 1 {
 			t.Fatalf("unexpected inputs to libfoo static: %#v", libfooStatic.Inputs.Strings())
 		}
 
 		if libfooShared.Inputs[0] != libfooStatic.Inputs[0] {
-			t.Errorf("static object not reused for shared library")
-		}
-		if libfooShared.Inputs[1] != libfooStatic.Inputs[1] {
 			t.Errorf("static object not reused for shared library")
 		}
 	})
@@ -181,7 +178,7 @@ func TestLibraryReuse(t *testing.T) {
 		}
 
 		libfoo := ctx.ModuleForTests("libfoo", "android_arm_armv7-a-neon_core_shared").Module().(*Module)
-		if !inList("-DGOOGLE_PROTOBUF_NO_RTTI", libfoo.flags.Local.CFlags) {
+		if !inList("-DGOOGLE_PROTOBUF_NO_RTTI", libfoo.flags.CFlags) {
 			t.Errorf("missing protobuf cflags")
 		}
 	})

@@ -15,7 +15,8 @@
 package android
 
 import (
-	"fmt"
+	"io/ioutil"
+	"os"
 	"testing"
 
 	"github.com/google/blueprint"
@@ -125,6 +126,12 @@ var prebuiltsTests = []struct {
 }
 
 func TestPrebuilts(t *testing.T) {
+	buildDir, err := ioutil.TempDir("", "soong_prebuilt_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(buildDir)
+
 	config := TestConfig(buildDir, nil)
 
 	for _, test := range prebuiltsTests {
@@ -243,13 +250,8 @@ func (p *prebuiltModule) Prebuilt() *Prebuilt {
 	return &p.prebuilt
 }
 
-func (p *prebuiltModule) OutputFiles(tag string) (Paths, error) {
-	switch tag {
-	case "":
-		return Paths{p.src}, nil
-	default:
-		return nil, fmt.Errorf("unsupported module reference tag %q", tag)
-	}
+func (p *prebuiltModule) Srcs() Paths {
+	return Paths{p.src}
 }
 
 type sourceModule struct {

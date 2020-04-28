@@ -26,6 +26,12 @@ import (
 	"github.com/google/blueprint"
 )
 
+// This file implements namespaces
+const (
+	namespacePrefix = "//"
+	modulePrefix    = ":"
+)
+
 func init() {
 	RegisterModuleType("soong_namespace", NamespaceFactory)
 }
@@ -209,11 +215,11 @@ func (r *NameResolver) AllModules() []blueprint.ModuleGroup {
 // parses a fully-qualified path (like "//namespace_path:module_name") into a namespace name and a
 // module name
 func (r *NameResolver) parseFullyQualifiedName(name string) (namespaceName string, moduleName string, ok bool) {
-	if !strings.HasPrefix(name, "//") {
+	if !strings.HasPrefix(name, namespacePrefix) {
 		return "", "", false
 	}
-	name = strings.TrimPrefix(name, "//")
-	components := strings.Split(name, ":")
+	name = strings.TrimPrefix(name, namespacePrefix)
+	components := strings.Split(name, modulePrefix)
 	if len(components) != 2 {
 		return "", "", false
 	}
@@ -222,11 +228,6 @@ func (r *NameResolver) parseFullyQualifiedName(name string) (namespaceName strin
 }
 
 func (r *NameResolver) getNamespacesToSearchForModule(sourceNamespace *Namespace) (searchOrder []*Namespace) {
-	if sourceNamespace.visibleNamespaces == nil {
-		// When handling dependencies before namespaceMutator, assume they are non-Soong Blueprint modules and give
-		// access to all namespaces.
-		return r.sortedNamespaces.sortedItems()
-	}
 	return sourceNamespace.visibleNamespaces
 }
 

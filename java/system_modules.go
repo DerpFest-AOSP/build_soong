@@ -36,19 +36,13 @@ func init() {
 var (
 	jarsTosystemModules = pctx.AndroidStaticRule("jarsTosystemModules", blueprint.RuleParams{
 		Command: `rm -rf ${outDir} ${workDir} && mkdir -p ${workDir}/jmod && ` +
-			`${moduleInfoJavaPath} java.base $in > ${workDir}/module-info.java && ` +
+			`${moduleInfoJavaPath} ${moduleName} $in > ${workDir}/module-info.java && ` +
 			`${config.JavacCmd} --system=none --patch-module=java.base=${classpath} ${workDir}/module-info.java && ` +
 			`${config.SoongZipCmd} -jar -o ${workDir}/classes.jar -C ${workDir} -f ${workDir}/module-info.class && ` +
 			`${config.MergeZipsCmd} -j ${workDir}/module.jar ${workDir}/classes.jar $in && ` +
-			// Note: The version of the java.base module created must match the version
-			// of the jlink tool which consumes it.
-			`${config.JmodCmd} create --module-version ${config.JlinkVersion} --target-platform android ` +
-			`  --class-path ${workDir}/module.jar ${workDir}/jmod/java.base.jmod && ` +
-			`${config.JlinkCmd} --module-path ${workDir}/jmod --add-modules java.base --output ${outDir} ` +
-			// Note: The system-modules jlink plugin is disabled because (a) it is not
-			// useful on Android, and (b) it causes errors with later versions of jlink
-			// when the jdk.internal.module is absent from java.base (as it is here).
-			`  --disable-plugin system-modules && ` +
+			`${config.JmodCmd} create --module-version 9 --target-platform android ` +
+			`  --class-path ${workDir}/module.jar ${workDir}/jmod/${moduleName}.jmod && ` +
+			`${config.JlinkCmd} --module-path ${workDir}/jmod --add-modules ${moduleName} --output ${outDir} && ` +
 			`cp ${config.JrtFsJar} ${outDir}/lib/`,
 		CommandDeps: []string{
 			"${moduleInfoJavaPath}",
@@ -60,10 +54,10 @@ var (
 			"${config.JrtFsJar}",
 		},
 	},
-		"classpath", "outDir", "workDir")
+		"moduleName", "classpath", "outDir", "workDir")
 )
 
-func TransformJarsToSystemModules(ctx android.ModuleContext, jars android.Paths) (android.Path, android.Paths) {
+func TransformJarsToSystemModules(ctx android.ModuleContext, moduleName string, jars android.Paths) android.WritablePath {
 	outDir := android.PathForModuleOut(ctx, "system")
 	workDir := android.PathForModuleOut(ctx, "modules")
 	outputFile := android.PathForModuleOut(ctx, "system/lib/modules")
@@ -79,39 +73,40 @@ func TransformJarsToSystemModules(ctx android.ModuleContext, jars android.Paths)
 		Outputs:     outputs,
 		Inputs:      jars,
 		Args: map[string]string{
-			"classpath": strings.Join(jars.Strings(), ":"),
-			"workDir":   workDir.String(),
-			"outDir":    outDir.String(),
+			"moduleName": moduleName,
+			"classpath":  strings.Join(jars.Strings(), ":"),
+			"workDir":    workDir.String(),
+			"outDir":     outDir.String(),
 		},
 	})
 
-	return outDir, outputs.Paths()
+	return outputFile
 }
 
 func SystemModulesFactory() android.Module {
 	module := &SystemModules{}
 	module.AddProperties(&module.properties)
 	android.InitAndroidArchModule(module, android.HostAndDeviceSupported, android.MultilibCommon)
-	android.InitDefaultableModule(module)
 	return module
 }
 
 type SystemModules struct {
 	android.ModuleBase
-	android.DefaultableModuleBase
 
 	properties SystemModulesProperties
 
-	// The aggregated header jars from all jars specified in the libs property.
-	// Used when system module is added as a dependency to bootclasspath.
-	headerJars android.Paths
-	outputDir  android.Path
-	outputDeps android.Paths
+	outputFile android.Path
 }
 
 type SystemModulesProperties struct {
 	// List of java library modules that should be included in the system modules
 	Libs []string
+
+	// List of prebuilt jars that should be included in the system modules
+	Jars []string
+
+	// Sdk version that should be included in the system modules
+	Sdk_version *string
 }
 
 func (system *SystemModules) GenerateAndroidBuildActions(ctx android.ModuleContext) {
@@ -122,9 +117,9 @@ func (system *SystemModules) GenerateAndroidBuildActions(ctx android.ModuleConte
 		jars = append(jars, dep.HeaderJars()...)
 	})
 
-	system.headerJars = jars
+	jars = append(jars, android.PathsForModuleSrc(ctx, system.properties.Jars)...)
 
-	system.outputDir, system.outputDeps = TransformJarsToSystemModules(ctx, jars)
+	system.outputFile = TransformJarsToSystemModules(ctx, "java.base", jars)
 }
 
 func (system *SystemModules) DepsMutator(ctx android.BottomUpMutatorContext) {
@@ -134,22 +129,16 @@ func (system *SystemModules) DepsMutator(ctx android.BottomUpMutatorContext) {
 func (system *SystemModules) AndroidMk() android.AndroidMkData {
 	return android.AndroidMkData{
 		Custom: func(w io.Writer, name, prefix, moduleDir string, data android.AndroidMkData) {
-			fmt.Fprintln(w)
-
 			makevar := "SOONG_SYSTEM_MODULES_" + name
-			fmt.Fprintln(w, makevar, ":=$=", system.outputDir.String())
 			fmt.Fprintln(w)
-
-			makevar = "SOONG_SYSTEM_MODULES_LIBS_" + name
-			fmt.Fprintln(w, makevar, ":=$=", strings.Join(system.properties.Libs, " "))
-			fmt.Fprintln(w)
-
-			makevar = "SOONG_SYSTEM_MODULES_DEPS_" + name
-			fmt.Fprintln(w, makevar, ":=$=", strings.Join(system.outputDeps.Strings(), " "))
-			fmt.Fprintln(w)
-
+			fmt.Fprintln(w, makevar, ":=", system.outputFile.String())
+			fmt.Fprintln(w, ".KATI_READONLY", ":=", makevar)
 			fmt.Fprintln(w, name+":", "$("+makevar+")")
 			fmt.Fprintln(w, ".PHONY:", name)
+			fmt.Fprintln(w)
+			makevar = "SOONG_SYSTEM_MODULES_LIBS_" + name
+			fmt.Fprintln(w, makevar, ":=", strings.Join(system.properties.Libs, " "))
+			fmt.Fprintln(w, ".KATI_READONLY :=", makevar)
 		},
 	}
 }

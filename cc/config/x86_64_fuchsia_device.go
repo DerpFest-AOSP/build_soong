@@ -92,7 +92,7 @@ func (t *toolchainFuchsiaX8664) YasmFlags() string {
 }
 
 func (t *toolchainFuchsiaX8664) ToolchainClangCflags() string {
-	return "-mssse3"
+	return "-DUSE_SSSE3 -mssse3"
 }
 
 var toolchainFuchsiaSingleton Toolchain = &toolchainFuchsiaX8664{}

@@ -46,8 +46,6 @@ var (
 		"-g",
 
 		"-fno-strict-aliasing",
-
-		"-Werror=date-time",
 	}
 
 	commonGlobalConlyflags = []string{}
@@ -69,6 +67,7 @@ var (
 		"-Werror=non-virtual-dtor",
 		"-Werror=address",
 		"-Werror=sequence-point",
+		"-Werror=date-time",
 		"-Werror=format-security",
 	}
 
@@ -108,7 +107,6 @@ var (
 	noOverrideGlobalCflags = []string{
 		"-Werror=int-to-pointer-cast",
 		"-Werror=pointer-to-int-cast",
-		"-Werror=fortify-source",
 	}
 
 	IllegalFlags = []string{
@@ -124,8 +122,8 @@ var (
 
 	// prebuilts/clang default settings.
 	ClangDefaultBase         = "prebuilts/clang/host"
-	ClangDefaultVersion      = "clang-r365631b"
-	ClangDefaultShortVersion = "9.0.7"
+	ClangDefaultVersion      = "clang-r353983c1"
+	ClangDefaultShortVersion = "9.0.3"
 
 	// Directories with warnings from Android.bp files.
 	WarningAllowedProjects = []string{
@@ -152,22 +150,8 @@ func init() {
 	pctx.StaticVariable("HostGlobalLdflags", strings.Join(hostGlobalLdflags, " "))
 	pctx.StaticVariable("HostGlobalLldflags", strings.Join(hostGlobalLldflags, " "))
 
-	pctx.VariableFunc("CommonClangGlobalCflags", func(ctx android.PackageVarContext) string {
-		flags := ClangFilterUnknownCflags(commonGlobalCflags)
-		flags = append(flags, "${ClangExtraCflags}")
-
-		// http://b/131390872
-		// Automatically initialize any uninitialized stack variables.
-		// Prefer zero-init if both options are set.
-		if ctx.Config().IsEnvTrue("AUTO_ZERO_INITIALIZE") {
-			flags = append(flags, "-ftrivial-auto-var-init=zero -enable-trivial-auto-var-init-zero-knowing-it-will-be-removed-from-clang")
-		} else if ctx.Config().IsEnvTrue("AUTO_PATTERN_INITIALIZE") {
-			flags = append(flags, "-ftrivial-auto-var-init=pattern")
-		}
-
-		return strings.Join(flags, " ")
-	})
-
+	pctx.StaticVariable("CommonClangGlobalCflags",
+		strings.Join(append(ClangFilterUnknownCflags(commonGlobalCflags), "${ClangExtraCflags}"), " "))
 	pctx.VariableFunc("DeviceClangGlobalCflags", func(ctx android.PackageVarContext) string {
 		if ctx.Config().Fuchsia() {
 			return strings.Join(ClangFilterUnknownCflags(deviceGlobalCflags), " ")
@@ -218,6 +202,7 @@ func init() {
 	})
 	pctx.StaticVariable("ClangPath", "${ClangBase}/${HostPrebuiltTag}/${ClangVersion}")
 	pctx.StaticVariable("ClangBin", "${ClangPath}/bin")
+	pctx.StaticVariable("ClangTidyShellPath", "build/soong/scripts/clang-tidy.sh")
 
 	pctx.VariableFunc("ClangShortVersion", func(ctx android.PackageVarContext) string {
 		if override := ctx.Config().Getenv("LLVM_RELEASE_VERSION"); override != "" {

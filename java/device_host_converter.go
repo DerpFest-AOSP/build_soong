@@ -15,10 +15,9 @@
 package java
 
 import (
-	"fmt"
-	"io"
-
 	"android/soong/android"
+
+	"github.com/google/blueprint"
 )
 
 type DeviceHostConverter struct {
@@ -31,12 +30,6 @@ type DeviceHostConverter struct {
 	implementationJars            android.Paths
 	implementationAndResourceJars android.Paths
 	resourceJars                  android.Paths
-
-	srcJarArgs []string
-	srcJarDeps android.Paths
-
-	combinedHeaderJar         android.Path
-	combinedImplementationJar android.Path
 }
 
 type DeviceHostConverterProperties struct {
@@ -51,7 +44,7 @@ type DeviceForHost struct {
 // java_device_for_host makes the classes.jar output of a device java_library module available to host
 // java_library modules.
 //
-// It is rarely necessary, and its usage is restricted to a few whitelisted projects.
+// It is rarely necessary, and its used is restricted to a few whitelisted projects.
 func DeviceForHostFactory() android.Module {
 	module := &DeviceForHost{}
 
@@ -68,7 +61,7 @@ type HostForDevice struct {
 // java_host_for_device makes the classes.jar output of a host java_library module available to device
 // java_library modules.
 //
-// It is rarely necessary, and its usage is restricted to a few whitelisted projects.
+// It is rarely necessary, and its used is restricted to a few whitelisted projects.
 func HostForDeviceFactory() android.Module {
 	module := &HostForDevice{}
 
@@ -81,13 +74,13 @@ func HostForDeviceFactory() android.Module {
 var deviceHostConverterDepTag = dependencyTag{name: "device_host_converter"}
 
 func (d *DeviceForHost) DepsMutator(ctx android.BottomUpMutatorContext) {
-	ctx.AddFarVariationDependencies(ctx.Config().AndroidCommonTarget.Variations(),
-		deviceHostConverterDepTag, d.properties.Libs...)
+	variation := []blueprint.Variation{{Mutator: "arch", Variation: "android_common"}}
+	ctx.AddFarVariationDependencies(variation, deviceHostConverterDepTag, d.properties.Libs...)
 }
 
 func (d *HostForDevice) DepsMutator(ctx android.BottomUpMutatorContext) {
-	ctx.AddFarVariationDependencies(ctx.Config().BuildOSCommonTarget.Variations(),
-		deviceHostConverterDepTag, d.properties.Libs...)
+	variation := []blueprint.Variation{{Mutator: "arch", Variation: ctx.Config().BuildOsCommonVariant}}
+	ctx.AddFarVariationDependencies(variation, deviceHostConverterDepTag, d.properties.Libs...)
 }
 
 func (d *DeviceHostConverter) GenerateAndroidBuildActions(ctx android.ModuleContext) {
@@ -101,35 +94,10 @@ func (d *DeviceHostConverter) GenerateAndroidBuildActions(ctx android.ModuleCont
 			d.implementationJars = append(d.implementationJars, dep.ImplementationJars()...)
 			d.implementationAndResourceJars = append(d.implementationAndResourceJars, dep.ImplementationAndResourcesJars()...)
 			d.resourceJars = append(d.resourceJars, dep.ResourceJars()...)
-
-			srcJarArgs, srcJarDeps := dep.SrcJarArgs()
-			d.srcJarArgs = append(d.srcJarArgs, srcJarArgs...)
-			d.srcJarDeps = append(d.srcJarDeps, srcJarDeps...)
 		} else {
 			ctx.PropertyErrorf("libs", "module %q cannot be used as a dependency", ctx.OtherModuleName(m))
 		}
 	})
-
-	jarName := ctx.ModuleName() + ".jar"
-
-	if len(d.implementationAndResourceJars) > 1 {
-		outputFile := android.PathForModuleOut(ctx, "combined", jarName)
-		TransformJarsToJar(ctx, outputFile, "combine", d.implementationAndResourceJars,
-			android.OptionalPath{}, false, nil, nil)
-		d.combinedImplementationJar = outputFile
-	} else {
-		d.combinedImplementationJar = d.implementationAndResourceJars[0]
-	}
-
-	if len(d.headerJars) > 1 {
-		outputFile := android.PathForModuleOut(ctx, "turbine-combined", jarName)
-		TransformJarsToJar(ctx, outputFile, "turbine combine", d.headerJars,
-			android.OptionalPath{}, false, nil, []string{"META-INF/TRANSITIVE"})
-		d.combinedHeaderJar = outputFile
-	} else {
-		d.combinedHeaderJar = d.headerJars[0]
-	}
-
 }
 
 var _ Dependency = (*DeviceHostConverter)(nil)
@@ -160,23 +128,4 @@ func (d *DeviceHostConverter) AidlIncludeDirs() android.Paths {
 
 func (d *DeviceHostConverter) ExportedSdkLibs() []string {
 	return nil
-}
-
-func (d *DeviceHostConverter) SrcJarArgs() ([]string, android.Paths) {
-	return d.srcJarArgs, d.srcJarDeps
-}
-
-func (d *DeviceHostConverter) AndroidMk() android.AndroidMkData {
-	return android.AndroidMkData{
-		Class:      "JAVA_LIBRARIES",
-		OutputFile: android.OptionalPathForPath(d.combinedImplementationJar),
-		Include:    "$(BUILD_SYSTEM)/soong_java_prebuilt.mk",
-		Extra: []android.AndroidMkExtraFunc{
-			func(w io.Writer, outputFile android.Path) {
-				fmt.Fprintln(w, "LOCAL_UNINSTALLABLE_MODULE := true")
-				fmt.Fprintln(w, "LOCAL_SOONG_HEADER_JAR :=", d.combinedHeaderJar.String())
-				fmt.Fprintln(w, "LOCAL_SOONG_CLASSES_JAR :=", d.combinedImplementationJar.String())
-			},
-		},
-	}
 }

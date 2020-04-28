@@ -42,16 +42,10 @@ var (
 		"android.car",
 		"android.car7",
 		"conscrypt",
-		"core-icu4j",
 		"core-oj",
 		"core-libart",
 		"updatable-media",
 	}
-)
-
-const (
-	JavaVmFlags  = `-XX:OnError="cat hs_err_pid%p.log" -XX:CICompilerCount=6 -XX:+UseDynamicNumberOfGCThreads`
-	JavacVmFlags = `-J-XX:OnError="cat hs_err_pid%p.log" -J-XX:CICompilerCount=6 -J-XX:+UseDynamicNumberOfGCThreads`
 )
 
 func init() {
@@ -59,7 +53,7 @@ func init() {
 
 	pctx.StaticVariable("JavacHeapSize", "2048M")
 	pctx.StaticVariable("JavacHeapFlags", "-J-Xmx${JavacHeapSize}")
-	pctx.StaticVariable("DexFlags", "-JXX:OnError='cat hs_err_pid%p.log' -JXX:CICompilerCount=6 -JXX:+UseDynamicNumberOfGCThreads")
+	pctx.StaticVariable("DexFlags", "-JXX:+TieredCompilation -JXX:TieredStopAtLevel=1")
 
 	pctx.StaticVariable("CommonJdkFlags", strings.Join([]string{
 		`-Xmaxerrs 9999999`,
@@ -77,20 +71,11 @@ func init() {
 		`-XDstringConcat=inline`,
 	}, " "))
 
-	pctx.StaticVariable("JavaVmFlags", JavaVmFlags)
-	pctx.StaticVariable("JavacVmFlags", JavacVmFlags)
-
 	pctx.VariableConfigMethod("hostPrebuiltTag", android.Config.PrebuiltOS)
 
 	pctx.VariableFunc("JavaHome", func(ctx android.PackageVarContext) string {
 		// This is set up and guaranteed by soong_ui
 		return ctx.Config().Getenv("ANDROID_JAVA_HOME")
-	})
-	pctx.VariableFunc("JlinkVersion", func(ctx android.PackageVarContext) string {
-		if override := ctx.Config().Getenv("OVERRIDE_JLINK_VERSION_NUMBER"); override != "" {
-			return override
-		}
-		return "11"
 	})
 
 	pctx.SourcePathVariable("JavaToolchain", "${JavaHome}/bin")
@@ -102,7 +87,6 @@ func init() {
 	pctx.SourcePathVariable("JlinkCmd", "${JavaToolchain}/jlink")
 	pctx.SourcePathVariable("JmodCmd", "${JavaToolchain}/jmod")
 	pctx.SourcePathVariable("JrtFsJar", "${JavaHome}/lib/jrt-fs.jar")
-	pctx.SourcePathVariable("JavaKytheExtractorJar", "prebuilts/build-tools/common/framework/javac_extractor.jar")
 	pctx.SourcePathVariable("Ziptime", "prebuilts/build-tools/${hostPrebuiltTag}/bin/ziptime")
 
 	pctx.SourcePathVariable("GenKotlinBuildFileCmd", "build/soong/scripts/gen-kotlin-build-file.sh")
@@ -147,102 +131,24 @@ func init() {
 
 	pctx.HostJavaToolVariable("JacocoCLIJar", "jacoco-cli.jar")
 
-	pctx.HostBinToolVariable("ManifestCheckCmd", "manifest_check")
-	pctx.HostBinToolVariable("ManifestFixerCmd", "manifest_fixer")
+	hostBinToolVariableWithPrebuilt := func(name, prebuiltDir, tool string) {
+		pctx.VariableFunc(name, func(ctx android.PackageVarContext) string {
+			if ctx.Config().UnbundledBuild() || ctx.Config().IsPdkBuild() {
+				return filepath.Join(prebuiltDir, runtime.GOOS, "bin", tool)
+			} else {
+				return pctx.HostBinToolPath(ctx, tool).String()
+			}
+		})
+	}
+
+	hostBinToolVariableWithPrebuilt("Aapt2Cmd", "prebuilts/sdk/tools", "aapt2")
+
+	pctx.SourcePathVariable("ManifestFixerCmd", "build/soong/scripts/manifest_fixer.py")
 
 	pctx.HostBinToolVariable("ManifestMergerCmd", "manifest-merger")
 
+	pctx.HostBinToolVariable("ZipAlign", "zipalign")
+
 	pctx.HostBinToolVariable("Class2Greylist", "class2greylist")
 	pctx.HostBinToolVariable("HiddenAPI", "hiddenapi")
-
-	hostBinToolVariableWithSdkToolsPrebuilt("Aapt2Cmd", "aapt2")
-	hostBinToolVariableWithBuildToolsPrebuilt("AidlCmd", "aidl")
-	hostBinToolVariableWithBuildToolsPrebuilt("ZipAlign", "zipalign")
-
-	hostJavaToolVariableWithSdkToolsPrebuilt("SignapkCmd", "signapk")
-	// TODO(ccross): this should come from the signapk dependencies, but we don't have any way
-	// to express host JNI dependencies yet.
-	hostJNIToolVariableWithSdkToolsPrebuilt("SignapkJniLibrary", "libconscrypt_openjdk_jni")
-}
-
-func hostBinToolVariableWithSdkToolsPrebuilt(name, tool string) {
-	pctx.VariableFunc(name, func(ctx android.PackageVarContext) string {
-		if ctx.Config().UnbundledBuild() || ctx.Config().IsPdkBuild() {
-			return filepath.Join("prebuilts/sdk/tools", runtime.GOOS, "bin", tool)
-		} else {
-			return pctx.HostBinToolPath(ctx, tool).String()
-		}
-	})
-}
-
-func hostJavaToolVariableWithSdkToolsPrebuilt(name, tool string) {
-	pctx.VariableFunc(name, func(ctx android.PackageVarContext) string {
-		if ctx.Config().UnbundledBuild() || ctx.Config().IsPdkBuild() {
-			return filepath.Join("prebuilts/sdk/tools/lib", tool+".jar")
-		} else {
-			return pctx.HostJavaToolPath(ctx, tool+".jar").String()
-		}
-	})
-}
-
-func hostJNIToolVariableWithSdkToolsPrebuilt(name, tool string) {
-	pctx.VariableFunc(name, func(ctx android.PackageVarContext) string {
-		if ctx.Config().UnbundledBuild() || ctx.Config().IsPdkBuild() {
-			ext := ".so"
-			if runtime.GOOS == "darwin" {
-				ext = ".dylib"
-			}
-			return filepath.Join("prebuilts/sdk/tools", runtime.GOOS, "lib64", tool+ext)
-		} else {
-			return pctx.HostJNIToolPath(ctx, tool).String()
-		}
-	})
-}
-
-func hostBinToolVariableWithBuildToolsPrebuilt(name, tool string) {
-	pctx.VariableFunc(name, func(ctx android.PackageVarContext) string {
-		if ctx.Config().UnbundledBuild() || ctx.Config().IsPdkBuild() {
-			return filepath.Join("prebuilts/build-tools", ctx.Config().PrebuiltOS(), "bin", tool)
-		} else {
-			return pctx.HostBinToolPath(ctx, tool).String()
-		}
-	})
-}
-
-// JavaCmd returns a SourcePath object with the path to the java command.
-func JavaCmd(ctx android.PathContext) android.SourcePath {
-	return javaTool(ctx, "java")
-}
-
-// JavadocCmd returns a SourcePath object with the path to the java command.
-func JavadocCmd(ctx android.PathContext) android.SourcePath {
-	return javaTool(ctx, "javadoc")
-}
-
-func javaTool(ctx android.PathContext, tool string) android.SourcePath {
-	type javaToolKey string
-
-	key := android.NewCustomOnceKey(javaToolKey(tool))
-
-	return ctx.Config().OnceSourcePath(key, func() android.SourcePath {
-		return javaToolchain(ctx).Join(ctx, tool)
-	})
-
-}
-
-var javaToolchainKey = android.NewOnceKey("javaToolchain")
-
-func javaToolchain(ctx android.PathContext) android.SourcePath {
-	return ctx.Config().OnceSourcePath(javaToolchainKey, func() android.SourcePath {
-		return javaHome(ctx).Join(ctx, "bin")
-	})
-}
-
-var javaHomeKey = android.NewOnceKey("javaHome")
-
-func javaHome(ctx android.PathContext) android.SourcePath {
-	return ctx.Config().OnceSourcePath(javaHomeKey, func() android.SourcePath {
-		// This is set up and guaranteed by soong_ui
-		return android.PathForSource(ctx, ctx.Config().Getenv("ANDROID_JAVA_HOME"))
-	})
 }

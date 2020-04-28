@@ -28,9 +28,7 @@ func init() {
 
 type phony struct {
 	android.ModuleBase
-	requiredModuleNames       []string
-	hostRequiredModuleNames   []string
-	targetRequiredModuleNames []string
+	requiredModuleNames []string
 }
 
 func PhonyFactory() android.Module {
@@ -42,12 +40,8 @@ func PhonyFactory() android.Module {
 
 func (p *phony) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 	p.requiredModuleNames = ctx.RequiredModuleNames()
-	p.hostRequiredModuleNames = ctx.HostRequiredModuleNames()
-	p.targetRequiredModuleNames = ctx.TargetRequiredModuleNames()
-	if len(p.requiredModuleNames) == 0 &&
-		len(p.hostRequiredModuleNames) == 0 && len(p.targetRequiredModuleNames) == 0 {
-		ctx.PropertyErrorf("required", "phony must not have empty required dependencies "+
-			"in order to be useful(and therefore permitted).")
+	if len(p.requiredModuleNames) == 0 {
+		ctx.PropertyErrorf("required", "phony must not have empty required dependencies in order to be useful(and therefore permitted).")
 	}
 }
 
@@ -60,18 +54,7 @@ func (p *phony) AndroidMk() android.AndroidMkData {
 			if p.Host() {
 				fmt.Fprintln(w, "LOCAL_IS_HOST_MODULE := true")
 			}
-			if len(p.requiredModuleNames) > 0 {
-				fmt.Fprintln(w, "LOCAL_REQUIRED_MODULES :=",
-					strings.Join(p.requiredModuleNames, " "))
-			}
-			if len(p.hostRequiredModuleNames) > 0 {
-				fmt.Fprintln(w, "LOCAL_HOST_REQUIRED_MODULES :=",
-					strings.Join(p.hostRequiredModuleNames, " "))
-			}
-			if len(p.targetRequiredModuleNames) > 0 {
-				fmt.Fprintln(w, "LOCAL_TARGET_REQUIRED_MODULES :=",
-					strings.Join(p.targetRequiredModuleNames, " "))
-			}
+			fmt.Fprintln(w, "LOCAL_REQUIRED_MODULES := "+strings.Join(p.requiredModuleNames, " "))
 			fmt.Fprintln(w, "include $(BUILD_PHONY_PACKAGE)")
 		},
 	}

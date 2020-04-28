@@ -15,6 +15,8 @@
 package android
 
 import (
+	"io/ioutil"
+	"os"
 	"reflect"
 	"testing"
 )
@@ -28,34 +30,20 @@ type pathDepsMutatorTestModule struct {
 		Qux string
 	}
 
-	// A second property struct with a duplicate property name
-	props2 struct {
-		Foo string `android:"path"`
-	}
-
 	sourceDeps []string
 }
 
 func pathDepsMutatorTestModuleFactory() Module {
 	module := &pathDepsMutatorTestModule{}
-	module.AddProperties(&module.props, &module.props2)
+	module.AddProperties(&module.props)
 	InitAndroidArchModule(module, DeviceSupported, MultilibBoth)
 	return module
 }
 
 func (p *pathDepsMutatorTestModule) GenerateAndroidBuildActions(ctx ModuleContext) {
-	ctx.VisitDirectDeps(func(dep Module) {
-		if _, ok := ctx.OtherModuleDependencyTag(dep).(sourceOrOutputDependencyTag); ok {
-			p.sourceDeps = append(p.sourceDeps, ctx.OtherModuleName(dep))
-		}
+	ctx.VisitDirectDepsWithTag(SourceDepTag, func(dep Module) {
+		p.sourceDeps = append(p.sourceDeps, ctx.OtherModuleName(dep))
 	})
-
-	if p.props.Foo != "" {
-		// Make sure there is only one dependency on a module listed in a property present in multiple property structs
-		if ctx.GetDirectDepWithTag(SrcIsModule(p.props.Foo), sourceOrOutputDepTag("")) == nil {
-			ctx.ModuleErrorf("GetDirectDepWithTag failed")
-		}
-	}
 }
 
 func TestPathDepsMutator(t *testing.T) {
@@ -71,7 +59,7 @@ func TestPathDepsMutator(t *testing.T) {
 				name: "foo",
 				foo: ":a",
 				bar: [":b"],
-				baz: ":c{.bar}",
+				baz: ":c",
 				qux: ":d",
 			}`,
 			deps: []string{"a", "b", "c"},
@@ -94,6 +82,12 @@ func TestPathDepsMutator(t *testing.T) {
 			deps: []string{"c", "a"},
 		},
 	}
+
+	buildDir, err := ioutil.TempDir("", "soong_path_properties_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(buildDir)
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

@@ -181,9 +181,6 @@ func LibclangRuntimeLibrary(t Toolchain, library string) string {
 	if arch == "" {
 		return ""
 	}
-	if !t.Bionic() {
-		return "libclang_rt." + library + "-" + arch
-	}
 	return "libclang_rt." + library + "-" + arch + "-android"
 }
 
@@ -225,10 +222,6 @@ func ScudoRuntimeLibrary(t Toolchain) string {
 
 func ScudoMinimalRuntimeLibrary(t Toolchain) string {
 	return LibclangRuntimeLibrary(t, "scudo_minimal")
-}
-
-func LibFuzzerRuntimeLibrary(t Toolchain) string {
-	return LibclangRuntimeLibrary(t, "fuzzer")
 }
 
 func ToolPath(t Toolchain) string {

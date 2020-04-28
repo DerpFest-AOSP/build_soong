@@ -43,7 +43,7 @@ func runNinja(ctx Context, config Config) {
 	args = append(args, config.NinjaArgs()...)
 
 	var parallel int
-	if config.UseGoma() || config.UseRBE() {
+	if config.UseGoma() {
 		parallel = config.RemoteParallel()
 	} else {
 		parallel = config.Parallel()
@@ -103,7 +103,7 @@ func runNinja(ctx Context, config Config) {
 	}()
 
 	ctx.Status.Status("Starting ninja...")
-	cmd.RunAndStreamOrFatal()
+	cmd.RunAndPrintOrFatal()
 }
 
 type statusChecker struct {

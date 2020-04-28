@@ -101,16 +101,20 @@ func init() {
 		// not emit the table by default on Android since NDK still uses GNU binutils.
 		"-faddrsig",
 
+		// -Wimplicit-fallthrough is not enabled by -Wall.
+		"-Wimplicit-fallthrough",
+
 		// Help catch common 32/64-bit errors.
 		"-Werror=int-conversion",
-
-		// Enable the new pass manager.
-		"-fexperimental-new-pass-manager",
 
 		// Disable overly aggressive warning for macros defined with a leading underscore
 		// This happens in AndroidConfig.h, which is included nearly everywhere.
 		// TODO: can we remove this now?
 		"-Wno-reserved-id-macro",
+
+		// Disable overly aggressive warning for format strings.
+		// Bug: 20148343
+		"-Wno-format-pedantic",
 
 		// Workaround for ccache with clang.
 		// See http://petereisentraut.blogspot.com/2011/05/ccache-and-clang.html.
@@ -135,11 +139,10 @@ func init() {
 	}, " "))
 
 	pctx.StaticVariable("ClangExtraCppflags", strings.Join([]string{
-		// -Wimplicit-fallthrough is not enabled by -Wall.
-		"-Wimplicit-fallthrough",
-
 		// Enable clang's thread-safety annotations in libcxx.
+		// Turn off -Wthread-safety-negative, to avoid breaking projects that use -Weverything.
 		"-D_LIBCPP_ENABLE_THREAD_SAFETY_ANNOTATIONS",
+		"-Wno-thread-safety-negative",
 
 		// libc++'s math.h has an #include_next outside of system_headers.
 		"-Wno-gnu-include-next",
@@ -161,6 +164,15 @@ func init() {
 		// new warnings are fixed.
 		"-Wno-tautological-constant-compare",
 		"-Wno-tautological-type-limit-compare",
+		"-Wno-tautological-unsigned-enum-zero-compare",
+		"-Wno-tautological-unsigned-zero-compare",
+
+		// Disable c++98-specific warning since Android is not concerned with C++98
+		// compatibility.
+		"-Wno-c++98-compat-extra-semi",
+
+		// Disable this warning because we don't care about behavior with older compilers.
+		"-Wno-return-std-move-in-c++11",
 	}, " "))
 
 	// Extra cflags for projects under external/ directory to disable warnings that are infeasible

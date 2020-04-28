@@ -66,12 +66,12 @@ func init() {
 	pctx.Import("android/soong/android")
 }
 
-func getNdkInstallBase(ctx android.PathContext) android.InstallPath {
-	return android.PathForNdkInstall(ctx)
+func getNdkInstallBase(ctx android.PathContext) android.OutputPath {
+	return android.PathForOutput(ctx, "ndk")
 }
 
 // Returns the main install directory for the NDK sysroot. Usable with --sysroot.
-func getNdkSysrootBase(ctx android.PathContext) android.InstallPath {
+func getNdkSysrootBase(ctx android.PathContext) android.OutputPath {
 	return getNdkInstallBase(ctx).Join(ctx, "sysroot")
 }
 

@@ -61,13 +61,6 @@ type vndkPrebuiltProperties struct {
 	// Prebuilt files for each arch.
 	Srcs []string `android:"arch_variant"`
 
-	// list of directories relative to the Blueprints file that will be added to the include
-	// path (using -isystem) for any module that links against this module.
-	Export_system_include_dirs []string `android:"arch_variant"`
-
-	// list of flags that will be used for any module that links against this module.
-	Export_flags []string `android:"arch_variant"`
-
 	// Check the prebuilt ELF files (e.g. DT_SONAME, DT_NEEDED, resolution of undefined symbols,
 	// etc).
 	Check_elf_files *bool
@@ -129,41 +122,11 @@ func (p *vndkPrebuiltLibraryDecorator) singleSourcePath(ctx ModuleContext) andro
 
 func (p *vndkPrebuiltLibraryDecorator) link(ctx ModuleContext,
 	flags Flags, deps PathDeps, objs Objects) android.Path {
-
-	if !p.matchesWithDevice(ctx.DeviceConfig()) {
-		ctx.Module().SkipInstall()
-		return nil
-	}
-
 	if len(p.properties.Srcs) > 0 && p.shared() {
-		p.libraryDecorator.exportIncludes(ctx)
-		p.libraryDecorator.reexportSystemDirs(
-			android.PathsForModuleSrc(ctx, p.properties.Export_system_include_dirs)...)
-		p.libraryDecorator.reexportFlags(p.properties.Export_flags...)
 		// current VNDK prebuilts are only shared libs.
 		return p.singleSourcePath(ctx)
 	}
-
-	ctx.Module().SkipInstall()
 	return nil
-}
-
-func (p *vndkPrebuiltLibraryDecorator) matchesWithDevice(config android.DeviceConfig) bool {
-	arches := config.Arches()
-	if len(arches) == 0 || arches[0].ArchType.String() != p.arch() {
-		return false
-	}
-	if config.BinderBitness() != p.binderBit() {
-		return false
-	}
-	if len(p.properties.Srcs) == 0 {
-		return false
-	}
-	return true
-}
-
-func (p *vndkPrebuiltLibraryDecorator) nativeCoverage() bool {
-	return false
 }
 
 func (p *vndkPrebuiltLibraryDecorator) install(ctx ModuleContext, file android.Path) {
@@ -190,19 +153,13 @@ func vndkPrebuiltSharedLibrary() *Module {
 	module.stl = nil
 	module.sanitize = nil
 	library.StripProperties.Strip.None = BoolPtr(true)
+	module.Properties.UseVndk = true
 
 	prebuilt := &vndkPrebuiltLibraryDecorator{
 		libraryDecorator: library,
 	}
 
 	prebuilt.properties.Check_elf_files = BoolPtr(false)
-	prebuilt.baseLinker.Properties.No_libcrt = BoolPtr(true)
-	prebuilt.baseLinker.Properties.Nocrt = BoolPtr(true)
-
-	// Prevent default system libs (libc, libm, and libdl) from being linked
-	if prebuilt.baseLinker.Properties.System_shared_libs == nil {
-		prebuilt.baseLinker.Properties.System_shared_libs = []string{}
-	}
 
 	module.compiler = nil
 	module.linker = prebuilt
@@ -215,31 +172,11 @@ func vndkPrebuiltSharedLibrary() *Module {
 	return module
 }
 
-// vndk_prebuilt_shared installs Vendor Native Development kit (VNDK) snapshot
-// shared libraries for system build. Example:
-//
-//    vndk_prebuilt_shared {
-//        name: "libfoo",
-//        version: "27.1.0",
-//        vendor_available: true,
-//        vndk: {
-//            enabled: true,
-//        },
-//        export_include_dirs: ["include/external/libfoo/vndk_include"],
-//        arch: {
-//            arm64: {
-//                srcs: ["arm/lib64/libfoo.so"],
-//            },
-//            arm: {
-//                srcs: ["arm/lib/libfoo.so"],
-//            },
-//        },
-//    }
-func VndkPrebuiltSharedFactory() android.Module {
+func vndkPrebuiltSharedFactory() android.Module {
 	module := vndkPrebuiltSharedLibrary()
 	return module.Init()
 }
 
 func init() {
-	android.RegisterModuleType("vndk_prebuilt_shared", VndkPrebuiltSharedFactory)
+	android.RegisterModuleType("vndk_prebuilt_shared", vndkPrebuiltSharedFactory)
 }

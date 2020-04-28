@@ -15,20 +15,23 @@
 package android
 
 import (
+	"bufio"
+	"bytes"
+	"io/ioutil"
+	"os"
 	"path/filepath"
-	"reflect"
+	"strings"
 	"testing"
 )
 
 func testPrebuiltEtc(t *testing.T, bp string) (*TestContext, Config) {
-	config := TestArchConfig(buildDir, nil)
+	config, buildDir := setUp(t)
+	defer tearDown(buildDir)
 	ctx := NewTestArchContext()
 	ctx.RegisterModuleType("prebuilt_etc", ModuleFactoryAdaptor(PrebuiltEtcFactory))
 	ctx.RegisterModuleType("prebuilt_etc_host", ModuleFactoryAdaptor(PrebuiltEtcHostFactory))
 	ctx.RegisterModuleType("prebuilt_usr_share", ModuleFactoryAdaptor(PrebuiltUserShareFactory))
 	ctx.RegisterModuleType("prebuilt_usr_share_host", ModuleFactoryAdaptor(PrebuiltUserShareHostFactory))
-	ctx.RegisterModuleType("prebuilt_font", ModuleFactoryAdaptor(PrebuiltFontFactory))
-	ctx.RegisterModuleType("prebuilt_firmware", ModuleFactoryAdaptor(PrebuiltFirmwareFactory))
 	ctx.PreDepsMutators(func(ctx RegisterMutatorsContext) {
 		ctx.BottomUp("prebuilt_etc", prebuiltEtcMutator).Parallel()
 	})
@@ -46,6 +49,20 @@ func testPrebuiltEtc(t *testing.T, bp string) (*TestContext, Config) {
 	FailIfErrored(t, errs)
 
 	return ctx, config
+}
+
+func setUp(t *testing.T) (config Config, buildDir string) {
+	buildDir, err := ioutil.TempDir("", "soong_prebuilt_etc_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	config = TestArchConfig(buildDir, nil)
+	return
+}
+
+func tearDown(buildDir string) {
+	os.RemoveAll(buildDir)
 }
 
 func TestPrebuiltEtcVariants(t *testing.T) {
@@ -122,37 +139,45 @@ func TestPrebuiltEtcGlob(t *testing.T) {
 }
 
 func TestPrebuiltEtcAndroidMk(t *testing.T) {
-	ctx, config := testPrebuiltEtc(t, `
+	ctx, _ := testPrebuiltEtc(t, `
 		prebuilt_etc {
 			name: "foo",
 			src: "foo.conf",
 			owner: "abc",
 			filename_from_src: true,
-			required: ["modA", "moduleB"],
-			host_required: ["hostModA", "hostModB"],
-			target_required: ["targetModA"],
 		}
 	`)
 
-	expected := map[string][]string{
-		"LOCAL_MODULE":                  {"foo"},
-		"LOCAL_MODULE_CLASS":            {"ETC"},
-		"LOCAL_MODULE_OWNER":            {"abc"},
-		"LOCAL_INSTALLED_MODULE_STEM":   {"foo.conf"},
-		"LOCAL_REQUIRED_MODULES":        {"modA", "moduleB"},
-		"LOCAL_HOST_REQUIRED_MODULES":   {"hostModA", "hostModB"},
-		"LOCAL_TARGET_REQUIRED_MODULES": {"targetModA"},
+	data := AndroidMkData{}
+	data.Required = append(data.Required, "modA", "moduleB")
+
+	expected := map[string]string{
+		"LOCAL_MODULE":                "foo",
+		"LOCAL_MODULE_CLASS":          "ETC",
+		"LOCAL_MODULE_OWNER":          "abc",
+		"LOCAL_INSTALLED_MODULE_STEM": "foo.conf",
+		"LOCAL_REQUIRED_MODULES":      "modA moduleB",
 	}
 
 	mod := ctx.ModuleForTests("foo", "android_arm64_armv8-a_core").Module().(*PrebuiltEtc)
-	entries := AndroidMkEntriesForTest(t, config, "", mod)
-	for k, expectedValue := range expected {
-		if value, ok := entries.EntryMap[k]; ok {
-			if !reflect.DeepEqual(value, expectedValue) {
-				t.Errorf("Incorrect %s '%s', expected '%s'", k, value, expectedValue)
+	buf := &bytes.Buffer{}
+	mod.AndroidMk().Custom(buf, "foo", "", "", data)
+	for k, expected := range expected {
+		found := false
+		scanner := bufio.NewScanner(bytes.NewReader(buf.Bytes()))
+		for scanner.Scan() {
+			line := scanner.Text()
+			tok := strings.Split(line, " := ")
+			if tok[0] == k {
+				found = true
+				if tok[1] != expected {
+					t.Errorf("Incorrect %s '%s', expected '%s'", k, tok[1], expected)
+				}
 			}
-		} else {
-			t.Errorf("No %s defined, saw %q", k, entries.EntryMap)
+		}
+
+		if !found {
+			t.Errorf("No %s defined, saw %s", k, buf.String())
 		}
 	}
 }
@@ -182,9 +207,9 @@ func TestPrebuiltUserShareInstallDirPath(t *testing.T) {
 	`)
 
 	p := ctx.ModuleForTests("foo.conf", "android_arm64_armv8-a_core").Module().(*PrebuiltEtc)
-	expected := buildDir + "/target/product/test_device/system/usr/share/bar"
-	if p.installDirPath.String() != expected {
-		t.Errorf("expected %q, got %q", expected, p.installDirPath.String())
+	expected := "target/product/test_device/system/usr/share/bar"
+	if p.installDirPath.RelPathString() != expected {
+		t.Errorf("expected %q, got %q", expected, p.installDirPath.RelPathString())
 	}
 }
 
@@ -199,59 +224,8 @@ func TestPrebuiltUserShareHostInstallDirPath(t *testing.T) {
 
 	buildOS := BuildOs.String()
 	p := ctx.ModuleForTests("foo.conf", buildOS+"_common").Module().(*PrebuiltEtc)
-	expected := filepath.Join(buildDir, "host", config.PrebuiltOS(), "usr", "share", "bar")
-	if p.installDirPath.String() != expected {
-		t.Errorf("expected %q, got %q", expected, p.installDirPath.String())
-	}
-}
-
-func TestPrebuiltFontInstallDirPath(t *testing.T) {
-	ctx, _ := testPrebuiltEtc(t, `
-		prebuilt_font {
-			name: "foo.conf",
-			src: "foo.conf",
-		}
-	`)
-
-	p := ctx.ModuleForTests("foo.conf", "android_arm64_armv8-a_core").Module().(*PrebuiltEtc)
-	expected := buildDir + "/target/product/test_device/system/fonts"
-	if p.installDirPath.String() != expected {
-		t.Errorf("expected %q, got %q", expected, p.installDirPath.String())
-	}
-}
-
-func TestPrebuiltFirmwareDirPath(t *testing.T) {
-	targetPath := buildDir + "/target/product/test_device"
-	tests := []struct {
-		description  string
-		config       string
-		expectedPath string
-	}{{
-		description: "prebuilt: system firmware",
-		config: `
-			prebuilt_firmware {
-				name: "foo.conf",
-				src: "foo.conf",
-			}`,
-		expectedPath: filepath.Join(targetPath, "system/etc/firmware"),
-	}, {
-		description: "prebuilt: vendor firmware",
-		config: `
-			prebuilt_firmware {
-				name: "foo.conf",
-				src: "foo.conf",
-				soc_specific: true,
-				sub_dir: "sub_dir",
-			}`,
-		expectedPath: filepath.Join(targetPath, "vendor/firmware/sub_dir"),
-	}}
-	for _, tt := range tests {
-		t.Run(tt.description, func(t *testing.T) {
-			ctx, _ := testPrebuiltEtc(t, tt.config)
-			p := ctx.ModuleForTests("foo.conf", "android_arm64_armv8-a_core").Module().(*PrebuiltEtc)
-			if p.installDirPath.String() != tt.expectedPath {
-				t.Errorf("expected %q, got %q", tt.expectedPath, p.installDirPath)
-			}
-		})
+	expected := filepath.Join("host", config.PrebuiltOS(), "usr", "share", "bar")
+	if p.installDirPath.RelPathString() != expected {
+		t.Errorf("expected %q, got %q", expected, p.installDirPath.RelPathString())
 	}
 }

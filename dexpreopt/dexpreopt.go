@@ -13,7 +13,7 @@
 // limitations under the License.
 
 // The dexpreopt package converts a global dexpreopt config and a module dexpreopt config into rules to perform
-// dexpreopting.
+// dexpreopting and to strip the dex files from the APK or JAR.
 //
 // It is used in two places; in the dexpeopt_gen binary for modules defined in Make, and directly linked into Soong.
 //
@@ -22,7 +22,8 @@
 // changed.  One script takes an APK or JAR as an input and produces a zip file containing any outputs of preopting,
 // in the location they should be on the device.  The Make build rules will unzip the zip file into $(PRODUCT_OUT) when
 // installing the APK, which will install the preopt outputs into $(PRODUCT_OUT)/system or $(PRODUCT_OUT)/system_other
-// as necessary.  The zip file may be empty if preopting was disabled for any reason.
+// as necessary.  The zip file may be empty if preopting was disabled for any reason.  The second script takes an APK or
+// JAR as an input and strips the dex files in it as necessary.
 //
 // The intermediate shell scripts allow changes to this package or to the global config to regenerate the shell scripts
 // but only require re-executing preopting if the script has changed.
@@ -47,6 +48,45 @@ import (
 const SystemPartition = "/system/"
 const SystemOtherPartition = "/system_other/"
 
+// GenerateStripRule generates a set of commands that will take an APK or JAR as an input and strip the dex files if
+// they are no longer necessary after preopting.
+func GenerateStripRule(global GlobalConfig, module ModuleConfig) (rule *android.RuleBuilder, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			if _, ok := r.(runtime.Error); ok {
+				panic(r)
+			} else if e, ok := r.(error); ok {
+				err = e
+				rule = nil
+			} else {
+				panic(r)
+			}
+		}
+	}()
+
+	tools := global.Tools
+
+	rule = android.NewRuleBuilder()
+
+	strip := shouldStripDex(module, global)
+
+	if strip {
+		if global.NeverAllowStripping {
+			panic(fmt.Errorf("Stripping requested on %q, though the product does not allow it", module.DexLocation))
+		}
+		// Only strips if the dex files are not already uncompressed
+		rule.Command().
+			Textf(`if (zipinfo %s '*.dex' 2>/dev/null | grep -v ' stor ' >/dev/null) ; then`, module.StripInputPath).
+			Tool(tools.Zip2zip).FlagWithInput("-i ", module.StripInputPath).FlagWithOutput("-o ", module.StripOutputPath).
+			FlagWithArg("-x ", `"classes*.dex"`).
+			Textf(`; else cp -f %s %s; fi`, module.StripInputPath, module.StripOutputPath)
+	} else {
+		rule.Command().Text("cp -f").Input(module.StripInputPath).Output(module.StripOutputPath)
+	}
+
+	return rule, nil
+}
+
 // GenerateDexpreoptRule generates a set of commands that will preopt a module based on a GlobalConfig and a
 // ModuleConfig.  The produced files and their install locations will be available through rule.Installs().
 func GenerateDexpreoptRule(ctx android.PathContext,
@@ -68,18 +108,15 @@ func GenerateDexpreoptRule(ctx android.PathContext,
 	rule = android.NewRuleBuilder()
 
 	generateProfile := module.ProfileClassListing.Valid() && !global.DisableGenerateProfile
-	generateBootProfile := module.ProfileBootListing.Valid() && !global.DisableGenerateProfile
 
 	var profile android.WritablePath
 	if generateProfile {
 		profile = profileCommand(ctx, global, module, rule)
 	}
-	if generateBootProfile {
-		bootProfileCommand(ctx, global, module, rule)
-	}
 
 	if !dexpreoptDisabled(global, module) {
 		// Don't preopt individual boot jars, they will be preopted together.
+		// This check is outside dexpreoptDisabled because they still need to be stripped.
 		if !contains(global.BootJars, module.Name) {
 			appImage := (generateProfile || module.ForceCreateAppImage || global.DefaultAppImages) &&
 				!module.NoCreateAppImage
@@ -88,8 +125,7 @@ func GenerateDexpreoptRule(ctx android.PathContext,
 
 			for i, arch := range module.Archs {
 				image := module.DexPreoptImages[i]
-				imageDeps := module.DexPreoptImagesDeps[i]
-				dexpreoptCommand(ctx, global, module, rule, arch, profile, image, imageDeps, appImage, generateDM)
+				dexpreoptCommand(ctx, global, module, rule, arch, profile, image, appImage, generateDM)
 			}
 		}
 	}
@@ -153,40 +189,8 @@ func profileCommand(ctx android.PathContext, global GlobalConfig, module ModuleC
 	return profilePath
 }
 
-func bootProfileCommand(ctx android.PathContext, global GlobalConfig, module ModuleConfig,
-	rule *android.RuleBuilder) android.WritablePath {
-
-	profilePath := module.BuildPath.InSameDir(ctx, "profile.bprof")
-	profileInstalledPath := module.DexLocation + ".bprof"
-
-	if !module.ProfileIsTextListing {
-		rule.Command().FlagWithOutput("touch ", profilePath)
-	}
-
-	cmd := rule.Command().
-		Text(`ANDROID_LOG_TAGS="*:e"`).
-		Tool(global.Tools.Profman)
-
-	// The profile is a test listing of methods.
-	// We need to generate the actual binary profile.
-	cmd.FlagWithInput("--create-profile-from=", module.ProfileBootListing.Path())
-
-	cmd.
-		Flag("--generate-boot-profile").
-		FlagWithInput("--apk=", module.DexPath).
-		Flag("--dex-location="+module.DexLocation).
-		FlagWithOutput("--reference-profile-file=", profilePath)
-
-	if !module.ProfileIsTextListing {
-		cmd.Text(fmt.Sprintf(`|| echo "Profile out of date for %s"`, module.DexPath))
-	}
-	rule.Install(profilePath, profileInstalledPath)
-
-	return profilePath
-}
-
 func dexpreoptCommand(ctx android.PathContext, global GlobalConfig, module ModuleConfig, rule *android.RuleBuilder,
-	arch android.ArchType, profile, bootImage android.Path, bootImageDeps android.Paths, appImage, generateDM bool) {
+	arch android.ArchType, profile, bootImage android.Path, appImage, generateDM bool) {
 
 	// HACK: make soname in Soong-generated .odex files match Make.
 	base := filepath.Base(module.DexLocation)
@@ -207,7 +211,7 @@ func dexpreoptCommand(ctx android.PathContext, global GlobalConfig, module Modul
 	odexPath := module.BuildPath.InSameDir(ctx, "oat", arch.String(), pathtools.ReplaceExtension(base, "odex"))
 	odexInstallPath := toOdexPath(module.DexLocation)
 	if odexOnSystemOther(module, global) {
-		odexInstallPath = filepath.Join(SystemOtherPartition, odexInstallPath)
+		odexInstallPath = strings.Replace(odexInstallPath, SystemPartition, SystemOtherPartition, 1)
 	}
 
 	vdexPath := odexPath.ReplaceExtension(ctx, "vdex")
@@ -221,6 +225,15 @@ func dexpreoptCommand(ctx android.PathContext, global GlobalConfig, module Modul
 	if bootImage != nil {
 		bootImageLocation = PathToLocation(bootImage, arch)
 	}
+
+	// Lists of used and optional libraries from the build config to be verified against the manifest in the APK
+	var verifyUsesLibs []string
+	var verifyOptionalUsesLibs []string
+
+	// Lists of used and optional libraries from the build config, with optional libraries that are known to not
+	// be present in the current product removed.
+	var filteredUsesLibs []string
+	var filteredOptionalUsesLibs []string
 
 	// The class loader context using paths in the build
 	var classLoaderContextHost android.Paths
@@ -239,10 +252,14 @@ func dexpreoptCommand(ctx android.PathContext, global GlobalConfig, module Modul
 	var classLoaderContextHostString string
 
 	if module.EnforceUsesLibraries {
-		usesLibs := append(copyOf(module.UsesLibraries), module.PresentOptionalUsesLibraries...)
+		verifyUsesLibs = copyOf(module.UsesLibraries)
+		verifyOptionalUsesLibs = copyOf(module.OptionalUsesLibraries)
+
+		filteredOptionalUsesLibs = filterOut(global.MissingUsesLibraries, module.OptionalUsesLibraries)
+		filteredUsesLibs = append(copyOf(module.UsesLibraries), filteredOptionalUsesLibs...)
 
 		// Create class loader context for dex2oat from uses libraries and filtered optional libraries
-		for _, l := range usesLibs {
+		for _, l := range filteredUsesLibs {
 
 			classLoaderContextHost = append(classLoaderContextHost,
 				pathForLibrary(module, l))
@@ -253,13 +270,11 @@ func dexpreoptCommand(ctx android.PathContext, global GlobalConfig, module Modul
 		const httpLegacy = "org.apache.http.legacy"
 		const httpLegacyImpl = "org.apache.http.legacy.impl"
 
-		// org.apache.http.legacy contains classes that were in the default classpath until API 28.  If the
-		// targetSdkVersion in the manifest or APK is < 28, and the module does not explicitly depend on
-		// org.apache.http.legacy, then implicitly add the classes to the classpath for dexpreopt.  One the
-		// device the classes will be in a file called org.apache.http.legacy.impl.jar.
-		module.LibraryPaths[httpLegacyImpl] = module.LibraryPaths[httpLegacy]
+		// Fix up org.apache.http.legacy.impl since it should be org.apache.http.legacy in the manifest.
+		replace(verifyUsesLibs, httpLegacyImpl, httpLegacy)
+		replace(verifyOptionalUsesLibs, httpLegacyImpl, httpLegacy)
 
-		if !contains(module.UsesLibraries, httpLegacy) && !contains(module.PresentOptionalUsesLibraries, httpLegacy) {
+		if !contains(verifyUsesLibs, httpLegacy) && !contains(verifyOptionalUsesLibs, httpLegacy) {
 			conditionalClassLoaderContextHost28 = append(conditionalClassLoaderContextHost28,
 				pathForLibrary(module, httpLegacyImpl))
 			conditionalClassLoaderContextTarget28 = append(conditionalClassLoaderContextTarget28,
@@ -269,9 +284,6 @@ func dexpreoptCommand(ctx android.PathContext, global GlobalConfig, module Modul
 		const hidlBase = "android.hidl.base-V1.0-java"
 		const hidlManager = "android.hidl.manager-V1.0-java"
 
-		// android.hidl.base-V1.0-java and android.hidl.manager-V1.0 contain classes that were in the default
-		// classpath until API 29.  If the targetSdkVersion in the manifest or APK is < 29 then implicitly add
-		// the classes to the classpath for dexpreopt.
 		conditionalClassLoaderContextHost29 = append(conditionalClassLoaderContextHost29,
 			pathForLibrary(module, hidlManager))
 		conditionalClassLoaderContextTarget29 = append(conditionalClassLoaderContextTarget29,
@@ -297,21 +309,9 @@ func dexpreoptCommand(ctx android.PathContext, global GlobalConfig, module Modul
 	rule.Command().Text(`stored_class_loader_context_arg=""`)
 
 	if module.EnforceUsesLibraries {
-		if module.ManifestPath != nil {
-			rule.Command().Text(`target_sdk_version="$(`).
-				Tool(global.Tools.ManifestCheck).
-				Flag("--extract-target-sdk-version").
-				Input(module.ManifestPath).
-				Text(`)"`)
-		} else {
-			// No manifest to extract targetSdkVersion from, hope that DexJar is an APK
-			rule.Command().Text(`target_sdk_version="$(`).
-				Tool(global.Tools.Aapt).
-				Flag("dump badging").
-				Input(module.DexPath).
-				Text(`| grep "targetSdkVersion" | sed -n "s/targetSdkVersion:'\(.*\)'/\1/p"`).
-				Text(`)"`)
-		}
+		rule.Command().Textf(`uses_library_names="%s"`, strings.Join(verifyUsesLibs, " "))
+		rule.Command().Textf(`optional_uses_library_names="%s"`, strings.Join(verifyOptionalUsesLibs, " "))
+		rule.Command().Textf(`aapt_binary="%s"`, global.Tools.Aapt)
 		rule.Command().Textf(`dex_preopt_host_libraries="%s"`,
 			strings.Join(classLoaderContextHost.Strings(), " ")).
 			Implicits(classLoaderContextHost)
@@ -327,7 +327,8 @@ func dexpreoptCommand(ctx android.PathContext, global GlobalConfig, module Modul
 			Implicits(conditionalClassLoaderContextHost29)
 		rule.Command().Textf(`conditional_target_libs_29="%s"`,
 			strings.Join(conditionalClassLoaderContextTarget29, " "))
-		rule.Command().Text("source").Tool(global.Tools.ConstructContext).Input(module.DexPath)
+		rule.Command().Text("source").Tool(global.Tools.VerifyUsesLibraries).Input(module.DexPath)
+		rule.Command().Text("source").Tool(global.Tools.ConstructContext)
 	}
 
 	// Devices that do not have a product partition use a symlink from /product to /system/product.
@@ -349,7 +350,7 @@ func dexpreoptCommand(ctx android.PathContext, global GlobalConfig, module Modul
 		Flag("--runtime-arg").FlagWithList("-Xbootclasspath-locations:", module.PreoptBootClassPathDexLocations, ":").
 		Flag("${class_loader_context_arg}").
 		Flag("${stored_class_loader_context_arg}").
-		FlagWithArg("--boot-image=", bootImageLocation).Implicits(bootImageDeps).
+		FlagWithArg("--boot-image=", bootImageLocation).Implicit(bootImage).
 		FlagWithInput("--dex-file=", module.DexPath).
 		FlagWithArg("--dex-location=", dexLocationArg).
 		FlagWithOutput("--oat-file=", odexPath).ImplicitOutput(vdexPath).
@@ -474,6 +475,51 @@ func dexpreoptCommand(ctx android.PathContext, global GlobalConfig, module Modul
 	rule.Install(vdexPath, vdexInstallPath)
 }
 
+// Return if the dex file in the APK should be stripped.  If an APK is found to contain uncompressed dex files at
+// dex2oat time it will not be stripped even if strip=true.
+func shouldStripDex(module ModuleConfig, global GlobalConfig) bool {
+	strip := !global.DefaultNoStripping
+
+	if dexpreoptDisabled(global, module) {
+		strip = false
+	}
+
+	if module.NoStripping {
+		strip = false
+	}
+
+	// Don't strip modules that are not on the system partition in case the oat/vdex version in system ROM
+	// doesn't match the one in other partitions. It needs to be able to fall back to the APK for that case.
+	if !strings.HasPrefix(module.DexLocation, SystemPartition) {
+		strip = false
+	}
+
+	// system_other isn't there for an OTA, so don't strip if module is on system, and odex is on system_other.
+	if odexOnSystemOther(module, global) {
+		strip = false
+	}
+
+	if module.HasApkLibraries {
+		strip = false
+	}
+
+	// Don't strip with dex files we explicitly uncompress (dexopt will not store the dex code).
+	if module.UncompressedDex {
+		strip = false
+	}
+
+	if shouldGenerateDM(module, global) {
+		strip = false
+	}
+
+	if module.PresignedPrebuilt {
+		// Only strip out files if we can re-sign the package.
+		strip = false
+	}
+
+	return strip
+}
+
 func shouldGenerateDM(module ModuleConfig, global GlobalConfig) bool {
 	// Generating DM files only makes sense for verify, avoid doing for non verify compiler filter APKs.
 	// No reason to use a dm file if the dex is already uncompressed.
@@ -495,8 +541,7 @@ func OdexOnSystemOtherByName(name string, dexLocation string, global GlobalConfi
 	}
 
 	for _, f := range global.PatternsOnSystemOther {
-		// See comment of SYSTEM_OTHER_ODEX_FILTER for details on the matching.
-		if makefileMatch("/"+f, dexLocation) || makefileMatch(filepath.Join(SystemPartition, f), dexLocation) {
+		if makefileMatch(filepath.Join(SystemPartition, f), dexLocation) {
 			return true
 		}
 	}

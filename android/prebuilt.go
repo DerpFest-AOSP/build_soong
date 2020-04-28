@@ -16,7 +16,6 @@ package android
 
 import (
 	"fmt"
-	"reflect"
 
 	"github.com/google/blueprint"
 	"github.com/google/blueprint/proptools"
@@ -29,7 +28,7 @@ type prebuiltDependencyTag struct {
 	blueprint.BaseDependencyTag
 }
 
-var PrebuiltDepTag prebuiltDependencyTag
+var prebuiltDepTag prebuiltDependencyTag
 
 type PrebuiltProperties struct {
 	// When prefer is set to true the prebuilt will be used instead of any source module with
@@ -44,21 +43,13 @@ type Prebuilt struct {
 	properties PrebuiltProperties
 	module     Module
 	srcs       *[]string
-
-	// Metadata for single source Prebuilt modules.
-	srcProps reflect.Value
-	srcField reflect.StructField
+	src        *string
 }
 
 func (p *Prebuilt) Name(name string) string {
 	return "prebuilt_" + name
 }
 
-// The below source-related functions and the srcs, src fields are based on an assumption that
-// prebuilt modules have a static source property at the moment. Currently there is only one
-// exception, android_app_import, which chooses a source file depending on the product's DPI
-// preference configs. We'll want to add native support for dynamic source cases if we end up having
-// more modules like this.
 func (p *Prebuilt) SingleSourcePath(ctx ModuleContext) Path {
 	if p.srcs != nil {
 		if len(*p.srcs) == 0 {
@@ -75,16 +66,11 @@ func (p *Prebuilt) SingleSourcePath(ctx ModuleContext) Path {
 		// sources.
 		return PathForModuleSrc(ctx, (*p.srcs)[0])
 	} else {
-		if !p.srcProps.IsValid() {
-			ctx.ModuleErrorf("prebuilt source was not set")
-		}
-		src := p.getSingleSourceFieldValue()
-		if src == "" {
-			ctx.PropertyErrorf(proptools.FieldNameForProperty(p.srcField.Name),
-				"missing prebuilt source file")
+		if proptools.String(p.src) == "" {
+			ctx.PropertyErrorf("src", "missing prebuilt source file")
 			return nil
 		}
-		return PathForModuleSrc(ctx, src)
+		return PathForModuleSrc(ctx, *p.src)
 	}
 }
 
@@ -98,12 +84,10 @@ func InitPrebuiltModule(module PrebuiltInterface, srcs *[]string) {
 	p.srcs = srcs
 }
 
-func InitSingleSourcePrebuiltModule(module PrebuiltInterface, srcProps interface{}, srcField string) {
+func InitSingleSourcePrebuiltModule(module PrebuiltInterface, src *string) {
 	p := module.Prebuilt()
 	module.AddProperties(&p.properties)
-	p.srcProps = reflect.ValueOf(srcProps).Elem()
-	p.srcField, _ = p.srcProps.Type().FieldByName(srcField)
-	p.checkSingleSourceProperties()
+	p.src = src
 }
 
 type PrebuiltInterface interface {
@@ -127,7 +111,7 @@ func PrebuiltMutator(ctx BottomUpMutatorContext) {
 		p := m.Prebuilt()
 		name := m.base().BaseModuleName()
 		if ctx.OtherModuleExists(name) {
-			ctx.AddReverseDependency(ctx.Module(), PrebuiltDepTag, name)
+			ctx.AddReverseDependency(ctx.Module(), prebuiltDepTag, name)
 			p.properties.SourceExists = true
 		} else {
 			ctx.Rename(name)
@@ -140,14 +124,14 @@ func PrebuiltMutator(ctx BottomUpMutatorContext) {
 func PrebuiltSelectModuleMutator(ctx TopDownMutatorContext) {
 	if m, ok := ctx.Module().(PrebuiltInterface); ok && m.Prebuilt() != nil {
 		p := m.Prebuilt()
-		if p.srcs == nil && !p.srcProps.IsValid() {
+		if p.srcs == nil && p.src == nil {
 			panic(fmt.Errorf("prebuilt module did not have InitPrebuiltModule called on it"))
 		}
 		if !p.properties.SourceExists {
 			p.properties.UsePrebuilt = p.usePrebuilt(ctx, nil)
 		}
 	} else if s, ok := ctx.Module().(Module); ok {
-		ctx.VisitDirectDepsWithTag(PrebuiltDepTag, func(m Module) {
+		ctx.VisitDirectDepsWithTag(prebuiltDepTag, func(m Module) {
 			p := m.(PrebuiltInterface).Prebuilt()
 			if p.usePrebuilt(ctx, s) {
 				p.properties.UsePrebuilt = true
@@ -183,7 +167,7 @@ func (p *Prebuilt) usePrebuilt(ctx TopDownMutatorContext, source Module) bool {
 		return false
 	}
 
-	if p.srcProps.IsValid() && p.getSingleSourceFieldValue() == "" {
+	if p.src != nil && *p.src == "" {
 		return false
 	}
 
@@ -197,25 +181,4 @@ func (p *Prebuilt) usePrebuilt(ctx TopDownMutatorContext, source Module) bool {
 
 func (p *Prebuilt) SourceExists() bool {
 	return p.properties.SourceExists
-}
-
-func (p *Prebuilt) checkSingleSourceProperties() {
-	if !p.srcProps.IsValid() || p.srcField.Name == "" {
-		panic(fmt.Errorf("invalid single source prebuilt %+v", p))
-	}
-
-	if p.srcProps.Kind() != reflect.Struct && p.srcProps.Kind() != reflect.Interface {
-		panic(fmt.Errorf("invalid single source prebuilt %+v", p.srcProps))
-	}
-}
-
-func (p *Prebuilt) getSingleSourceFieldValue() string {
-	value := p.srcProps.FieldByIndex(p.srcField.Index)
-	if value.Kind() == reflect.Ptr {
-		value = value.Elem()
-	}
-	if value.Kind() != reflect.String {
-		panic(fmt.Errorf("prebuilt src field %q should be a string or a pointer to one", p.srcField.Name))
-	}
-	return value.String()
 }

@@ -31,12 +31,30 @@ import (
 var (
 	Signapk = pctx.AndroidStaticRule("signapk",
 		blueprint.RuleParams{
-			Command: `${config.JavaCmd} ${config.JavaVmFlags} -Djava.library.path=$$(dirname ${config.SignapkJniLibrary}) ` +
-				`-jar ${config.SignapkCmd} $flags $certificates $in $out`,
-			CommandDeps: []string{"${config.SignapkCmd}", "${config.SignapkJniLibrary}"},
+			Command: `${config.JavaCmd} -Djava.library.path=$$(dirname $signapkJniLibrary) ` +
+				`-jar $signapkCmd $flags $certificates $in $out`,
+			CommandDeps: []string{"$signapkCmd", "$signapkJniLibrary"},
 		},
 		"flags", "certificates")
+
+	androidManifestMerger = pctx.AndroidStaticRule("androidManifestMerger",
+		blueprint.RuleParams{
+			Command: "java -classpath $androidManifestMergerCmd com.android.manifmerger.Main merge " +
+				"--main $in --libs $libsManifests --out $out",
+			CommandDeps: []string{"$androidManifestMergerCmd"},
+			Description: "merge manifest files",
+		},
+		"libsManifests")
 )
+
+func init() {
+	pctx.SourcePathVariable("androidManifestMergerCmd", "prebuilts/devtools/tools/lib/manifest-merger.jar")
+	pctx.HostBinToolVariable("aaptCmd", "aapt")
+	pctx.HostJavaToolVariable("signapkCmd", "signapk.jar")
+	// TODO(ccross): this should come from the signapk dependencies, but we don't have any way
+	// to express host JNI dependencies yet.
+	pctx.HostJNIToolVariable("signapkJniLibrary", "libconscrypt_openjdk_jni")
+}
 
 var combineApk = pctx.AndroidStaticRule("combineApk",
 	blueprint.RuleParams{
@@ -44,8 +62,8 @@ var combineApk = pctx.AndroidStaticRule("combineApk",
 		CommandDeps: []string{"${config.MergeZipsCmd}"},
 	})
 
-func CreateAndSignAppPackage(ctx android.ModuleContext, outputFile android.WritablePath,
-	packageFile, jniJarFile, dexJarFile android.Path, certificates []Certificate, deps android.Paths) {
+func CreateAppPackage(ctx android.ModuleContext, outputFile android.WritablePath,
+	packageFile, jniJarFile, dexJarFile android.Path, certificates []Certificate) {
 
 	unsignedApkName := strings.TrimSuffix(outputFile.Base(), ".apk") + "-unsigned.apk"
 	unsignedApk := android.PathForModuleOut(ctx, unsignedApkName)
@@ -60,16 +78,10 @@ func CreateAndSignAppPackage(ctx android.ModuleContext, outputFile android.Writa
 	}
 
 	ctx.Build(pctx, android.BuildParams{
-		Rule:      combineApk,
-		Inputs:    inputs,
-		Output:    unsignedApk,
-		Implicits: deps,
+		Rule:   combineApk,
+		Inputs: inputs,
+		Output: unsignedApk,
 	})
-
-	SignAppPackage(ctx, outputFile, unsignedApk, certificates)
-}
-
-func SignAppPackage(ctx android.ModuleContext, signedApk android.WritablePath, unsignedApk android.Path, certificates []Certificate) {
 
 	var certificateArgs []string
 	var deps android.Paths
@@ -81,7 +93,7 @@ func SignAppPackage(ctx android.ModuleContext, signedApk android.WritablePath, u
 	ctx.Build(pctx, android.BuildParams{
 		Rule:        Signapk,
 		Description: "signapk",
-		Output:      signedApk,
+		Output:      outputFile,
 		Input:       unsignedApk,
 		Implicits:   deps,
 		Args: map[string]string{

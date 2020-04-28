@@ -15,8 +15,6 @@
 package cc
 
 import (
-	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -34,7 +32,7 @@ func TestGen(t *testing.T) {
 		aidl := ctx.ModuleForTests("libfoo", "android_arm_armv7-a-neon_core_shared").Rule("aidl")
 		libfoo := ctx.ModuleForTests("libfoo", "android_arm_armv7-a-neon_core_shared").Module().(*Module)
 
-		if !inList("-I"+filepath.Dir(aidl.Output.String()), libfoo.flags.Local.CommonFlags) {
+		if !inList("-I"+aidl.Args["outDir"], libfoo.flags.GlobalFlags) {
 			t.Errorf("missing aidl includes in global flags")
 		}
 	})
@@ -43,8 +41,7 @@ func TestGen(t *testing.T) {
 		ctx := testCc(t, `
 		filegroup {
 			name: "fg",
-			srcs: ["sub/c.aidl"],
-			path: "sub",
+			srcs: ["b.aidl"],
 		}
 
 		cc_library_shared {
@@ -58,15 +55,9 @@ func TestGen(t *testing.T) {
 		aidl := ctx.ModuleForTests("libfoo", "android_arm_armv7-a-neon_core_shared").Rule("aidl")
 		libfoo := ctx.ModuleForTests("libfoo", "android_arm_armv7-a-neon_core_shared").Module().(*Module)
 
-		if !inList("-I"+filepath.Dir(aidl.Output.String()), libfoo.flags.Local.CommonFlags) {
+		if !inList("-I"+aidl.Args["outDir"], libfoo.flags.GlobalFlags) {
 			t.Errorf("missing aidl includes in global flags")
 		}
-
-		aidlCommand := aidl.RuleParams.Command
-		if !strings.Contains(aidlCommand, "-Isub") {
-			t.Errorf("aidl command for c.aidl should contain \"-Isub\", but was %q", aidlCommand)
-		}
-
 	})
 
 }

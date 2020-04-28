@@ -25,7 +25,7 @@ import (
 func init() {
 	android.RegisterModuleType("ndk_prebuilt_object", ndkPrebuiltObjectFactory)
 	android.RegisterModuleType("ndk_prebuilt_static_stl", ndkPrebuiltStaticStlFactory)
-	android.RegisterModuleType("ndk_prebuilt_shared_stl", NdkPrebuiltSharedStlFactory)
+	android.RegisterModuleType("ndk_prebuilt_shared_stl", ndkPrebuiltSharedStlFactory)
 }
 
 // NDK prebuilt libraries.
@@ -64,13 +64,8 @@ func (*ndkPrebuiltObjectLinker) linkerDeps(ctx DepsContext, deps Deps) Deps {
 	return deps
 }
 
-// ndk_prebuilt_object exports a precompiled ndk object file for linking
-// operations. Soong's module name format is ndk_<NAME>.o.<sdk_version> where
-// the object is located under
-// ./prebuilts/ndk/current/platforms/android-<sdk_version>/arch-$(HOST_ARCH)/usr/lib/<NAME>.o.
 func ndkPrebuiltObjectFactory() android.Module {
 	module := newBaseModule(android.DeviceSupported, android.MultilibBoth)
-	module.ModuleBase.EnableNativeBridgeSupportByDefault()
 	module.linker = &ndkPrebuiltObjectLinker{
 		objectLinker: objectLinker{
 			baseLinker: NewBaseLinker(nil),
@@ -103,11 +98,7 @@ func (*ndkPrebuiltStlLinker) linkerDeps(ctx DepsContext, deps Deps) Deps {
 	return deps
 }
 
-// ndk_prebuilt_shared_stl exports a precompiled ndk shared standard template
-// library (stl) library for linking operation. The soong's module name format
-// is ndk_<NAME>.so where the library is located under
-// ./prebuilts/ndk/current/sources/cxx-stl/llvm-libc++/libs/$(HOST_ARCH)/<NAME>.so.
-func NdkPrebuiltSharedStlFactory() android.Module {
+func ndkPrebuiltSharedStlFactory() android.Module {
 	module, library := NewLibrary(android.DeviceSupported)
 	library.BuildOnlyShared()
 	module.compiler = nil
@@ -122,10 +113,6 @@ func NdkPrebuiltSharedStlFactory() android.Module {
 	return module.Init()
 }
 
-// ndk_prebuilt_static_stl exports a precompiled ndk static standard template
-// library (stl) library for linking operation. The soong's module name format
-// is ndk_<NAME>.a where the library is located under
-// ./prebuilts/ndk/current/sources/cxx-stl/llvm-libc++/libs/$(HOST_ARCH)/<NAME>.a.
 func ndkPrebuiltStaticStlFactory() android.Module {
 	module, library := NewLibrary(android.DeviceSupported)
 	library.BuildOnlyStatic()
@@ -135,7 +122,6 @@ func ndkPrebuiltStaticStlFactory() android.Module {
 	}
 	module.installer = nil
 	module.Properties.HideFromMake = true
-	module.ModuleBase.EnableNativeBridgeSupportByDefault()
 	return module.Init()
 }
 
@@ -151,7 +137,7 @@ func (ndk *ndkPrebuiltStlLinker) link(ctx ModuleContext, flags Flags,
 		ctx.ModuleErrorf("NDK prebuilt libraries must have an ndk_lib prefixed name")
 	}
 
-	ndk.exportIncludesAsSystem(ctx)
+	ndk.exportIncludes(ctx, "-isystem ")
 
 	libName := strings.TrimPrefix(ctx.ModuleName(), "ndk_")
 	libExt := flags.Toolchain.ShlibSuffix()

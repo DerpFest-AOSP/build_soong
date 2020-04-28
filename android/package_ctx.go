@@ -104,8 +104,7 @@ func (p PackageContext) PoolFunc(name string,
 }
 
 // RuleFunc wraps blueprint.PackageContext.RuleFunc, converting the interface{} config
-// argument to a Context that supports Config(), and provides a default Pool if none is
-// specified.
+// argument to a Context that supports Config().
 func (p PackageContext) RuleFunc(name string,
 	f func(PackageRuleContext) blueprint.RuleParams, argNames ...string) blueprint.Rule {
 
@@ -114,11 +113,6 @@ func (p PackageContext) RuleFunc(name string,
 		params := f(ctx)
 		if len(ctx.errors) > 0 {
 			return params, ctx.errors[0]
-		}
-		if (ctx.Config().UseGoma() || ctx.Config().UseRBE()) && params.Pool == nil {
-			// When USE_GOMA=true or USE_RBE=true are set and the rule is not supported by
-			// goma/RBE, restrict jobs to the local parallelism value
-			params.Pool = localPool
 		}
 		return params, nil
 	}, argNames...)
@@ -240,49 +234,29 @@ func (p PackageContext) PrefixedExistentPathsForSourcesVariable(
 	})
 }
 
-// AndroidStaticRule is an alias for StaticRule.
+// AndroidStaticRule wraps blueprint.StaticRule and provides a default Pool if none is specified
 func (p PackageContext) AndroidStaticRule(name string, params blueprint.RuleParams,
 	argNames ...string) blueprint.Rule {
-	return p.StaticRule(name, params, argNames...)
-}
-
-// StaticRule wraps blueprint.StaticRule and provides a default Pool if none is specified.
-func (p PackageContext) StaticRule(name string, params blueprint.RuleParams,
-	argNames ...string) blueprint.Rule {
-	return p.RuleFunc(name, func(PackageRuleContext) blueprint.RuleParams {
+	return p.AndroidRuleFunc(name, func(PackageRuleContext) blueprint.RuleParams {
 		return params
 	}, argNames...)
 }
 
-// RemoteRuleSupports selects if a AndroidRemoteStaticRule supports goma, RBE, or both.
-type RemoteRuleSupports int
-
-const (
-	SUPPORTS_NONE = 0
-	SUPPORTS_GOMA = 1 << iota
-	SUPPORTS_RBE  = 1 << iota
-	SUPPORTS_BOTH = SUPPORTS_GOMA | SUPPORTS_RBE
-)
-
-// AndroidRemoteStaticRule wraps blueprint.StaticRule but uses goma or RBE's parallelism if goma or RBE are enabled
-// and the appropriate SUPPORTS_* flag is set.
-func (p PackageContext) AndroidRemoteStaticRule(name string, supports RemoteRuleSupports, params blueprint.RuleParams,
+// AndroidGomaStaticRule wraps blueprint.StaticRule but uses goma's parallelism if goma is enabled
+func (p PackageContext) AndroidGomaStaticRule(name string, params blueprint.RuleParams,
 	argNames ...string) blueprint.Rule {
+	return p.StaticRule(name, params, argNames...)
+}
 
-	return p.PackageContext.RuleFunc(name, func(config interface{}) (blueprint.RuleParams, error) {
-		ctx := &configErrorWrapper{p, config.(Config), nil}
-		if ctx.Config().UseGoma() && supports&SUPPORTS_GOMA == 0 {
+func (p PackageContext) AndroidRuleFunc(name string,
+	f func(PackageRuleContext) blueprint.RuleParams, argNames ...string) blueprint.Rule {
+	return p.RuleFunc(name, func(ctx PackageRuleContext) blueprint.RuleParams {
+		params := f(ctx)
+		if ctx.Config().UseGoma() && params.Pool == nil {
 			// When USE_GOMA=true is set and the rule is not supported by goma, restrict jobs to the
 			// local parallelism value
 			params.Pool = localPool
 		}
-
-		if ctx.Config().UseRBE() && supports&SUPPORTS_RBE == 0 {
-			// When USE_RBE=true is set and the rule is not supported by RBE, restrict jobs to the
-			// local parallelism value
-			params.Pool = localPool
-		}
-
-		return params, nil
+		return params
 	}, argNames...)
 }

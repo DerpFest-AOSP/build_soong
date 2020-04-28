@@ -14,8 +14,10 @@
 
 syntax = "proto2";
 
-package soong_build_metrics;
-option go_package = "soong_metrics_proto";
+option optimize_for = LITE_RUNTIME;
+
+package build_metrics;
+option go_package = "metrics_proto";
 
 message MetricsBase {
   // Timestamp generated when the build starts.
@@ -30,15 +32,15 @@ message MetricsBase {
   // The target product information, eg. aosp_arm.
   optional string target_product = 4;
 
-  enum BuildVariant {
+  enum BUILDVARIANT {
     USER = 0;
     USERDEBUG = 1;
     ENG = 2;
   }
   // The target build variant information, eg. eng.
-  optional BuildVariant target_build_variant = 5 [default = ENG];
+  optional BUILDVARIANT target_build_variant = 5 [default = ENG];
 
-  enum Arch {
+  enum ARCH {
     UNKNOWN = 0;
     ARM = 1;
     ARM64 = 2;
@@ -46,7 +48,7 @@ message MetricsBase {
     X86_64 = 4;
   }
   // The target arch information, eg. arm.
-  optional Arch target_arch = 6 [default = UNKNOWN];
+  optional ARCH target_arch = 6 [default = UNKNOWN];
 
   // The target arch variant information, eg. armv7-a-neon.
   optional string target_arch_variant = 7;
@@ -55,10 +57,10 @@ message MetricsBase {
   optional string target_cpu_variant = 8;
 
   // The host arch information, eg. x86_64.
-  optional Arch host_arch = 9 [default = UNKNOWN];
+  optional ARCH host_arch = 9 [default = UNKNOWN];
 
   // The host 2nd arch information, eg. x86.
-  optional Arch host_2nd_arch = 10 [default = UNKNOWN];
+  optional ARCH host_2nd_arch = 10 [default = UNKNOWN];
 
   // The host os information, eg. linux.
   optional string host_os = 11;
@@ -111,13 +113,13 @@ message PerfInfo {
 }
 
 message ModuleTypeInfo {
-  enum BuildSystem {
+  enum BUILDSYSTEM {
     UNKNOWN = 0;
     SOONG = 1;
     MAKE = 2;
   }
   // The build system, eg. Soong or Make.
-  optional BuildSystem build_system = 1 [default = UNKNOWN];
+  optional BUILDSYSTEM build_system = 1 [default = UNKNOWN];
 
   // The module type, eg. java_library, cc_binary, and etc.
   optional string module_type = 2;

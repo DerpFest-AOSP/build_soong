@@ -52,8 +52,9 @@ func ProtoDeps(ctx BottomUpMutatorContext, p *ProtoProperties) {
 	}
 
 	if plugin := String(p.Proto.Plugin); plugin != "" {
-		ctx.AddFarVariationDependencies(ctx.Config().BuildOSTarget.Variations(),
-			ProtoPluginDepTag, "protoc-gen-"+plugin)
+		ctx.AddFarVariationDependencies([]blueprint.Variation{
+			{Mutator: "arch", Variation: ctx.Config().BuildOsVariant},
+		}, ProtoPluginDepTag, "protoc-gen-"+plugin)
 	}
 }
 
@@ -134,7 +135,7 @@ func ProtoRule(ctx ModuleContext, rule *RuleBuilder, protoFile Path, flags Proto
 	}
 
 	rule.Command().
-		BuiltTool(ctx, "aprotoc").
+		Tool(ctx.Config().HostToolPath(ctx, "aprotoc")).
 		FlagWithArg(flags.OutTypeFlag+"=", strings.Join(flags.OutParams, ",")+":"+outDir.String()).
 		FlagWithDepFile("--dependency_out=", depFile).
 		FlagWithArg("-I ", protoBase).
@@ -144,5 +145,5 @@ func ProtoRule(ctx ModuleContext, rule *RuleBuilder, protoFile Path, flags Proto
 		ImplicitOutputs(outputs)
 
 	rule.Command().
-		BuiltTool(ctx, "dep_fixer").Flag(depFile.String())
+		Tool(ctx.Config().HostToolPath(ctx, "dep_fixer")).Flag(depFile.String())
 }

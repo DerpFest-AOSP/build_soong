@@ -38,12 +38,9 @@ var (
 	ndkLibrarySuffix = ".ndk"
 
 	ndkPrebuiltSharedLibs = []string{
-		"aaudio",
-		"amidi",
 		"android",
 		"binder_ndk",
 		"c",
-		"camera2ndk",
 		"dl",
 		"EGL",
 		"GLESv1_CM",
@@ -52,9 +49,7 @@ var (
 		"jnigraphics",
 		"log",
 		"mediandk",
-		"nativewindow",
 		"m",
-		"neuralnetworks",
 		"OpenMAXAL",
 		"OpenSLES",
 		"stdc++",
@@ -122,7 +117,7 @@ func intMax(a int, b int) int {
 	}
 }
 
-func normalizeNdkApiLevel(ctx android.BaseModuleContext, apiLevel string,
+func normalizeNdkApiLevel(ctx android.BaseContext, apiLevel string,
 	arch android.Arch) (string, error) {
 
 	if apiLevel == "current" {
@@ -168,7 +163,7 @@ func getFirstGeneratedVersion(firstSupportedVersion string, platformVersion int)
 	return strconv.Atoi(firstSupportedVersion)
 }
 
-func shouldUseVersionScript(ctx android.BaseModuleContext, stub *stubDecorator) (bool, error) {
+func shouldUseVersionScript(ctx android.BaseContext, stub *stubDecorator) (bool, error) {
 	// unversioned_until is normally empty, in which case we should use the version script.
 	if String(stub.properties.Unversioned_until) == "" {
 		return true, nil
@@ -257,7 +252,7 @@ func (c *stubDecorator) compilerInit(ctx BaseModuleContext) {
 }
 
 func addStubLibraryCompilerFlags(flags Flags) Flags {
-	flags.Global.CFlags = append(flags.Global.CFlags,
+	flags.CFlags = append(flags.CFlags,
 		// We're knowingly doing some otherwise unsightly things with builtin
 		// functions here. We're just generating stub libraries, so ignore it.
 		"-Wno-incompatible-library-redeclaration",
@@ -337,8 +332,7 @@ func (stub *stubDecorator) link(ctx ModuleContext, flags Flags, deps PathDeps,
 
 	if useVersionScript {
 		linkerScriptFlag := "-Wl,--version-script," + stub.versionScriptPath.String()
-		flags.Local.LdFlags = append(flags.Local.LdFlags, linkerScriptFlag)
-		flags.LdFlagsDeps = append(flags.LdFlagsDeps, stub.versionScriptPath)
+		flags.LdFlags = append(flags.LdFlags, linkerScriptFlag)
 	}
 
 	return stub.libraryDecorator.link(ctx, flags, deps, objs)
@@ -383,11 +377,8 @@ func newStubLibrary() *Module {
 	return module
 }
 
-// ndk_library creates a stub library that exposes dummy implementation
-// of functions and variables for use at build time only.
 func ndkLibraryFactory() android.Module {
 	module := newStubLibrary()
 	android.InitAndroidArchModule(module, android.DeviceSupported, android.MultilibBoth)
-	module.ModuleBase.EnableNativeBridgeSupportByDefault()
 	return module
 }

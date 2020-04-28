@@ -27,16 +27,16 @@ import (
 // been applied.
 type LoadHookContext interface {
 	// TODO: a new context that includes Config() but not Target(), etc.?
-	BaseModuleContext
+	BaseContext
 	AppendProperties(...interface{})
 	PrependProperties(...interface{})
-	CreateModule(ModuleFactory, ...interface{}) Module
+	CreateModule(blueprint.ModuleFactory, ...interface{})
 }
 
 // Arch hooks are run after the module has been split into architecture variants, and can be used
 // to add architecture-specific properties.
 type ArchHookContext interface {
-	BaseModuleContext
+	BaseContext
 	AppendProperties(...interface{})
 	PrependProperties(...interface{})
 }
@@ -75,7 +75,7 @@ func (x *hooks) runArchHooks(ctx ArchHookContext, m *ModuleBase) {
 
 type InstallHookContext interface {
 	ModuleContext
-	Path() InstallPath
+	Path() OutputPath
 	Symlink() bool
 }
 
@@ -89,11 +89,11 @@ func AddInstallHook(m blueprint.Module, hook func(InstallHookContext)) {
 
 type installHookContext struct {
 	ModuleContext
-	path    InstallPath
+	path    OutputPath
 	symlink bool
 }
 
-func (x *installHookContext) Path() InstallPath {
+func (x *installHookContext) Path() OutputPath {
 	return x.path
 }
 
@@ -101,7 +101,7 @@ func (x *installHookContext) Symlink() bool {
 	return x.symlink
 }
 
-func (x *hooks) runInstallHooks(ctx ModuleContext, path InstallPath, symlink bool) {
+func (x *hooks) runInstallHooks(ctx ModuleContext, path OutputPath, symlink bool) {
 	if len(x.install) > 0 {
 		mctx := &installHookContext{
 			ModuleContext: ctx,
@@ -123,26 +123,20 @@ type hooks struct {
 	install []func(InstallHookContext)
 }
 
-func registerLoadHookMutator(ctx RegisterMutatorsContext) {
-	ctx.TopDown("load_hooks", LoadHookMutator).Parallel()
-}
-
 func LoadHookMutator(ctx TopDownMutatorContext) {
 	if m, ok := ctx.Module().(Module); ok {
-		m.base().commonProperties.DebugName = ctx.ModuleName()
-
-		// Cast through *topDownMutatorContext because AppendProperties is implemented
-		// on *topDownMutatorContext but not exposed through TopDownMutatorContext
-		var loadHookCtx LoadHookContext = ctx.(*topDownMutatorContext)
+		// Cast through *androidTopDownMutatorContext because AppendProperties is implemented
+		// on *androidTopDownMutatorContext but not exposed through TopDownMutatorContext
+		var loadHookCtx LoadHookContext = ctx.(*androidTopDownMutatorContext)
 		m.base().hooks.runLoadHooks(loadHookCtx, m.base())
 	}
 }
 
 func archHookMutator(ctx TopDownMutatorContext) {
 	if m, ok := ctx.Module().(Module); ok {
-		// Cast through *topDownMutatorContext because AppendProperties is implemented
-		// on *topDownMutatorContext but not exposed through TopDownMutatorContext
-		var archHookCtx ArchHookContext = ctx.(*topDownMutatorContext)
+		// Cast through *androidTopDownMutatorContext because AppendProperties is implemented
+		// on *androidTopDownMutatorContext but not exposed through TopDownMutatorContext
+		var archHookCtx ArchHookContext = ctx.(*androidTopDownMutatorContext)
 		m.base().hooks.runArchHooks(archHookCtx, m.base())
 	}
 }

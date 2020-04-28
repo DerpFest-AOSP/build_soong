@@ -45,8 +45,6 @@ func GatherRequiredDepsForTest() string {
 		"core.current.stubs",
 		"core.platform.api.stubs",
 		"kotlin-stdlib",
-		"kotlin-stdlib-jdk7",
-		"kotlin-stdlib-jdk8",
 		"kotlin-annotations",
 	}
 
@@ -55,7 +53,8 @@ func GatherRequiredDepsForTest() string {
 			java_library {
 				name: "%s",
 				srcs: ["a.java"],
-				sdk_version: "none",
+				no_standard_libs: true,
+				sdk_version: "core_current",
 				system_modules: "core-platform-api-stubs-system-modules",
 			}
 		`, extra)
@@ -65,7 +64,8 @@ func GatherRequiredDepsForTest() string {
 		java_library {
 			name: "framework",
 			srcs: ["a.java"],
-			sdk_version: "none",
+			no_standard_libs: true,
+			sdk_version: "core_current",
 			system_modules: "core-platform-api-stubs-system-modules",
 			aidl: {
 				export_include_dirs: ["framework/aidl"],
@@ -74,36 +74,12 @@ func GatherRequiredDepsForTest() string {
 
 		android_app {
 			name: "framework-res",
-			sdk_version: "core_platform",
-		}
-
-		java_library {
-			name: "android.hidl.base-V1.0-java",
-			srcs: ["a.java"],
-			sdk_version: "none",
-			system_modules: "core-platform-api-stubs-system-modules",
-			installable: true,
-		}
-
-		java_library {
-			name: "android.hidl.manager-V1.0-java",
-			srcs: ["a.java"],
-			sdk_version: "none",
-			system_modules: "core-platform-api-stubs-system-modules",
-			installable: true,
-		}
-
-		java_library {
-			name: "org.apache.http.legacy",
-			srcs: ["a.java"],
-			sdk_version: "none",
-			system_modules: "core-platform-api-stubs-system-modules",
-			installable: true,
+			no_framework_libs: true,
 		}
 	`
 
 	systemModules := []string{
-		"core-current-stubs-system-modules",
+		"core-system-modules",
 		"core-platform-api-stubs-system-modules",
 		"android_stubs_current_system_modules",
 		"android_system_stubs_current_system_modules",
@@ -113,13 +89,7 @@ func GatherRequiredDepsForTest() string {
 	for _, extra := range systemModules {
 		bp += fmt.Sprintf(`
 			java_system_modules {
-				name: "%[1]s",
-				libs: ["%[1]s-lib"],
-			}
-			java_library {
-				name: "%[1]s-lib",
-				sdk_version: "none",
-				system_modules: "none",
+				name: "%s",
 			}
 		`, extra)
 	}

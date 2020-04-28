@@ -19,6 +19,7 @@ import (
 	"android/soong/java/config"
 	"fmt"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -37,19 +38,17 @@ var sdkFrameworkAidlPathKey = android.NewOnceKey("sdkFrameworkAidlPathKey")
 var apiFingerprintPathKey = android.NewOnceKey("apiFingerprintPathKey")
 
 type sdkContext interface {
-	// sdkVersion returns the sdk_version property of the current module, or an empty string if it is not set.
+	// sdkVersion eturns the sdk_version property of the current module, or an empty string if it is not set.
 	sdkVersion() string
-	// systemModules returns the system_modules property of the current module, or an empty string if it is not set.
-	systemModules() string
 	// minSdkVersion returns the min_sdk_version property of the current module, or sdkVersion() if it is not set.
 	minSdkVersion() string
 	// targetSdkVersion returns the target_sdk_version property of the current module, or sdkVersion() if it is not set.
 	targetSdkVersion() string
 }
 
-func sdkVersionOrDefault(ctx android.BaseModuleContext, v string) string {
+func sdkVersionOrDefault(ctx android.BaseContext, v string) string {
 	switch v {
-	case "", "none", "current", "test_current", "system_current", "core_current", "core_platform":
+	case "", "current", "system_current", "test_current", "core_current":
 		return ctx.Config().DefaultAppTargetSdk()
 	default:
 		return v
@@ -58,9 +57,9 @@ func sdkVersionOrDefault(ctx android.BaseModuleContext, v string) string {
 
 // Returns a sdk version as a number.  For modules targeting an unreleased SDK (meaning it does not yet have a number)
 // it returns android.FutureApiLevel (10000).
-func sdkVersionToNumber(ctx android.BaseModuleContext, v string) (int, error) {
+func sdkVersionToNumber(ctx android.BaseContext, v string) (int, error) {
 	switch v {
-	case "", "none", "current", "test_current", "system_current", "core_current", "core_platform":
+	case "", "current", "test_current", "system_current", "core_current":
 		return ctx.Config().DefaultAppTargetSdkInt(), nil
 	default:
 		n := android.GetNumericSdkVersion(v)
@@ -72,7 +71,7 @@ func sdkVersionToNumber(ctx android.BaseModuleContext, v string) (int, error) {
 	}
 }
 
-func sdkVersionToNumberAsString(ctx android.BaseModuleContext, v string) (string, error) {
+func sdkVersionToNumberAsString(ctx android.BaseContext, v string) (string, error) {
 	n, err := sdkVersionToNumber(ctx, v)
 	if err != nil {
 		return "", err
@@ -80,9 +79,8 @@ func sdkVersionToNumberAsString(ctx android.BaseModuleContext, v string) (string
 	return strconv.Itoa(n), nil
 }
 
-func decodeSdkDep(ctx android.BaseModuleContext, sdkContext sdkContext) sdkDep {
+func decodeSdkDep(ctx android.BaseContext, sdkContext sdkContext) sdkDep {
 	v := sdkContext.sdkVersion()
-
 	// For PDK builds, use the latest SDK version instead of "current"
 	if ctx.Config().IsPdkBuild() && (v == "" || v == "current") {
 		sdkVersions := ctx.Config().Get(sdkVersionsKey).([]int)
@@ -122,7 +120,7 @@ func decodeSdkDep(ctx android.BaseModuleContext, sdkContext sdkContext) sdkDep {
 		if (!jarPath.Valid() || !aidlPath.Valid()) && ctx.Config().AllowMissingDependencies() {
 			return sdkDep{
 				invalidVersion: true,
-				bootclasspath:  []string{fmt.Sprintf("sdk_%s_%s_android", api, v)},
+				modules:        []string{fmt.Sprintf("sdk_%s_%s_android", api, v)},
 			}
 		}
 
@@ -144,14 +142,20 @@ func decodeSdkDep(ctx android.BaseModuleContext, sdkContext sdkContext) sdkDep {
 	}
 
 	toModule := func(m, r string, aidl android.Path) sdkDep {
-		return sdkDep{
+		ret := sdkDep{
 			useModule:          true,
-			bootclasspath:      []string{m, config.DefaultLambdaStubsLibrary},
-			systemModules:      "core-current-stubs-system-modules",
-			java9Classpath:     []string{m},
+			modules:            []string{m, config.DefaultLambdaStubsLibrary},
+			systemModules:      m + "_system_modules",
 			frameworkResModule: r,
 			aidl:               android.OptionalPathForPath(aidl),
 		}
+
+		if m == "core.current.stubs" {
+			ret.systemModules = "core-system-modules"
+		} else if m == "core.platform.api.stubs" {
+			ret.systemModules = "core-platform-api-stubs-system-modules"
+		}
+		return ret
 	}
 
 	// Ensures that the specificed system SDK version is one of BOARD_SYSTEMSDK_VERSIONS (for vendor apks)
@@ -169,8 +173,7 @@ func decodeSdkDep(ctx android.BaseModuleContext, sdkContext sdkContext) sdkDep {
 		}
 	}
 
-	if ctx.Config().UnbundledBuildUsePrebuiltSdks() &&
-		v != "" && v != "none" && v != "core_platform" {
+	if ctx.Config().UnbundledBuildUsePrebuiltSdks() && v != "" {
 		return toPrebuilt(v)
 	}
 
@@ -179,29 +182,6 @@ func decodeSdkDep(ctx android.BaseModuleContext, sdkContext sdkContext) sdkDep {
 		return sdkDep{
 			useDefaultLibs:     true,
 			frameworkResModule: "framework-res",
-		}
-	case "none":
-		systemModules := sdkContext.systemModules()
-		if systemModules == "" {
-			ctx.PropertyErrorf("sdk_version",
-				`system_modules is required to be set to a non-empty value when sdk_version is "none", did you mean sdk_version: "core_platform"?`)
-		} else if systemModules == "none" {
-			return sdkDep{
-				noStandardLibs: true,
-			}
-		}
-
-		return sdkDep{
-			useModule:      true,
-			noStandardLibs: true,
-			systemModules:  systemModules,
-			bootclasspath:  []string{systemModules},
-		}
-	case "core_platform":
-		return sdkDep{
-			useDefaultLibs:     true,
-			frameworkResModule: "framework-res",
-			noFrameworksLibs:   true,
 		}
 	case "current":
 		return toModule("android_stubs_current", "framework-res", sdkFrameworkAidlPath(ctx))
@@ -304,7 +284,7 @@ func createSdkFrameworkAidl(ctx android.SingletonContext) {
 			rule.Command().
 				Text("rm -f").Output(aidl)
 			rule.Command().
-				BuiltTool(ctx, "sdkparcelables").
+				Tool(ctx.Config().HostToolPath(ctx, "sdkparcelables")).
 				Input(jar).
 				Output(aidl)
 
@@ -357,7 +337,15 @@ func createAPIFingerprint(ctx android.SingletonContext) {
 
 		cmd.Text("cat").
 			Inputs(android.PathsForSource(ctx, in)).
-			Text("| md5sum | cut -d' ' -f1 >").
+			Text("|")
+
+		if runtime.GOOS == "darwin" {
+			cmd.Text("md5")
+		} else {
+			cmd.Text("md5sum")
+		}
+
+		cmd.Text("| cut -d' ' -f1 >").
 			Output(out)
 	} else {
 		// Unbundled build

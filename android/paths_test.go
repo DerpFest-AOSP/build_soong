@@ -17,6 +17,8 @@ package android
 import (
 	"errors"
 	"fmt"
+	"io/ioutil"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -198,13 +200,11 @@ func p(in interface{}) string {
 }
 
 type moduleInstallPathContextImpl struct {
-	baseModuleContext
+	androidBaseContextImpl
 
 	inData         bool
-	inTestcases    bool
 	inSanitizerDir bool
 	inRecovery     bool
-	inRoot         bool
 }
 
 func (moduleInstallPathContextImpl) Fs() pathtools.FileSystem {
@@ -212,7 +212,7 @@ func (moduleInstallPathContextImpl) Fs() pathtools.FileSystem {
 }
 
 func (m moduleInstallPathContextImpl) Config() Config {
-	return m.baseModuleContext.config
+	return m.androidBaseContextImpl.config
 }
 
 func (moduleInstallPathContextImpl) AddNinjaFileDeps(deps ...string) {}
@@ -221,24 +221,12 @@ func (m moduleInstallPathContextImpl) InstallInData() bool {
 	return m.inData
 }
 
-func (m moduleInstallPathContextImpl) InstallInTestcases() bool {
-	return m.inTestcases
-}
-
 func (m moduleInstallPathContextImpl) InstallInSanitizerDir() bool {
 	return m.inSanitizerDir
 }
 
 func (m moduleInstallPathContextImpl) InstallInRecovery() bool {
 	return m.inRecovery
-}
-
-func (m moduleInstallPathContextImpl) InstallInRoot() bool {
-	return m.inRoot
-}
-
-func (m moduleInstallPathContextImpl) InstallBypassMake() bool {
-	return false
 }
 
 func TestPathForModuleInstall(t *testing.T) {
@@ -256,7 +244,7 @@ func TestPathForModuleInstall(t *testing.T) {
 		{
 			name: "host binary",
 			ctx: &moduleInstallPathContextImpl{
-				baseModuleContext: baseModuleContext{
+				androidBaseContextImpl: androidBaseContextImpl{
 					target: hostTarget,
 				},
 			},
@@ -267,7 +255,7 @@ func TestPathForModuleInstall(t *testing.T) {
 		{
 			name: "system binary",
 			ctx: &moduleInstallPathContextImpl{
-				baseModuleContext: baseModuleContext{
+				androidBaseContextImpl: androidBaseContextImpl{
 					target: deviceTarget,
 				},
 			},
@@ -277,7 +265,7 @@ func TestPathForModuleInstall(t *testing.T) {
 		{
 			name: "vendor binary",
 			ctx: &moduleInstallPathContextImpl{
-				baseModuleContext: baseModuleContext{
+				androidBaseContextImpl: androidBaseContextImpl{
 					target: deviceTarget,
 					kind:   socSpecificModule,
 				},
@@ -288,7 +276,7 @@ func TestPathForModuleInstall(t *testing.T) {
 		{
 			name: "odm binary",
 			ctx: &moduleInstallPathContextImpl{
-				baseModuleContext: baseModuleContext{
+				androidBaseContextImpl: androidBaseContextImpl{
 					target: deviceTarget,
 					kind:   deviceSpecificModule,
 				},
@@ -299,7 +287,7 @@ func TestPathForModuleInstall(t *testing.T) {
 		{
 			name: "product binary",
 			ctx: &moduleInstallPathContextImpl{
-				baseModuleContext: baseModuleContext{
+				androidBaseContextImpl: androidBaseContextImpl{
 					target: deviceTarget,
 					kind:   productSpecificModule,
 				},
@@ -308,55 +296,21 @@ func TestPathForModuleInstall(t *testing.T) {
 			out: "target/product/test_device/product/bin/my_test",
 		},
 		{
-			name: "system_ext binary",
+			name: "product_services binary",
 			ctx: &moduleInstallPathContextImpl{
-				baseModuleContext: baseModuleContext{
+				androidBaseContextImpl: androidBaseContextImpl{
 					target: deviceTarget,
-					kind:   systemExtSpecificModule,
+					kind:   productServicesSpecificModule,
 				},
 			},
 			in:  []string{"bin", "my_test"},
-			out: "target/product/test_device/system_ext/bin/my_test",
-		},
-		{
-			name: "root binary",
-			ctx: &moduleInstallPathContextImpl{
-				baseModuleContext: baseModuleContext{
-					target: deviceTarget,
-				},
-				inRoot: true,
-			},
-			in:  []string{"my_test"},
-			out: "target/product/test_device/root/my_test",
-		},
-		{
-			name: "recovery binary",
-			ctx: &moduleInstallPathContextImpl{
-				baseModuleContext: baseModuleContext{
-					target: deviceTarget,
-				},
-				inRecovery: true,
-			},
-			in:  []string{"bin/my_test"},
-			out: "target/product/test_device/recovery/root/system/bin/my_test",
-		},
-		{
-			name: "recovery root binary",
-			ctx: &moduleInstallPathContextImpl{
-				baseModuleContext: baseModuleContext{
-					target: deviceTarget,
-				},
-				inRecovery: true,
-				inRoot:     true,
-			},
-			in:  []string{"my_test"},
-			out: "target/product/test_device/recovery/root/my_test",
+			out: "target/product/test_device/product_services/bin/my_test",
 		},
 
 		{
 			name: "system native test binary",
 			ctx: &moduleInstallPathContextImpl{
-				baseModuleContext: baseModuleContext{
+				androidBaseContextImpl: androidBaseContextImpl{
 					target: deviceTarget,
 				},
 				inData: true,
@@ -367,7 +321,7 @@ func TestPathForModuleInstall(t *testing.T) {
 		{
 			name: "vendor native test binary",
 			ctx: &moduleInstallPathContextImpl{
-				baseModuleContext: baseModuleContext{
+				androidBaseContextImpl: androidBaseContextImpl{
 					target: deviceTarget,
 					kind:   socSpecificModule,
 				},
@@ -379,7 +333,7 @@ func TestPathForModuleInstall(t *testing.T) {
 		{
 			name: "odm native test binary",
 			ctx: &moduleInstallPathContextImpl{
-				baseModuleContext: baseModuleContext{
+				androidBaseContextImpl: androidBaseContextImpl{
 					target: deviceTarget,
 					kind:   deviceSpecificModule,
 				},
@@ -391,7 +345,7 @@ func TestPathForModuleInstall(t *testing.T) {
 		{
 			name: "product native test binary",
 			ctx: &moduleInstallPathContextImpl{
-				baseModuleContext: baseModuleContext{
+				androidBaseContextImpl: androidBaseContextImpl{
 					target: deviceTarget,
 					kind:   productSpecificModule,
 				},
@@ -402,11 +356,11 @@ func TestPathForModuleInstall(t *testing.T) {
 		},
 
 		{
-			name: "system_ext native test binary",
+			name: "product_services native test binary",
 			ctx: &moduleInstallPathContextImpl{
-				baseModuleContext: baseModuleContext{
+				androidBaseContextImpl: androidBaseContextImpl{
 					target: deviceTarget,
-					kind:   systemExtSpecificModule,
+					kind:   productServicesSpecificModule,
 				},
 				inData: true,
 			},
@@ -417,7 +371,7 @@ func TestPathForModuleInstall(t *testing.T) {
 		{
 			name: "sanitized system binary",
 			ctx: &moduleInstallPathContextImpl{
-				baseModuleContext: baseModuleContext{
+				androidBaseContextImpl: androidBaseContextImpl{
 					target: deviceTarget,
 				},
 				inSanitizerDir: true,
@@ -428,7 +382,7 @@ func TestPathForModuleInstall(t *testing.T) {
 		{
 			name: "sanitized vendor binary",
 			ctx: &moduleInstallPathContextImpl{
-				baseModuleContext: baseModuleContext{
+				androidBaseContextImpl: androidBaseContextImpl{
 					target: deviceTarget,
 					kind:   socSpecificModule,
 				},
@@ -440,7 +394,7 @@ func TestPathForModuleInstall(t *testing.T) {
 		{
 			name: "sanitized odm binary",
 			ctx: &moduleInstallPathContextImpl{
-				baseModuleContext: baseModuleContext{
+				androidBaseContextImpl: androidBaseContextImpl{
 					target: deviceTarget,
 					kind:   deviceSpecificModule,
 				},
@@ -452,7 +406,7 @@ func TestPathForModuleInstall(t *testing.T) {
 		{
 			name: "sanitized product binary",
 			ctx: &moduleInstallPathContextImpl{
-				baseModuleContext: baseModuleContext{
+				androidBaseContextImpl: androidBaseContextImpl{
 					target: deviceTarget,
 					kind:   productSpecificModule,
 				},
@@ -463,22 +417,22 @@ func TestPathForModuleInstall(t *testing.T) {
 		},
 
 		{
-			name: "sanitized system_ext binary",
+			name: "sanitized product_services binary",
 			ctx: &moduleInstallPathContextImpl{
-				baseModuleContext: baseModuleContext{
+				androidBaseContextImpl: androidBaseContextImpl{
 					target: deviceTarget,
-					kind:   systemExtSpecificModule,
+					kind:   productServicesSpecificModule,
 				},
 				inSanitizerDir: true,
 			},
 			in:  []string{"bin", "my_test"},
-			out: "target/product/test_device/data/asan/system_ext/bin/my_test",
+			out: "target/product/test_device/data/asan/product_services/bin/my_test",
 		},
 
 		{
 			name: "sanitized system native test binary",
 			ctx: &moduleInstallPathContextImpl{
-				baseModuleContext: baseModuleContext{
+				androidBaseContextImpl: androidBaseContextImpl{
 					target: deviceTarget,
 				},
 				inData:         true,
@@ -490,7 +444,7 @@ func TestPathForModuleInstall(t *testing.T) {
 		{
 			name: "sanitized vendor native test binary",
 			ctx: &moduleInstallPathContextImpl{
-				baseModuleContext: baseModuleContext{
+				androidBaseContextImpl: androidBaseContextImpl{
 					target: deviceTarget,
 					kind:   socSpecificModule,
 				},
@@ -503,7 +457,7 @@ func TestPathForModuleInstall(t *testing.T) {
 		{
 			name: "sanitized odm native test binary",
 			ctx: &moduleInstallPathContextImpl{
-				baseModuleContext: baseModuleContext{
+				androidBaseContextImpl: androidBaseContextImpl{
 					target: deviceTarget,
 					kind:   deviceSpecificModule,
 				},
@@ -516,7 +470,7 @@ func TestPathForModuleInstall(t *testing.T) {
 		{
 			name: "sanitized product native test binary",
 			ctx: &moduleInstallPathContextImpl{
-				baseModuleContext: baseModuleContext{
+				androidBaseContextImpl: androidBaseContextImpl{
 					target: deviceTarget,
 					kind:   productSpecificModule,
 				},
@@ -527,11 +481,11 @@ func TestPathForModuleInstall(t *testing.T) {
 			out: "target/product/test_device/data/asan/data/nativetest/my_test",
 		},
 		{
-			name: "sanitized system_ext native test binary",
+			name: "sanitized product_services native test binary",
 			ctx: &moduleInstallPathContextImpl{
-				baseModuleContext: baseModuleContext{
+				androidBaseContextImpl: androidBaseContextImpl{
 					target: deviceTarget,
-					kind:   systemExtSpecificModule,
+					kind:   productServicesSpecificModule,
 				},
 				inData:         true,
 				inSanitizerDir: true,
@@ -543,7 +497,7 @@ func TestPathForModuleInstall(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			tc.ctx.baseModuleContext.config = testConfig
+			tc.ctx.androidBaseContextImpl.config = testConfig
 			output := PathForModuleInstall(tc.ctx, tc.in...)
 			if output.basePath.path != tc.out {
 				t.Errorf("unexpected path:\n got: %q\nwant: %q\n",
@@ -804,50 +758,6 @@ func (p *pathForModuleSrcTestModule) GenerateAndroidBuildActions(ctx ModuleConte
 	if !p.props.Module_handles_missing_deps {
 		p.missingDeps = ctx.GetMissingDependencies()
 	}
-
-	ctx.Build(pctx, BuildParams{
-		Rule:   Touch,
-		Output: PathForModuleOut(ctx, "output"),
-	})
-}
-
-type pathForModuleSrcOutputFileProviderModule struct {
-	ModuleBase
-	props struct {
-		Outs   []string
-		Tagged []string
-	}
-
-	outs   Paths
-	tagged Paths
-}
-
-func pathForModuleSrcOutputFileProviderModuleFactory() Module {
-	module := &pathForModuleSrcOutputFileProviderModule{}
-	module.AddProperties(&module.props)
-	InitAndroidModule(module)
-	return module
-}
-
-func (p *pathForModuleSrcOutputFileProviderModule) GenerateAndroidBuildActions(ctx ModuleContext) {
-	for _, out := range p.props.Outs {
-		p.outs = append(p.outs, PathForModuleOut(ctx, out))
-	}
-
-	for _, tagged := range p.props.Tagged {
-		p.tagged = append(p.tagged, PathForModuleOut(ctx, tagged))
-	}
-}
-
-func (p *pathForModuleSrcOutputFileProviderModule) OutputFiles(tag string) (Paths, error) {
-	switch tag {
-	case "":
-		return p.outs, nil
-	case ".tagged":
-		return p.tagged, nil
-	default:
-		return nil, fmt.Errorf("unsupported tag %q", tag)
-	}
 }
 
 type pathForModuleSrcTestCase struct {
@@ -866,7 +776,6 @@ func testPathForModuleSrc(t *testing.T, buildDir string, tests []pathForModuleSr
 			ctx := NewTestContext()
 
 			ctx.RegisterModuleType("test", ModuleFactoryAdaptor(pathForModuleSrcTestModuleFactory))
-			ctx.RegisterModuleType("output_file_provider", ModuleFactoryAdaptor(pathForModuleSrcOutputFileProviderModuleFactory))
 			ctx.RegisterModuleType("filegroup", ModuleFactoryAdaptor(FileGroupFactory))
 
 			fgBp := `
@@ -876,18 +785,9 @@ func testPathForModuleSrc(t *testing.T, buildDir string, tests []pathForModuleSr
 				}
 			`
 
-			ofpBp := `
-				output_file_provider {
-					name: "b",
-					outs: ["gen/b"],
-					tagged: ["gen/c"],
-				}
-			`
-
 			mockFS := map[string][]byte{
 				"fg/Android.bp":     []byte(fgBp),
 				"foo/Android.bp":    []byte(test.bp),
-				"ofp/Android.bp":    []byte(ofpBp),
 				"fg/src/a":          nil,
 				"foo/src/b":         nil,
 				"foo/src/c":         nil,
@@ -899,7 +799,7 @@ func testPathForModuleSrc(t *testing.T, buildDir string, tests []pathForModuleSr
 			ctx.MockFileSystem(mockFS)
 
 			ctx.Register()
-			_, errs := ctx.ParseFileList(".", []string{"fg/Android.bp", "foo/Android.bp", "ofp/Android.bp"})
+			_, errs := ctx.ParseFileList(".", []string{"fg/Android.bp", "foo/Android.bp"})
 			FailIfErrored(t, errs)
 			_, errs = ctx.PrepareBuildActions(config)
 			FailIfErrored(t, errs)
@@ -971,26 +871,6 @@ func TestPathsForModuleSrc(t *testing.T) {
 			rels: []string{"src/a"},
 		},
 		{
-			name: "output file provider",
-			bp: `
-			test {
-				name: "foo",
-				srcs: [":b"],
-			}`,
-			srcs: []string{buildDir + "/.intermediates/ofp/b/gen/b"},
-			rels: []string{"gen/b"},
-		},
-		{
-			name: "output file provider tagged",
-			bp: `
-			test {
-				name: "foo",
-				srcs: [":b{.tagged}"],
-			}`,
-			srcs: []string{buildDir + "/.intermediates/ofp/b/gen/c"},
-			rels: []string{"gen/c"},
-		},
-		{
 			name: "special characters glob",
 			bp: `
 			test {
@@ -1001,6 +881,12 @@ func TestPathsForModuleSrc(t *testing.T) {
 			rels: []string{"src_special/$"},
 		},
 	}
+
+	buildDir, err := ioutil.TempDir("", "soong_paths_for_module_src_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(buildDir)
 
 	testPathForModuleSrc(t, buildDir, tests)
 }
@@ -1038,26 +924,6 @@ func TestPathForModuleSrc(t *testing.T) {
 			rel: "src/a",
 		},
 		{
-			name: "output file provider",
-			bp: `
-			test {
-				name: "foo",
-				src: ":b",
-			}`,
-			src: buildDir + "/.intermediates/ofp/b/gen/b",
-			rel: "gen/b",
-		},
-		{
-			name: "output file provider tagged",
-			bp: `
-			test {
-				name: "foo",
-				src: ":b{.tagged}",
-			}`,
-			src: buildDir + "/.intermediates/ofp/b/gen/c",
-			rel: "gen/c",
-		},
-		{
 			name: "special characters glob",
 			bp: `
 			test {
@@ -1069,10 +935,22 @@ func TestPathForModuleSrc(t *testing.T) {
 		},
 	}
 
+	buildDir, err := ioutil.TempDir("", "soong_path_for_module_src_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(buildDir)
+
 	testPathForModuleSrc(t, buildDir, tests)
 }
 
 func TestPathsForModuleSrc_AllowMissingDependencies(t *testing.T) {
+	buildDir, err := ioutil.TempDir("", "soong_paths_for_module_src_allow_missing_dependencies_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(buildDir)
+
 	config := TestConfig(buildDir, nil)
 	config.TestProductVariables.Allow_missing_dependencies = proptools.BoolPtr(true)
 

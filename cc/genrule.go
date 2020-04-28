@@ -42,7 +42,5 @@ func genRuleFactory() android.Module {
 
 	android.InitAndroidArchModule(module, android.HostAndDeviceSupported, android.MultilibBoth)
 
-	android.InitApexModule(module)
-
 	return module
 }

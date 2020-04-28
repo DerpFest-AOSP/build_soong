@@ -63,41 +63,6 @@ func GatherRequiredDepsForTest(os android.OsType) string {
 		}
 
 		toolchain_library {
-			name: "libclang_rt.fuzzer-arm-android",
-			vendor_available: true,
-			recovery_available: true,
-			src: "",
-		}
-
-		toolchain_library {
-			name: "libclang_rt.fuzzer-aarch64-android",
-			vendor_available: true,
-			recovery_available: true,
-			src: "",
-		}
-
-		toolchain_library {
-			name: "libclang_rt.fuzzer-i686-android",
-			vendor_available: true,
-			recovery_available: true,
-			src: "",
-		}
-
-		toolchain_library {
-			name: "libclang_rt.fuzzer-x86_64-android",
-			vendor_available: true,
-			recovery_available: true,
-			src: "",
-		}
-
-		toolchain_library {
-			name: "libclang_rt.fuzzer-x86_64",
-			vendor_available: true,
-			recovery_available: true,
-			src: "",
-		}
-
-		toolchain_library {
 			name: "libgcc",
 			vendor_available: true,
 			recovery_available: true,
@@ -113,7 +78,7 @@ func GatherRequiredDepsForTest(os android.OsType) string {
 
 		cc_library {
 			name: "libc",
-			no_libcrt: true,
+			no_libgcc: true,
 			nocrt: true,
 			system_shared_libs: [],
 			recovery_available: true,
@@ -124,7 +89,7 @@ func GatherRequiredDepsForTest(os android.OsType) string {
 		}
 		cc_library {
 			name: "libm",
-			no_libcrt: true,
+			no_libgcc: true,
 			nocrt: true,
 			system_shared_libs: [],
 			recovery_available: true,
@@ -135,7 +100,7 @@ func GatherRequiredDepsForTest(os android.OsType) string {
 		}
 		cc_library {
 			name: "libdl",
-			no_libcrt: true,
+			no_libgcc: true,
 			nocrt: true,
 			system_shared_libs: [],
 			recovery_available: true,
@@ -145,20 +110,8 @@ func GatherRequiredDepsForTest(os android.OsType) string {
 			symbol_file: "",
 		}
 		cc_library {
-			name: "libft2",
-			no_libcrt: true,
-			nocrt: true,
-			system_shared_libs: [],
-			recovery_available: true,
-		}
-		llndk_library {
-			name: "libft2",
-			symbol_file: "",
-			vendor_available: false,
-		}
-		cc_library {
 			name: "libc++_static",
-			no_libcrt: true,
+			no_libgcc: true,
 			nocrt: true,
 			system_shared_libs: [],
 			stl: "none",
@@ -167,7 +120,7 @@ func GatherRequiredDepsForTest(os android.OsType) string {
 		}
 		cc_library {
 			name: "libc++",
-			no_libcrt: true,
+			no_libgcc: true,
 			nocrt: true,
 			system_shared_libs: [],
 			stl: "none",
@@ -179,18 +132,8 @@ func GatherRequiredDepsForTest(os android.OsType) string {
 			},
 		}
 		cc_library {
-			name: "libc++demangle",
-			no_libcrt: true,
-			nocrt: true,
-			system_shared_libs: [],
-			stl: "none",
-			host_supported: false,
-			vendor_available: true,
-			recovery_available: true,
-		}
-		cc_library {
 			name: "libunwind_llvm",
-			no_libcrt: true,
+			no_libgcc: true,
 			nocrt: true,
 			system_shared_libs: [],
 			stl: "none",
@@ -200,13 +143,6 @@ func GatherRequiredDepsForTest(os android.OsType) string {
 
 		cc_object {
 			name: "crtbegin_so",
-			recovery_available: true,
-			vendor_available: true,
-			stl: "none",
-		}
-
-		cc_object {
-			name: "crtbegin_dynamic",
 			recovery_available: true,
 			vendor_available: true,
 		}
@@ -221,7 +157,6 @@ func GatherRequiredDepsForTest(os android.OsType) string {
 			name: "crtend_so",
 			recovery_available: true,
 			vendor_available: true,
-			stl: "none",
 		}
 
 		cc_object {
@@ -247,65 +182,4 @@ func GatherRequiredDepsForTest(os android.OsType) string {
 		`
 	}
 	return ret
-}
-
-func CreateTestContext(bp string, fs map[string][]byte,
-	os android.OsType) *android.TestContext {
-
-	ctx := android.NewTestArchContext()
-	ctx.RegisterModuleType("cc_defaults", android.ModuleFactoryAdaptor(defaultsFactory))
-	ctx.RegisterModuleType("cc_binary", android.ModuleFactoryAdaptor(BinaryFactory))
-	ctx.RegisterModuleType("cc_binary_host", android.ModuleFactoryAdaptor(binaryHostFactory))
-	ctx.RegisterModuleType("cc_fuzz", android.ModuleFactoryAdaptor(FuzzFactory))
-	ctx.RegisterModuleType("cc_library", android.ModuleFactoryAdaptor(LibraryFactory))
-	ctx.RegisterModuleType("cc_library_shared", android.ModuleFactoryAdaptor(LibrarySharedFactory))
-	ctx.RegisterModuleType("cc_library_static", android.ModuleFactoryAdaptor(LibraryStaticFactory))
-	ctx.RegisterModuleType("cc_library_headers", android.ModuleFactoryAdaptor(LibraryHeaderFactory))
-	ctx.RegisterModuleType("cc_test", android.ModuleFactoryAdaptor(TestFactory))
-	ctx.RegisterModuleType("toolchain_library", android.ModuleFactoryAdaptor(ToolchainLibraryFactory))
-	ctx.RegisterModuleType("llndk_library", android.ModuleFactoryAdaptor(LlndkLibraryFactory))
-	ctx.RegisterModuleType("llndk_headers", android.ModuleFactoryAdaptor(llndkHeadersFactory))
-	ctx.RegisterModuleType("vendor_public_library", android.ModuleFactoryAdaptor(vendorPublicLibraryFactory))
-	ctx.RegisterModuleType("cc_object", android.ModuleFactoryAdaptor(ObjectFactory))
-	ctx.RegisterModuleType("filegroup", android.ModuleFactoryAdaptor(android.FileGroupFactory))
-	ctx.RegisterModuleType("vndk_prebuilt_shared", android.ModuleFactoryAdaptor(VndkPrebuiltSharedFactory))
-	ctx.RegisterModuleType("vndk_libraries_txt", android.ModuleFactoryAdaptor(VndkLibrariesTxtFactory))
-	ctx.PreDepsMutators(func(ctx android.RegisterMutatorsContext) {
-		ctx.BottomUp("image", ImageMutator).Parallel()
-		ctx.BottomUp("link", LinkageMutator).Parallel()
-		ctx.BottomUp("vndk", VndkMutator).Parallel()
-		ctx.BottomUp("version", VersionMutator).Parallel()
-		ctx.BottomUp("begin", BeginMutator).Parallel()
-	})
-	ctx.PostDepsMutators(func(ctx android.RegisterMutatorsContext) {
-		ctx.TopDown("double_loadable", checkDoubleLoadableLibraries).Parallel()
-	})
-	ctx.PreArchMutators(android.RegisterDefaultsPreArchMutators)
-	ctx.RegisterSingletonType("vndk-snapshot", android.SingletonFactoryAdaptor(VndkSnapshotSingleton))
-
-	// add some modules that are required by the compiler and/or linker
-	bp = bp + GatherRequiredDepsForTest(os)
-
-	mockFS := map[string][]byte{
-		"Android.bp":  []byte(bp),
-		"foo.c":       nil,
-		"foo.lds":     nil,
-		"bar.c":       nil,
-		"baz.c":       nil,
-		"baz.o":       nil,
-		"a.proto":     nil,
-		"b.aidl":      nil,
-		"sub/c.aidl":  nil,
-		"my_include":  nil,
-		"foo.map.txt": nil,
-		"liba.so":     nil,
-	}
-
-	for k, v := range fs {
-		mockFS[k] = v
-	}
-
-	ctx.MockFileSystem(mockFS)
-
-	return ctx
 }

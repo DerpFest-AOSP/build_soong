@@ -89,9 +89,7 @@ func (d ExtraDeps) Set(v string) error {
 	return nil
 }
 
-var extraStaticLibs = make(ExtraDeps)
-
-var extraLibs = make(ExtraDeps)
+var extraDeps = make(ExtraDeps)
 
 type Exclude map[string]bool
 
@@ -124,29 +122,8 @@ func (n HostModuleNames) Set(v string) error {
 
 var hostModuleNames = HostModuleNames{}
 
-type HostAndDeviceModuleNames map[string]bool
-
-func (n HostAndDeviceModuleNames) IsHostAndDeviceModule(groupId string, artifactId string) bool {
-	_, found := n[groupId+":"+artifactId]
-
-	return found
-}
-
-func (n HostAndDeviceModuleNames) String() string {
-	return ""
-}
-
-func (n HostAndDeviceModuleNames) Set(v string) error {
-	n[v] = true
-	return nil
-}
-
-var hostAndDeviceModuleNames = HostAndDeviceModuleNames{}
-
 var sdkVersion string
 var useVersion string
-var staticDeps bool
-var jetifier bool
 
 func InList(s string, list []string) bool {
 	for _, l := range list {
@@ -209,14 +186,10 @@ func (p Pom) IsDeviceModule() bool {
 	return !p.IsHostModule()
 }
 
-func (p Pom) IsHostAndDeviceModule() bool {
-	return hostAndDeviceModuleNames.IsHostAndDeviceModule(p.GroupId, p.ArtifactId)
-}
-
 func (p Pom) ModuleType() string {
 	if p.IsAar() {
 		return "android_library"
-	} else if p.IsHostModule() && !p.IsHostAndDeviceModule() {
+	} else if p.IsHostModule() {
 		return "java_library_host"
 	} else {
 		return "java_library_static"
@@ -226,7 +199,7 @@ func (p Pom) ModuleType() string {
 func (p Pom) ImportModuleType() string {
 	if p.IsAar() {
 		return "android_library_import"
-	} else if p.IsHostModule() && !p.IsHostAndDeviceModule() {
+	} else if p.IsHostModule() {
 		return "java_import_host"
 	} else {
 		return "java_import"
@@ -256,12 +229,8 @@ func (p Pom) BpAarDeps() []string {
 	return p.BpDeps("aar", []string{"compile", "runtime"})
 }
 
-func (p Pom) BpExtraStaticLibs() []string {
-	return extraStaticLibs[p.BpName()]
-}
-
-func (p Pom) BpExtraLibs() []string {
-	return extraLibs[p.BpName()]
+func (p Pom) BpExtraDeps() []string {
+	return extraDeps[p.BpName()]
 }
 
 // BpDeps obtains dependencies filtered by type and scope. The results of this
@@ -280,10 +249,6 @@ func (p Pom) BpDeps(typeExt string, scopes []string) []string {
 
 func (p Pom) SdkVersion() string {
 	return sdkVersion
-}
-
-func (p Pom) Jetifier() bool {
-	return jetifier
 }
 
 func (p *Pom) FixDeps(modules map[string]*Pom) {
@@ -357,70 +322,19 @@ func (p *Pom) ExtractMinSdkVersion() error {
 
 var bpTemplate = template.Must(template.New("bp").Parse(`
 {{.ImportModuleType}} {
-    name: "{{.BpName}}",
-    {{.ImportProperty}}: ["{{.ArtifactFile}}"],
-    sdk_version: "{{.SdkVersion}}",
-    {{- if .Jetifier}}
-    jetifier: true,
-    {{- end}}
-    {{- if .IsHostAndDeviceModule}}
-    host_supported: true,
-    {{- end}}
-    {{- if .IsAar}}
-    min_sdk_version: "{{.MinSdkVersion}}",
-    static_libs: [
-        {{- range .BpJarDeps}}
-        "{{.}}",
-        {{- end}}
-        {{- range .BpAarDeps}}
-        "{{.}}",
-        {{- end}}
-        {{- range .BpExtraStaticLibs}}
-        "{{.}}",
-        {{- end}}
-    ],
-    {{- if .BpExtraLibs}}
-    libs: [
-        {{- range .BpExtraLibs}}
-        "{{.}}",
-        {{- end}}
-    ],
-    {{- end}}
-    {{- end}}
-}
-`))
-
-var bpDepsTemplate = template.Must(template.New("bp").Parse(`
-{{.ImportModuleType}} {
     name: "{{.BpName}}-nodeps",
     {{.ImportProperty}}: ["{{.ArtifactFile}}"],
     sdk_version: "{{.SdkVersion}}",
-    {{- if .Jetifier}}
-    jetifier: true,
-    {{- end}}
-    {{- if .IsHostAndDeviceModule}}
-    host_supported: true,
-    {{- end}}
     {{- if .IsAar}}
     min_sdk_version: "{{.MinSdkVersion}}",
     static_libs: [
-        {{- range .BpJarDeps}}
-        "{{.}}",
-        {{- end}}
         {{- range .BpAarDeps}}
         "{{.}}",
         {{- end}}
-        {{- range .BpExtraStaticLibs}}
+        {{- range .BpExtraDeps}}
         "{{.}}",
         {{- end}}
     ],
-    {{- if .BpExtraLibs}}
-    libs: [
-        {{- range .BpExtraLibs}}
-        "{{.}}",
-        {{- end}}
-    ],
-    {{- end}}
     {{- end}}
 }
 
@@ -428,9 +342,6 @@ var bpDepsTemplate = template.Must(template.New("bp").Parse(`
     name: "{{.BpName}}",
     {{- if .IsDeviceModule}}
     sdk_version: "{{.SdkVersion}}",
-    {{- if .IsHostAndDeviceModule}}
-    host_supported: true,
-    {{- end}}
     {{- if .IsAar}}
     min_sdk_version: "{{.MinSdkVersion}}",
     manifest: "manifests/{{.BpName}}/AndroidManifest.xml",
@@ -438,23 +349,16 @@ var bpDepsTemplate = template.Must(template.New("bp").Parse(`
     {{- end}}
     static_libs: [
         "{{.BpName}}-nodeps",
-        {{- range .BpJarDeps}}
+         {{- range .BpJarDeps}}
         "{{.}}",
         {{- end}}
         {{- range .BpAarDeps}}
         "{{.}}",
         {{- end}}
-        {{- range .BpExtraStaticLibs}}
+        {{- range .BpExtraDeps}}
         "{{.}}",
         {{- end}}
     ],
-    {{- if .BpExtraLibs}}
-    libs: [
-        {{- range .BpExtraLibs}}
-        "{{.}}",
-        {{- end}}
-    ],
-    {{- end}}
     java_version: "1.7",
 }
 `))
@@ -554,7 +458,7 @@ func main() {
 The tool will extract the necessary information from *.pom files to create an Android.bp whose
 aar libraries can be linked against when using AAPT2.
 
-Usage: %s [--rewrite <regex>=<replace>] [-exclude <module>] [--extra-static-libs <module>=<module>[,<module>]] [--extra-libs <module>=<module>[,<module>]] [<dir>] [-regen <file>]
+Usage: %s [--rewrite <regex>=<replace>] [-exclude <module>] [--extra-deps <module>=<module>[,<module>]] [<dir>] [-regen <file>]
 
   -rewrite <regex>=<replace>
      rewrite can be used to specify mappings between Maven projects and Android.bp modules. The -rewrite
@@ -564,21 +468,15 @@ Usage: %s [--rewrite <regex>=<replace>] [-exclude <module>] [--extra-static-libs
      the Android.bp module name using <replace>. If no matches are found, <artifactId> is used.
   -exclude <module>
      Don't put the specified module in the Android.bp file.
-  -extra-static-libs <module>=<module>[,<module>]
-     Some Android.bp modules have transitive static dependencies that must be specified when they
-     are depended upon (like android-support-v7-mediarouter requires android-support-v7-appcompat).
-     This may be specified multiple times to declare these dependencies.
-  -extra-libs <module>=<module>[,<module>]
-     Some Android.bp modules have transitive runtime dependencies that must be specified when they
-     are depended upon (like androidx.test.rules requires android.test.base).
+  -extra-deps <module>=<module>[,<module>]
+     Some Android.bp modules have transitive dependencies that must be specified when they are
+     depended upon (like android-support-v7-mediarouter requires android-support-v7-appcompat).
      This may be specified multiple times to declare these dependencies.
   -sdk-version <version>
-     Sets sdk_version: "<version>" for all modules.
+     Sets LOCAL_SDK_VERSION := <version> for all modules.
   -use-version <version>
      If the maven directory contains multiple versions of artifacts and their pom files,
      -use-version can be used to only write Android.bp files for a specific version of those artifacts.
-  -jetifier
-     Sets jetifier: true for all modules.
   <dir>
      The directory to search for *.pom files under.
      The contents are written to stdout, to be put in the current directory (often as Android.bp)
@@ -592,15 +490,12 @@ Usage: %s [--rewrite <regex>=<replace>] [-exclude <module>] [--extra-static-libs
 	var regen string
 
 	flag.Var(&excludes, "exclude", "Exclude module")
-	flag.Var(&extraStaticLibs, "extra-static-libs", "Extra static dependencies needed when depending on a module")
-	flag.Var(&extraLibs, "extra-libs", "Extra runtime dependencies needed when depending on a module")
+	flag.Var(&extraDeps, "extra-deps", "Extra dependencies needed when depending on a module")
 	flag.Var(&rewriteNames, "rewrite", "Regex(es) to rewrite artifact names")
 	flag.Var(&hostModuleNames, "host", "Specifies that the corresponding module (specified in the form 'module.group:module.artifact') is a host module")
-	flag.Var(&hostAndDeviceModuleNames, "host-and-device", "Specifies that the corresponding module (specified in the form 'module.group:module.artifact') is both a host and device module.")
-	flag.StringVar(&sdkVersion, "sdk-version", "", "What to write to sdk_version")
+	flag.StringVar(&sdkVersion, "sdk-version", "", "What to write to LOCAL_SDK_VERSION")
 	flag.StringVar(&useVersion, "use-version", "", "Only read artifacts of a specific version")
-	flag.BoolVar(&staticDeps, "static-deps", false, "Statically include direct dependencies")
-	flag.BoolVar(&jetifier, "jetifier", false, "Sets jetifier: true on all modules")
+	flag.Bool("static-deps", false, "Ignored")
 	flag.StringVar(&regen, "regen", "", "Rewrite specified file")
 	flag.Parse()
 
@@ -714,11 +609,7 @@ Usage: %s [--rewrite <regex>=<replace>] [-exclude <module>] [--extra-static-libs
 
 	for _, pom := range poms {
 		var err error
-		if staticDeps {
-			err = bpDepsTemplate.Execute(buf, pom)
-		} else {
-			err = bpTemplate.Execute(buf, pom)
-		}
+		err = bpTemplate.Execute(buf, pom)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "Error writing", pom.PomFile, pom.BpName(), err)
 			os.Exit(1)

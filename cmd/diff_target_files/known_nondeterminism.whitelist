@@ -3,6 +3,8 @@
 [
   {
     "Paths": [
+       // b/120039850
+      "system/framework/oat/*/services.art"
     ]
   }
 ]

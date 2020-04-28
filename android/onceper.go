@@ -40,8 +40,7 @@ func (once *OncePer) maybeWaitFor(key OnceKey, value interface{}) interface{} {
 }
 
 // Once computes a value the first time it is called with a given key per OncePer, and returns the
-// value without recomputing when called with the same key.  key must be hashable.  If value panics
-// the panic will be propagated but the next call to Once with the same key will return nil.
+// value without recomputing when called with the same key.  key must be hashable.
 func (once *OncePer) Once(key OnceKey, value func() interface{}) interface{} {
 	// Fast path: check if the key is already in the map
 	if v, ok := once.values.Load(key); ok {
@@ -55,15 +54,10 @@ func (once *OncePer) Once(key OnceKey, value func() interface{}) interface{} {
 		return once.maybeWaitFor(key, v)
 	}
 
-	// The waiter is inserted, call the value constructor, store it, and signal the waiter.  Use defer in case
-	// the function panics.
-	var v interface{}
-	defer func() {
-		once.values.Store(key, v)
-		close(waiter)
-	}()
-
-	v = value()
+	// The waiter is inserted, call the value constructor, store it, and signal the waiter
+	v := value()
+	once.values.Store(key, v)
+	close(waiter)
 
 	return v
 }
@@ -93,16 +87,6 @@ func (once *OncePer) Once2StringSlice(key OnceKey, value func() ([]string, []str
 		return s
 	}).(twoStringSlice)
 	return s[0], s[1]
-}
-
-// OncePath is the same as Once, but returns the value cast to a Path
-func (once *OncePer) OncePath(key OnceKey, value func() Path) Path {
-	return once.Once(key, func() interface{} { return value() }).(Path)
-}
-
-// OncePath is the same as Once, but returns the value cast to a SourcePath
-func (once *OncePer) OnceSourcePath(key OnceKey, value func() SourcePath) SourcePath {
-	return once.Once(key, func() interface{} { return value() }).(SourcePath)
 }
 
 // OnceKey is an opaque type to be used as the key in calls to Once.
