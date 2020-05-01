@@ -276,6 +276,7 @@ func TestUpdatableApps(t *testing.T) {
 					name: "foo",
 					srcs: ["a.java"],
 					sdk_version: "29",
+					min_sdk_version: "29",
 					updatable: true,
 				}`,
 		},
@@ -285,6 +286,7 @@ func TestUpdatableApps(t *testing.T) {
 					name: "foo",
 					srcs: ["a.java"],
 					sdk_version: "system_29",
+					min_sdk_version: "29",
 					updatable: true,
 				}`,
 		},
@@ -294,6 +296,7 @@ func TestUpdatableApps(t *testing.T) {
 					name: "foo",
 					srcs: ["a.java"],
 					sdk_version: "current",
+					min_sdk_version: "29",
 					updatable: true,
 				}`,
 		},
@@ -303,6 +306,7 @@ func TestUpdatableApps(t *testing.T) {
 					name: "foo",
 					srcs: ["a.java"],
 					sdk_version: "system_current",
+					min_sdk_version: "29",
 					updatable: true,
 				}`,
 		},
@@ -312,6 +316,7 @@ func TestUpdatableApps(t *testing.T) {
 					name: "foo",
 					srcs: ["a.java"],
 					sdk_version: "module_current",
+					min_sdk_version: "29",
 					updatable: true,
 				}`,
 		},
@@ -321,6 +326,7 @@ func TestUpdatableApps(t *testing.T) {
 					name: "foo",
 					srcs: ["a.java"],
 					sdk_version: "core_current",
+					min_sdk_version: "29",
 					updatable: true,
 				}`,
 		},
@@ -330,6 +336,7 @@ func TestUpdatableApps(t *testing.T) {
 					name: "foo",
 					srcs: ["a.java"],
 					platform_apis: true,
+					min_sdk_version: "29",
 					updatable: true,
 				}`,
 			expectedError: "Updatable apps must use stable SDKs",
@@ -340,6 +347,7 @@ func TestUpdatableApps(t *testing.T) {
 					name: "foo",
 					srcs: ["a.java"],
 					sdk_version: "core_platform",
+					min_sdk_version: "29",
 					updatable: true,
 				}`,
 			expectedError: "Updatable apps must use stable SDKs",
@@ -350,8 +358,19 @@ func TestUpdatableApps(t *testing.T) {
 					name: "foo",
 					srcs: ["a.java"],
 					updatable: true,
+					min_sdk_version: "29",
 				}`,
 			expectedError: "Updatable apps must use stable SDK",
+		},
+		{
+			name: "Must specify min_sdk_version",
+			bp: `android_app {
+					name: "app_without_min_sdk_version",
+					srcs: ["a.java"],
+					sdk_version: "29",
+					updatable: true,
+				}`,
+			expectedError: "updatable apps must set min_sdk_version.",
 		},
 	}
 
@@ -2470,6 +2489,7 @@ func TestRuntimeResourceOverlay(t *testing.T) {
 			certificate: "platform",
 			product_specific: true,
 			theme: "faza",
+			overrides: ["foo"],
 		}
 
 		android_library {
@@ -2517,14 +2537,15 @@ func TestRuntimeResourceOverlay(t *testing.T) {
 	if expected != signingFlag {
 		t.Errorf("Incorrect signing flags, expected: %q, got: %q", expected, signingFlag)
 	}
-	path := android.AndroidMkEntriesForTest(t, config, "", m.Module())[0].EntryMap["LOCAL_CERTIFICATE"]
+	androidMkEntries := android.AndroidMkEntriesForTest(t, config, "", m.Module())[0]
+	path := androidMkEntries.EntryMap["LOCAL_CERTIFICATE"]
 	expectedPath := []string{"build/make/target/product/security/platform.x509.pem"}
 	if !reflect.DeepEqual(path, expectedPath) {
 		t.Errorf("Unexpected LOCAL_CERTIFICATE value: %v, expected: %v", path, expectedPath)
 	}
 
 	// Check device location.
-	path = android.AndroidMkEntriesForTest(t, config, "", m.Module())[0].EntryMap["LOCAL_MODULE_PATH"]
+	path = androidMkEntries.EntryMap["LOCAL_MODULE_PATH"]
 	expectedPath = []string{"/tmp/target/product/test_device/product/overlay"}
 	if !reflect.DeepEqual(path, expectedPath) {
 		t.Errorf("Unexpected LOCAL_MODULE_PATH value: %v, expected: %v", path, expectedPath)
@@ -2532,8 +2553,149 @@ func TestRuntimeResourceOverlay(t *testing.T) {
 
 	// A themed module has a different device location
 	m = ctx.ModuleForTests("foo_themed", "android_common")
-	path = android.AndroidMkEntriesForTest(t, config, "", m.Module())[0].EntryMap["LOCAL_MODULE_PATH"]
+	androidMkEntries = android.AndroidMkEntriesForTest(t, config, "", m.Module())[0]
+	path = androidMkEntries.EntryMap["LOCAL_MODULE_PATH"]
 	expectedPath = []string{"/tmp/target/product/test_device/product/overlay/faza"}
+	if !reflect.DeepEqual(path, expectedPath) {
+		t.Errorf("Unexpected LOCAL_MODULE_PATH value: %v, expected: %v", path, expectedPath)
+	}
+
+	overrides := androidMkEntries.EntryMap["LOCAL_OVERRIDES_PACKAGES"]
+	expectedOverrides := []string{"foo"}
+	if !reflect.DeepEqual(overrides, expectedOverrides) {
+		t.Errorf("Unexpected LOCAL_OVERRIDES_PACKAGES value: %v, expected: %v", overrides, expectedOverrides)
+	}
+}
+
+func TestOverrideRuntimeResourceOverlay(t *testing.T) {
+	ctx, _ := testJava(t, `
+		runtime_resource_overlay {
+			name: "foo_overlay",
+			certificate: "platform",
+			product_specific: true,
+			sdk_version: "current",
+		}
+
+		override_runtime_resource_overlay {
+			name: "bar_overlay",
+			base: "foo_overlay",
+			package_name: "com.android.bar.overlay",
+			target_package_name: "com.android.bar",
+		}
+		`)
+
+	expectedVariants := []struct {
+		moduleName        string
+		variantName       string
+		apkPath           string
+		overrides         []string
+		targetVariant     string
+		packageFlag       string
+		targetPackageFlag string
+	}{
+		{
+			variantName:       "android_common",
+			apkPath:           "/target/product/test_device/product/overlay/foo_overlay.apk",
+			overrides:         nil,
+			targetVariant:     "android_common",
+			packageFlag:       "",
+			targetPackageFlag: "",
+		},
+		{
+			variantName:       "android_common_bar_overlay",
+			apkPath:           "/target/product/test_device/product/overlay/bar_overlay.apk",
+			overrides:         []string{"foo_overlay"},
+			targetVariant:     "android_common_bar",
+			packageFlag:       "com.android.bar.overlay",
+			targetPackageFlag: "com.android.bar",
+		},
+	}
+	for _, expected := range expectedVariants {
+		variant := ctx.ModuleForTests("foo_overlay", expected.variantName)
+
+		// Check the final apk name
+		outputs := variant.AllOutputs()
+		expectedApkPath := buildDir + expected.apkPath
+		found := false
+		for _, o := range outputs {
+			if o == expectedApkPath {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("Can't find %q in output files.\nAll outputs:%v", expectedApkPath, outputs)
+		}
+
+		// Check if the overrides field values are correctly aggregated.
+		mod := variant.Module().(*RuntimeResourceOverlay)
+		if !reflect.DeepEqual(expected.overrides, mod.properties.Overrides) {
+			t.Errorf("Incorrect overrides property value, expected: %q, got: %q",
+				expected.overrides, mod.properties.Overrides)
+		}
+
+		// Check aapt2 flags.
+		res := variant.Output("package-res.apk")
+		aapt2Flags := res.Args["flags"]
+		checkAapt2LinkFlag(t, aapt2Flags, "rename-manifest-package", expected.packageFlag)
+		checkAapt2LinkFlag(t, aapt2Flags, "rename-overlay-target-package", expected.targetPackageFlag)
+	}
+}
+
+func TestRuntimeResourceOverlay_JavaDefaults(t *testing.T) {
+	ctx, config := testJava(t, `
+		java_defaults {
+			name: "rro_defaults",
+			theme: "default_theme",
+			product_specific: true,
+			aaptflags: ["--keep-raw-values"],
+		}
+
+		runtime_resource_overlay {
+			name: "foo_with_defaults",
+			defaults: ["rro_defaults"],
+		}
+
+		runtime_resource_overlay {
+			name: "foo_barebones",
+		}
+		`)
+
+	//
+	// RRO module with defaults
+	//
+	m := ctx.ModuleForTests("foo_with_defaults", "android_common")
+
+	// Check AAPT2 link flags.
+	aapt2Flags := strings.Split(m.Output("package-res.apk").Args["flags"], " ")
+	expectedFlags := []string{"--keep-raw-values", "--no-resource-deduping", "--no-resource-removal"}
+	absentFlags := android.RemoveListFromList(expectedFlags, aapt2Flags)
+	if len(absentFlags) > 0 {
+		t.Errorf("expected values, %q are missing in aapt2 link flags, %q", absentFlags, aapt2Flags)
+	}
+
+	// Check device location.
+	path := android.AndroidMkEntriesForTest(t, config, "", m.Module())[0].EntryMap["LOCAL_MODULE_PATH"]
+	expectedPath := []string{"/tmp/target/product/test_device/product/overlay/default_theme"}
+	if !reflect.DeepEqual(path, expectedPath) {
+		t.Errorf("Unexpected LOCAL_MODULE_PATH value: %q, expected: %q", path, expectedPath)
+	}
+
+	//
+	// RRO module without defaults
+	//
+	m = ctx.ModuleForTests("foo_barebones", "android_common")
+
+	// Check AAPT2 link flags.
+	aapt2Flags = strings.Split(m.Output("package-res.apk").Args["flags"], " ")
+	unexpectedFlags := "--keep-raw-values"
+	if inList(unexpectedFlags, aapt2Flags) {
+		t.Errorf("unexpected value, %q is present in aapt2 link flags, %q", unexpectedFlags, aapt2Flags)
+	}
+
+	// Check device location.
+	path = android.AndroidMkEntriesForTest(t, config, "", m.Module())[0].EntryMap["LOCAL_MODULE_PATH"]
+	expectedPath = []string{"/tmp/target/product/test_device/system/overlay"}
 	if !reflect.DeepEqual(path, expectedPath) {
 		t.Errorf("Unexpected LOCAL_MODULE_PATH value: %v, expected: %v", path, expectedPath)
 	}

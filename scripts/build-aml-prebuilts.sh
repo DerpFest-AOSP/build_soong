@@ -50,6 +50,7 @@ SOONG_OUT=${OUT_DIR}/soong
 mkdir -p ${SOONG_OUT}
 SOONG_VARS=${SOONG_OUT}/soong.variables
 
+# We enable bionic linux builds as ART also needs prebuilts for it.
 cat > ${SOONG_VARS}.new << EOF
 {
     "Platform_sdk_version": ${PLATFORM_SDK_VERSION},
@@ -59,6 +60,8 @@ cat > ${SOONG_VARS}.new << EOF
     "DeviceName": "generic_arm64",
     "HostArch": "x86_64",
     "HostSecondaryArch": "x86",
+    "CrossHost": "linux_bionic",
+    "CrossHostArch": "x86_64",
     "Aml_abis": true,
 
     "UseGoma": ${USE_GOMA}
@@ -73,4 +76,7 @@ else
   mv ${SOONG_VARS}.new ${SOONG_VARS}
 fi
 
-m --skip-make "$@"
+# We use force building LLVM components flag (even though we actually don't
+# compile them) because we don't have bionic host prebuilts
+# for them.
+FORCE_BUILD_LLVM_COMPONENTS=true m --skip-make "$@"

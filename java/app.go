@@ -45,6 +45,7 @@ func RegisterAppBuildComponents(ctx android.RegistrationContext) {
 	ctx.RegisterModuleType("android_app_certificate", AndroidAppCertificateFactory)
 	ctx.RegisterModuleType("override_android_app", OverrideAndroidAppModuleFactory)
 	ctx.RegisterModuleType("override_android_test", OverrideAndroidTestModuleFactory)
+	ctx.RegisterModuleType("override_runtime_resource_overlay", OverrideRuntimeResourceOverlayModuleFactory)
 	ctx.RegisterModuleType("android_app_import", AndroidAppImportFactory)
 	ctx.RegisterModuleType("android_test_import", AndroidTestImportFactory)
 	ctx.RegisterModuleType("runtime_resource_overlay", RuntimeResourceOverlayFactory)
@@ -112,7 +113,9 @@ type appProperties struct {
 	IsCoverageVariant bool `blueprint:"mutated"`
 
 	// Whether this app is considered mainline updatable or not. When set to true, this will enforce
-	// additional rules for making sure that the APK is truly updatable. Default is false.
+	// additional rules to make sure an app can safely be updated. Default is false.
+	// Prefer using other specific properties if build behaviour must be changed; avoid using this
+	// flag for anything but neverallow rules (unless the behaviour change is invisible to owners).
 	Updatable *bool
 }
 
@@ -127,6 +130,15 @@ type overridableAppProperties struct {
 
 	// the logging parent of this app.
 	Logging_parent *string
+}
+
+// runtime_resource_overlay properties that can be overridden by override_runtime_resource_overlay
+type OverridableRuntimeResourceOverlayProperties struct {
+	// the package name of this app. The package name in the manifest file is used if one was not given.
+	Package_name *string
+
+	// the target package name of this overlay app. The target package name in the manifest file is used if one was not given.
+	Target_package_name *string
 }
 
 type AndroidApp struct {
@@ -261,6 +273,9 @@ func (a *AndroidApp) checkAppSdkVersions(ctx android.ModuleContext) {
 	if Bool(a.appProperties.Updatable) {
 		if !a.sdkVersion().stable() {
 			ctx.PropertyErrorf("sdk_version", "Updatable apps must use stable SDKs, found %v", a.sdkVersion())
+		}
+		if String(a.deviceProperties.Min_sdk_version) == "" {
+			ctx.PropertyErrorf("updatable", "updatable apps must set min_sdk_version.")
 		}
 	}
 
@@ -748,6 +763,7 @@ func AndroidAppFactory() android.Module {
 }
 
 type appTestProperties struct {
+	// The name of the android_app module that the tests will run against.
 	Instrumentation_for *string
 
 	// if specified, the instrumentation target package name in the manifest is overwritten by it.
@@ -983,9 +999,31 @@ func OverrideAndroidTestModuleFactory() android.Module {
 	return m
 }
 
+type OverrideRuntimeResourceOverlay struct {
+	android.ModuleBase
+	android.OverrideModuleBase
+}
+
+func (i *OverrideRuntimeResourceOverlay) GenerateAndroidBuildActions(ctx android.ModuleContext) {
+	// All the overrides happen in the base module.
+	// TODO(jungjw): Check the base module type.
+}
+
+// override_runtime_resource_overlay is used to create a module based on another
+// runtime_resource_overlay module by overriding some of its properties.
+func OverrideRuntimeResourceOverlayModuleFactory() android.Module {
+	m := &OverrideRuntimeResourceOverlay{}
+	m.AddProperties(&OverridableRuntimeResourceOverlayProperties{})
+
+	android.InitAndroidMultiTargetsArchModule(m, android.DeviceSupported, android.MultilibCommon)
+	android.InitOverrideModule(m)
+	return m
+}
+
 type AndroidAppImport struct {
 	android.ModuleBase
 	android.DefaultableModuleBase
+	android.ApexModuleBase
 	prebuilt android.Prebuilt
 
 	properties   AndroidAppImportProperties
@@ -1223,7 +1261,9 @@ func (a *AndroidAppImport) generateAndroidBuildActions(ctx android.ModuleContext
 
 	// TODO: Optionally compress the output apk.
 
-	a.installPath = ctx.InstallFile(installDir, apkFilename, a.outputFile)
+	if a.IsForPlatform() {
+		a.installPath = ctx.InstallFile(installDir, apkFilename, a.outputFile)
+	}
 
 	// TODO: androidmk converter jni libs
 }
@@ -1274,6 +1314,13 @@ func (a *AndroidAppImport) Privileged() bool {
 	return Bool(a.properties.Privileged)
 }
 
+func (a *AndroidAppImport) DepIsInSameApex(ctx android.BaseModuleContext, dep android.Module) bool {
+	// android_app_import might have extra dependencies via uses_libs property.
+	// Don't track the dependency as we don't automatically add those libraries
+	// to the classpath. It should be explicitly added to java_libs property of APEX
+	return false
+}
+
 func createVariantGroupType(variants []string, variantGroupName string) reflect.Type {
 	props := reflect.TypeOf((*AndroidAppImportProperties)(nil))
 
@@ -1320,6 +1367,7 @@ func AndroidAppImportFactory() android.Module {
 		module.processVariants(ctx)
 	})
 
+	android.InitApexModule(module)
 	InitJavaModule(module, android.DeviceSupported)
 	android.InitSingleSourcePrebuiltModule(module, &module.properties, "Apk")
 
@@ -1357,6 +1405,7 @@ func AndroidTestImportFactory() android.Module {
 		module.processVariants(ctx)
 	})
 
+	android.InitApexModule(module)
 	InitJavaModule(module, android.DeviceSupported)
 	android.InitSingleSourcePrebuiltModule(module, &module.properties, "Apk")
 
@@ -1366,9 +1415,11 @@ func AndroidTestImportFactory() android.Module {
 type RuntimeResourceOverlay struct {
 	android.ModuleBase
 	android.DefaultableModuleBase
+	android.OverridableModuleBase
 	aapt
 
-	properties RuntimeResourceOverlayProperties
+	properties            RuntimeResourceOverlayProperties
+	overridableProperties OverridableRuntimeResourceOverlayProperties
 
 	certificate Certificate
 
@@ -1398,6 +1449,22 @@ type RuntimeResourceOverlayProperties struct {
 
 	// list of android_app modules whose resources are extracted and linked against
 	Resource_libs []string
+
+	// Names of modules to be overridden. Listed modules can only be other overlays
+	// (in Make or Soong).
+	// This does not completely prevent installation of the overridden overlays, but if both
+	// overlays would be installed by default (in PRODUCT_PACKAGES) the other overlay will be removed
+	// from PRODUCT_PACKAGES.
+	Overrides []string
+}
+
+// RuntimeResourceOverlayModule interface is used by the apex package to gather information from
+// a RuntimeResourceOverlay module.
+type RuntimeResourceOverlayModule interface {
+	android.Module
+	OutputFile() android.Path
+	Certificate() Certificate
+	Theme() string
 }
 
 func (r *RuntimeResourceOverlay) DepsMutator(ctx android.BottomUpMutatorContext) {
@@ -1419,7 +1486,21 @@ func (r *RuntimeResourceOverlay) GenerateAndroidBuildActions(ctx android.ModuleC
 	// Compile and link resources
 	r.aapt.hasNoCode = true
 	// Do not remove resources without default values nor dedupe resource configurations with the same value
-	r.aapt.buildActions(ctx, r, "--no-resource-deduping", "--no-resource-removal")
+	aaptLinkFlags := []string{"--no-resource-deduping", "--no-resource-removal"}
+	// Allow the override of "package name" and "overlay target package name"
+	manifestPackageName, overridden := ctx.DeviceConfig().OverrideManifestPackageNameFor(ctx.ModuleName())
+	if overridden || r.overridableProperties.Package_name != nil {
+		// The product override variable has a priority over the package_name property.
+		if !overridden {
+			manifestPackageName = *r.overridableProperties.Package_name
+		}
+		aaptLinkFlags = append(aaptLinkFlags, "--rename-manifest-package "+manifestPackageName)
+	}
+	if r.overridableProperties.Target_package_name != nil {
+		aaptLinkFlags = append(aaptLinkFlags,
+			"--rename-overlay-target-package "+*r.overridableProperties.Target_package_name)
+	}
+	r.aapt.buildActions(ctx, r, aaptLinkFlags...)
 
 	// Sign the built package
 	_, certificates := collectAppDeps(ctx, false, false)
@@ -1452,16 +1533,30 @@ func (r *RuntimeResourceOverlay) targetSdkVersion() sdkSpec {
 	return r.sdkVersion()
 }
 
+func (r *RuntimeResourceOverlay) Certificate() Certificate {
+	return r.certificate
+}
+
+func (r *RuntimeResourceOverlay) OutputFile() android.Path {
+	return r.outputFile
+}
+
+func (r *RuntimeResourceOverlay) Theme() string {
+	return String(r.properties.Theme)
+}
+
 // runtime_resource_overlay generates a resource-only apk file that can overlay application and
 // system resources at run time.
 func RuntimeResourceOverlayFactory() android.Module {
 	module := &RuntimeResourceOverlay{}
 	module.AddProperties(
 		&module.properties,
-		&module.aaptProperties)
+		&module.aaptProperties,
+		&module.overridableProperties)
 
-	InitJavaModule(module, android.DeviceSupported)
-
+	android.InitAndroidMultiTargetsArchModule(module, android.DeviceSupported, android.MultilibCommon)
+	android.InitDefaultableModule(module)
+	android.InitOverridableModule(module, &module.properties.Overrides)
 	return module
 }
 

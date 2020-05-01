@@ -215,25 +215,6 @@ func TestProcMacroDeviceDeps(t *testing.T) {
 			srcs: ["foo.rs"],
 			crate_name: "bar",
 		}
-		// Make a dummy libstd to let resolution go through
-		rust_library_dylib {
-			name: "libstd",
-			crate_name: "std",
-			srcs: ["foo.rs"],
-			no_stdlibs: true,
-		}
-		rust_library_dylib {
-			name: "libterm",
-			crate_name: "term",
-			srcs: ["foo.rs"],
-			no_stdlibs: true,
-		}
-		rust_library_dylib {
-			name: "libtest",
-			crate_name: "test",
-			srcs: ["foo.rs"],
-			no_stdlibs: true,
-		}
 		rust_proc_macro {
 			name: "libpm",
 			rlibs: ["libbar"],
@@ -259,11 +240,24 @@ func TestNoStdlibs(t *testing.T) {
 		rust_binary {
 			name: "fizz-buzz",
 			srcs: ["foo.rs"],
-                        no_stdlibs: true,
+			no_stdlibs: true,
 		}`)
 	module := ctx.ModuleForTests("fizz-buzz", "android_arm64_armv8-a").Module().(*Module)
 
 	if android.InList("libstd", module.Properties.AndroidMkDylibs) {
 		t.Errorf("no_stdlibs did not suppress dependency on libstd")
 	}
+}
+
+// Test that libraries provide both 32-bit and 64-bit variants.
+func TestMultilib(t *testing.T) {
+	ctx := testRust(t, `
+		rust_library_rlib {
+			name: "libfoo",
+			srcs: ["foo.rs"],
+			crate_name: "foo",
+		}`)
+
+	_ = ctx.ModuleForTests("libfoo", "android_arm64_armv8-a_rlib")
+	_ = ctx.ModuleForTests("libfoo", "android_arm_armv7-a-neon_rlib")
 }

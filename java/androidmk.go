@@ -626,6 +626,11 @@ func (dstubs *Droidstubs) AndroidMkEntries() []android.AndroidMkEntries {
 }
 
 func (a *AndroidAppImport) AndroidMkEntries() []android.AndroidMkEntries {
+	if !a.IsForPlatform() {
+		// The non-platform variant is placed inside APEX. No reason to
+		// make it available to Make.
+		return nil
+	}
 	return []android.AndroidMkEntries{android.AndroidMkEntries{
 		Class:      "APPS",
 		OutputFile: android.OptionalPathForPath(a.outputFile),
@@ -671,6 +676,7 @@ func (r *RuntimeResourceOverlay) AndroidMkEntries() []android.AndroidMkEntries {
 			func(entries *android.AndroidMkEntries) {
 				entries.SetString("LOCAL_CERTIFICATE", r.certificate.AndroidMkString())
 				entries.SetPath("LOCAL_MODULE_PATH", r.installDir.ToMakePath())
+				entries.AddStrings("LOCAL_OVERRIDES_PACKAGES", r.properties.Overrides...)
 			},
 		},
 	}}
