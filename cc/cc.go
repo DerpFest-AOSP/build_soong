@@ -124,9 +124,15 @@ type PathDeps struct {
 	StaticLibs, LateStaticLibs, WholeStaticLibs android.Paths
 
 	// Paths to .o files
-	Objs               Objects
+	Objs Objects
+	// Paths to .o files in dependencies that provide them. Note that these lists
+	// aren't complete since prebuilt modules don't provide the .o files.
 	StaticLibObjs      Objects
 	WholeStaticLibObjs Objects
+
+	// Paths to .a files in prebuilts. Complements WholeStaticLibObjs to contain
+	// the libs from all whole_static_lib dependencies.
+	WholeStaticLibsFromPrebuilts android.Paths
 
 	// Paths to generated source files
 	GeneratedSources android.Paths
@@ -437,7 +443,6 @@ var (
 	ndkLateStubDepTag     = DependencyTag{Name: "ndk late stub", Library: true}
 	vndkExtDepTag         = DependencyTag{Name: "vndk extends", Library: true}
 	runtimeDepTag         = DependencyTag{Name: "runtime lib"}
-	coverageDepTag        = DependencyTag{Name: "coverage"}
 	testPerSrcDepTag      = DependencyTag{Name: "test_per_src"}
 )
 
@@ -579,6 +584,10 @@ func (c *Module) StubDecorator() bool {
 
 func (c *Module) SdkVersion() string {
 	return String(c.Properties.Sdk_version)
+}
+
+func (c *Module) MinSdkVersion() string {
+	return String(c.Properties.Min_sdk_version)
 }
 
 func (c *Module) AlwaysSdk() bool {
@@ -739,6 +748,15 @@ func (c *Module) Module() android.Module {
 
 func (c *Module) OutputFile() android.OptionalPath {
 	return c.outputFile
+}
+
+func (c *Module) CoverageFiles() android.Paths {
+	if c.linker != nil {
+		if library, ok := c.linker.(libraryInterface); ok {
+			return library.objs().coverageFiles
+		}
+	}
+	panic(fmt.Errorf("CoverageFiles called on non-library module: %q", c.BaseModuleName()))
 }
 
 var _ LinkableInterface = (*Module)(nil)
@@ -1381,6 +1399,15 @@ func orderStaticModuleDeps(module LinkableInterface, staticDeps []LinkableInterf
 func (c *Module) IsTestPerSrcAllTestsVariation() bool {
 	test, ok := c.linker.(testPerSrc)
 	return ok && test.isAllTestsVariation()
+}
+
+func (c *Module) DataPaths() android.Paths {
+	if p, ok := c.installer.(interface {
+		dataPaths() android.Paths
+	}); ok {
+		return p.dataPaths()
+	}
+	return nil
 }
 
 func (c *Module) getNameSuffixWithVndkVersion(ctx android.ModuleContext) string {
@@ -2461,7 +2488,11 @@ func (c *Module) depsToPaths(ctx android.ModuleContext) PathDeps {
 					}
 					ctx.AddMissingDependencies(missingDeps)
 				}
-				depPaths.WholeStaticLibObjs = depPaths.WholeStaticLibObjs.Append(staticLib.objs())
+				if _, ok := ccWholeStaticLib.linker.(prebuiltLinkerInterface); ok {
+					depPaths.WholeStaticLibsFromPrebuilts = append(depPaths.WholeStaticLibsFromPrebuilts, linkFile.Path())
+				} else {
+					depPaths.WholeStaticLibObjs = depPaths.WholeStaticLibObjs.Append(staticLib.objs())
+				}
 			} else {
 				ctx.ModuleErrorf(
 					"non-cc.Modules cannot be included as whole static libraries.", depName)
@@ -2489,13 +2520,16 @@ func (c *Module) depsToPaths(ctx android.ModuleContext) PathDeps {
 			// When combining coverage files for shared libraries and executables, coverage files
 			// in static libraries act as if they were whole static libraries. The same goes for
 			// source based Abi dump files.
-			// This should only be done for cc.Modules
 			if c, ok := ccDep.(*Module); ok {
 				staticLib := c.linker.(libraryInterface)
 				depPaths.StaticLibObjs.coverageFiles = append(depPaths.StaticLibObjs.coverageFiles,
 					staticLib.objs().coverageFiles...)
 				depPaths.StaticLibObjs.sAbiDumpFiles = append(depPaths.StaticLibObjs.sAbiDumpFiles,
 					staticLib.objs().sAbiDumpFiles...)
+			} else if c, ok := ccDep.(LinkableInterface); ok {
+				// Handle non-CC modules here
+				depPaths.StaticLibObjs.coverageFiles = append(depPaths.StaticLibObjs.coverageFiles,
+					c.CoverageFiles()...)
 			}
 		}
 

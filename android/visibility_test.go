@@ -636,6 +636,177 @@ var visibilityTests = []struct {
 		},
 	},
 	{
+		name: "//visibility:private override //visibility:public",
+		fs: map[string][]byte{
+			"top/Blueprints": []byte(`
+				mock_defaults {
+					name: "libexample_defaults",
+					visibility: ["//visibility:public"],
+				}
+				mock_library {
+					name: "libexample",
+					visibility: ["//visibility:private"],
+					defaults: ["libexample_defaults"],
+				}`),
+		},
+		expectedErrors: []string{
+			`module "libexample": visibility: cannot mix "//visibility:private" with any other visibility rules`,
+		},
+	},
+	{
+		name: "//visibility:public override //visibility:private",
+		fs: map[string][]byte{
+			"top/Blueprints": []byte(`
+				mock_defaults {
+					name: "libexample_defaults",
+					visibility: ["//visibility:private"],
+				}
+				mock_library {
+					name: "libexample",
+					visibility: ["//visibility:public"],
+					defaults: ["libexample_defaults"],
+				}`),
+		},
+		expectedErrors: []string{
+			`module "libexample": visibility: cannot mix "//visibility:private" with any other visibility rules`,
+		},
+	},
+	{
+		name: "//visibility:override must be first in the list",
+		fs: map[string][]byte{
+			"top/Blueprints": []byte(`
+				mock_library {
+					name: "libexample",
+					visibility: ["//other", "//visibility:override", "//namespace"],
+				}`),
+		},
+		expectedErrors: []string{
+			`module "libexample": visibility: "//visibility:override" may only be used at the start of the visibility rules`,
+		},
+	},
+	{
+		name: "//visibility:override discards //visibility:private",
+		fs: map[string][]byte{
+			"top/Blueprints": []byte(`
+				mock_defaults {
+					name: "libexample_defaults",
+					visibility: ["//visibility:private"],
+				}
+				mock_library {
+					name: "libexample",
+					// Make this visibility to //other but not //visibility:private
+					visibility: ["//visibility:override", "//other"],
+					defaults: ["libexample_defaults"],
+				}`),
+			"other/Blueprints": []byte(`
+				mock_library {
+					name: "libother",
+					deps: ["libexample"],
+				}`),
+		},
+	},
+	{
+		name: "//visibility:override discards //visibility:public",
+		fs: map[string][]byte{
+			"top/Blueprints": []byte(`
+				mock_defaults {
+					name: "libexample_defaults",
+					visibility: ["//visibility:public"],
+				}
+				mock_library {
+					name: "libexample",
+					// Make this visibility to //other but not //visibility:public
+					visibility: ["//visibility:override", "//other"],
+					defaults: ["libexample_defaults"],
+				}`),
+			"other/Blueprints": []byte(`
+				mock_library {
+					name: "libother",
+					deps: ["libexample"],
+				}`),
+			"namespace/Blueprints": []byte(`
+				mock_library {
+					name: "libnamespace",
+					deps: ["libexample"],
+				}`),
+		},
+		expectedErrors: []string{
+			`module "libnamespace" variant "android_common": depends on //top:libexample which is not visible to this module`,
+		},
+	},
+	{
+		name: "//visibility:override discards defaults supplied rules",
+		fs: map[string][]byte{
+			"top/Blueprints": []byte(`
+				mock_defaults {
+					name: "libexample_defaults",
+					visibility: ["//namespace"],
+				}
+				mock_library {
+					name: "libexample",
+					// Make this visibility to //other but not //namespace
+					visibility: ["//visibility:override", "//other"],
+					defaults: ["libexample_defaults"],
+				}`),
+			"other/Blueprints": []byte(`
+				mock_library {
+					name: "libother",
+					deps: ["libexample"],
+				}`),
+			"namespace/Blueprints": []byte(`
+				mock_library {
+					name: "libnamespace",
+					deps: ["libexample"],
+				}`),
+		},
+		expectedErrors: []string{
+			`module "libnamespace" variant "android_common": depends on //top:libexample which is not visible to this module`,
+		},
+	},
+	{
+		name: "//visibility:override can override //visibility:public with //visibility:private",
+		fs: map[string][]byte{
+			"top/Blueprints": []byte(`
+				mock_defaults {
+					name: "libexample_defaults",
+					visibility: ["//visibility:public"],
+				}
+				mock_library {
+					name: "libexample",
+					visibility: ["//visibility:override", "//visibility:private"],
+					defaults: ["libexample_defaults"],
+				}`),
+			"namespace/Blueprints": []byte(`
+				mock_library {
+					name: "libnamespace",
+					deps: ["libexample"],
+				}`),
+		},
+		expectedErrors: []string{
+			`module "libnamespace" variant "android_common": depends on //top:libexample which is not visible to this module`,
+		},
+	},
+	{
+		name: "//visibility:override can override //visibility:private with //visibility:public",
+		fs: map[string][]byte{
+			"top/Blueprints": []byte(`
+				mock_defaults {
+					name: "libexample_defaults",
+					visibility: ["//visibility:private"],
+				}
+				mock_library {
+					name: "libexample",
+					visibility: ["//visibility:override", "//visibility:public"],
+					defaults: ["libexample_defaults"],
+				}`),
+			"namespace/Blueprints": []byte(`
+				mock_library {
+					name: "libnamespace",
+					deps: ["libexample"],
+				}`),
+		},
+	},
+	{
 		name: "//visibility:private mixed with itself",
 		fs: map[string][]byte{
 			"top/Blueprints": []byte(`
@@ -903,6 +1074,69 @@ var visibilityTests = []struct {
 				}`),
 		},
 	},
+	{
+		name: "ensure visibility properties are checked for correctness",
+		fs: map[string][]byte{
+			"top/Blueprints": []byte(`
+				mock_parent {
+					name: "parent",
+					visibility: ["//top/nested"],
+					child: {
+						name: "libchild",
+						visibility: ["top/other"],
+					},
+				}`),
+		},
+		expectedErrors: []string{
+			`module "parent": child.visibility: invalid visibility pattern "top/other"`,
+		},
+	},
+	{
+		name: "invalid visibility added to child detected during gather phase",
+		fs: map[string][]byte{
+			"top/Blueprints": []byte(`
+				mock_parent {
+					name: "parent",
+					visibility: ["//top/nested"],
+					child: {
+						name: "libchild",
+						invalid_visibility: ["top/other"],
+					},
+				}`),
+		},
+		expectedErrors: []string{
+			// That this error is reported against the child not the parent shows it was
+			// not being detected in the parent which is correct as invalid_visibility is
+			// purposely not added to the list of visibility properties to check, and was
+			// in fact detected in the child in the gather phase. Contrast this error message
+			// with the preceding one.
+			`module "libchild" \(created by module "parent"\): visibility: invalid visibility pattern "top/other"`,
+		},
+	},
+	{
+		name: "automatic visibility inheritance enabled",
+		fs: map[string][]byte{
+			"top/Blueprints": []byte(`
+				mock_parent {
+					name: "parent",
+					visibility: ["//top/nested"],
+					child: {
+						name: "libchild",
+						visibility: ["//top/other"],
+					},
+				}`),
+			"top/nested/Blueprints": []byte(`
+				mock_library {
+					name: "libnested",
+					deps: ["libchild"],
+				}`),
+			"top/other/Blueprints": []byte(`
+				mock_library {
+					name: "libother",
+					deps: ["libchild"],
+				}`),
+		},
+	},
 }
 
 func TestVisibility(t *testing.T) {
@@ -936,6 +1170,7 @@ func testVisibility(buildDir string, fs map[string][]byte) (*TestContext, []erro
 
 	ctx := NewTestArchContext()
 	ctx.RegisterModuleType("mock_library", newMockLibraryModule)
+	ctx.RegisterModuleType("mock_parent", newMockParentFactory)
 	ctx.RegisterModuleType("mock_defaults", defaultsFactory)
 
 	// Order of the following method calls is significant.
@@ -994,5 +1229,44 @@ type mockDefaults struct {
 func defaultsFactory() Module {
 	m := &mockDefaults{}
 	InitDefaultsModule(m)
+	return m
+}
+
+type mockParentProperties struct {
+	Child struct {
+		Name *string
+
+		// Visibility to pass to the child module.
+		Visibility []string
+
+		// Purposely not validated visibility to pass to the child.
+		Invalid_visibility []string
+	}
+}
+
+type mockParent struct {
+	ModuleBase
+	DefaultableModuleBase
+	properties mockParentProperties
+}
+
+func (p *mockParent) GenerateAndroidBuildActions(ModuleContext) {
+}
+
+func newMockParentFactory() Module {
+	m := &mockParent{}
+	m.AddProperties(&m.properties)
+	InitAndroidArchModule(m, HostAndDeviceSupported, MultilibCommon)
+	InitDefaultableModule(m)
+	AddVisibilityProperty(m, "child.visibility", &m.properties.Child.Visibility)
+
+	m.SetDefaultableHook(func(ctx DefaultableHookContext) {
+		visibility := m.properties.Child.Visibility
+		visibility = append(visibility, m.properties.Child.Invalid_visibility...)
+		ctx.CreateModule(newMockLibraryModule, &struct {
+			Name       *string
+			Visibility []string
+		}{m.properties.Child.Name, visibility})
+	})
 	return m
 }

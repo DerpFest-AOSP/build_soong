@@ -86,9 +86,16 @@ func RegisterJavaBuildComponents(ctx android.RegistrationContext) {
 	ctx.RegisterSingletonType("kythe_java_extract", kytheExtractJavaFactory)
 }
 
+func (j *Module) CheckStableSdkVersion() error {
+	sdkVersion := j.sdkVersion()
+	if sdkVersion.stable() {
+		return nil
+	}
+	return fmt.Errorf("non stable SDK %v", sdkVersion)
+}
+
 func (j *Module) checkSdkVersions(ctx android.ModuleContext) {
-	if j.SocSpecific() || j.DeviceSpecific() ||
-		(j.ProductSpecific() && ctx.Config().EnforceProductPartitionInterface()) {
+	if j.RequiresStableAPIs(ctx) {
 		if sc, ok := ctx.Module().(sdkContext); ok {
 			if !sc.sdkVersion().specified() {
 				ctx.PropertyErrorf("sdk_version",
@@ -337,14 +344,26 @@ type CompilerDeviceProperties struct {
 
 	UncompressDex bool `blueprint:"mutated"`
 	IsSDKLibrary  bool `blueprint:"mutated"`
-
-	// If true, generate the signature file of APK Signing Scheme V4, along side the signed APK file.
-	// Defaults to false.
-	V4_signature *bool
 }
 
 func (me *CompilerDeviceProperties) EffectiveOptimizeEnabled() bool {
 	return BoolDefault(me.Optimize.Enabled, me.Optimize.EnabledByDefault)
+}
+
+// Functionality common to Module and Import
+type embeddableInModuleAndImport struct {
+}
+
+// Module/Import's DepIsInSameApex(...) delegates to this method.
+//
+// This cannot implement DepIsInSameApex(...) directly as that leads to ambiguity with
+// the one provided by ApexModuleBase.
+func (e *embeddableInModuleAndImport) depIsInSameApex(ctx android.BaseModuleContext, dep android.Module) bool {
+	// dependencies other than the static linkage are all considered crossing APEX boundary
+	if staticLibTag == ctx.OtherModuleDependencyTag(dep) {
+		return true
+	}
+	return false
 }
 
 // Module contains the properties and members used by all java module types
@@ -353,6 +372,9 @@ type Module struct {
 	android.DefaultableModuleBase
 	android.ApexModuleBase
 	android.SdkBase
+
+	// Functionality common to Module and Import.
+	embeddableInModuleAndImport
 
 	properties       CompilerProperties
 	protoProperties  android.ProtoProperties
@@ -596,6 +618,10 @@ func (j *Module) targetSdkVersion() sdkSpec {
 	return j.sdkVersion()
 }
 
+func (j *Module) MinSdkVersion() string {
+	return j.minSdkVersion().version.String()
+}
+
 func (j *Module) AvailableFor(what string) bool {
 	if what == android.AvailableToPlatform && Bool(j.deviceProperties.Hostdex) {
 		// Exception: for hostdex: true libraries, the platform variant is created
@@ -617,12 +643,14 @@ func (j *Module) deps(ctx android.BottomUpMutatorContext) {
 			}
 		} else if sdkDep.useModule {
 			ctx.AddVariationDependencies(nil, bootClasspathTag, sdkDep.bootclasspath...)
-			ctx.AddVariationDependencies(nil, systemModulesTag, sdkDep.systemModules)
 			ctx.AddVariationDependencies(nil, java9LibTag, sdkDep.java9Classpath...)
 			if j.deviceProperties.EffectiveOptimizeEnabled() && sdkDep.hasStandardLibs() {
 				ctx.AddVariationDependencies(nil, proguardRaiseTag, config.DefaultBootclasspathLibraries...)
 				ctx.AddVariationDependencies(nil, proguardRaiseTag, config.DefaultLibraries...)
 			}
+		}
+		if sdkDep.systemModules != "" {
+			ctx.AddVariationDependencies(nil, systemModulesTag, sdkDep.systemModules)
 		}
 
 		if ctx.ModuleName() == "android_stubs_current" ||
@@ -1026,19 +1054,10 @@ func addPlugins(deps *deps, pluginJars android.Paths, pluginClasses ...string) {
 }
 
 func getJavaVersion(ctx android.ModuleContext, javaVersion string, sdkContext sdkContext) javaVersion {
-	sdk, err := sdkContext.sdkVersion().effectiveVersion(ctx)
-	if err != nil {
-		ctx.PropertyErrorf("sdk_version", "%s", err)
-	}
 	if javaVersion != "" {
 		return normalizeJavaVersion(ctx, javaVersion)
-	} else if ctx.Device() && sdk <= 23 {
-		return JAVA_VERSION_7
-	} else if ctx.Device() && sdk <= 29 {
-		return JAVA_VERSION_8
-	} else if ctx.Device() && ctx.Config().UnbundledBuildUsePrebuiltSdks() {
-		// TODO(b/142896162): once we have prebuilt system modules we can use 1.9 for unbundled builds
-		return JAVA_VERSION_8
+	} else if ctx.Device() {
+		return sdkContext.sdkVersion().defaultJavaLanguageVersion(ctx)
 	} else {
 		return JAVA_VERSION_9
 	}
@@ -1761,11 +1780,7 @@ func (j *Module) hasCode(ctx android.ModuleContext) bool {
 }
 
 func (j *Module) DepIsInSameApex(ctx android.BaseModuleContext, dep android.Module) bool {
-	// Dependencies other than the static linkage are all considered crossing APEX boundary
-	if staticLibTag == ctx.OtherModuleDependencyTag(dep) {
-		return true
-	}
-	return false
+	return j.depIsInSameApex(ctx, dep)
 }
 
 func (j *Module) Stem() string {
@@ -1898,7 +1913,7 @@ func (mt *librarySdkMemberType) CreateVariantPropertiesStruct() android.SdkMembe
 type librarySdkMemberProperties struct {
 	android.SdkMemberPropertiesBase
 
-	JarToExport     android.Path
+	JarToExport     android.Path `android:"arch_variant"`
 	AidlIncludeDirs android.Paths
 }
 
@@ -2025,6 +2040,10 @@ type testProperties struct {
 	// doesn't exist next to the Android.bp, this attribute doesn't need to be set to true
 	// explicitly.
 	Auto_gen_config *bool
+
+	// Add parameterized mainline modules to auto generated test config. The options will be
+	// handled by TradeFed to do downloading and installing the specified modules on the device.
+	Test_mainline_modules []string
 }
 
 type testHelperLibraryProperties struct {
@@ -2379,6 +2398,9 @@ type Import struct {
 	prebuilt android.Prebuilt
 	android.SdkBase
 
+	// Functionality common to Module and Import.
+	embeddableInModuleAndImport
+
 	properties ImportProperties
 
 	combinedClasspathFile android.Path
@@ -2392,6 +2414,10 @@ func (j *Import) sdkVersion() sdkSpec {
 
 func (j *Import) minSdkVersion() sdkSpec {
 	return j.sdkVersion()
+}
+
+func (j *Import) MinSdkVersion() string {
+	return j.minSdkVersion().version.String()
 }
 
 func (j *Import) Prebuilt() *android.Prebuilt {
@@ -2509,11 +2535,7 @@ func (j *Import) SrcJarArgs() ([]string, android.Paths) {
 }
 
 func (j *Import) DepIsInSameApex(ctx android.BaseModuleContext, dep android.Module) bool {
-	// dependencies other than the static linkage are all considered crossing APEX boundary
-	if staticLibTag == ctx.OtherModuleDependencyTag(dep) {
-		return true
-	}
-	return false
+	return j.depIsInSameApex(ctx, dep)
 }
 
 // Add compile time check for interface implementation
@@ -2752,6 +2774,7 @@ func DefaultsFactory() android.Module {
 		&ImportProperties{},
 		&AARImportProperties{},
 		&sdkLibraryProperties{},
+		&commonToSdkLibraryAndImportProperties{},
 		&DexImportProperties{},
 		&android.ApexProperties{},
 		&RuntimeResourceOverlayProperties{},

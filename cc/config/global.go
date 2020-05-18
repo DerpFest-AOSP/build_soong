@@ -128,8 +128,8 @@ var (
 
 	// prebuilts/clang default settings.
 	ClangDefaultBase         = "prebuilts/clang/host"
-	ClangDefaultVersion      = "clang-r377782d"
-	ClangDefaultShortVersion = "10.0.6"
+	ClangDefaultVersion      = "clang-r383902"
+	ClangDefaultShortVersion = "11.0.1"
 
 	// Directories with warnings from Android.bp files.
 	WarningAllowedProjects = []string{
@@ -162,7 +162,7 @@ func init() {
 
 		// http://b/131390872
 		// Automatically initialize any uninitialized stack variables.
-		// Prefer zero-init if both options are set.
+		// Prefer zero-init if multiple options are set.
 		if ctx.Config().IsEnvTrue("AUTO_ZERO_INITIALIZE") {
 			flags = append(flags, "-ftrivial-auto-var-init=zero -enable-trivial-auto-var-init-zero-knowing-it-will-be-removed-from-clang")
 		} else if ctx.Config().IsEnvTrue("AUTO_PATTERN_INITIALIZE") {
@@ -170,8 +170,8 @@ func init() {
 		} else if ctx.Config().IsEnvTrue("AUTO_UNINITIALIZE") {
 			flags = append(flags, "-ftrivial-auto-var-init=uninitialized")
 		} else {
-			// Default to pattern initialization.
-			flags = append(flags, "-ftrivial-auto-var-init=pattern")
+			// Default to zero initialization.
+			flags = append(flags, "-ftrivial-auto-var-init=zero -enable-trivial-auto-var-init-zero-knowing-it-will-be-removed-from-clang")
 		}
 
 		return strings.Join(flags, " ")
@@ -261,19 +261,10 @@ func init() {
 	pctx.VariableFunc("RECXXLinksPool", remoteexec.EnvOverrideFunc("RBE_CXX_LINKS_POOL", remoteexec.DefaultPool))
 	pctx.VariableFunc("RECXXLinksExecStrategy", remoteexec.EnvOverrideFunc("RBE_CXX_LINKS_EXEC_STRATEGY", remoteexec.LocalExecStrategy))
 	pctx.VariableFunc("REAbiDumperExecStrategy", remoteexec.EnvOverrideFunc("RBE_ABI_DUMPER_EXEC_STRATEGY", remoteexec.LocalExecStrategy))
+	pctx.VariableFunc("REAbiLinkerExecStrategy", remoteexec.EnvOverrideFunc("RBE_ABI_LINKER_EXEC_STRATEGY", remoteexec.LocalExecStrategy))
 }
 
 var HostPrebuiltTag = pctx.VariableConfigMethod("HostPrebuiltTag", android.Config.PrebuiltOS)
-
-func bionicHeaders(kernelArch string) string {
-	return strings.Join([]string{
-		"-isystem bionic/libc/include",
-		"-isystem bionic/libc/kernel/uapi",
-		"-isystem bionic/libc/kernel/uapi/asm-" + kernelArch,
-		"-isystem bionic/libc/kernel/android/scsi",
-		"-isystem bionic/libc/kernel/android/uapi",
-	}, " ")
-}
 
 func envOverrideFunc(envVar, defaultVal string) func(ctx android.PackageVarContext) string {
 	return func(ctx android.PackageVarContext) string {

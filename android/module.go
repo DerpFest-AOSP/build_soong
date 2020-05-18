@@ -19,6 +19,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"text/scanner"
 
@@ -135,6 +136,13 @@ type BaseModuleContext interface {
 	// GetTagPath()[i] is the tag between GetWalkPath()[i] and GetWalkPath()[i+1]
 	GetTagPath() []blueprint.DependencyTag
 
+	// GetPathString is supposed to be called in visit function passed in WalkDeps()
+	// and returns a multi-line string showing the modules and dependency tags
+	// among them along the top-down dependency path from a start module to current child module.
+	// skipFirst when set to true, the output doesn't include the start module,
+	// which is already printed when this function is used along with ModuleErrorf().
+	GetPathString(skipFirst bool) string
+
 	AddMissingDependencies(missingDeps []string)
 
 	Target() Target
@@ -249,9 +257,6 @@ type Module interface {
 	// Get information about the properties that can contain visibility rules.
 	visibilityProperties() []visibilityProperty
 
-	// Get the visibility rules that control the visibility of this module.
-	visibility() []string
-
 	RequiredModuleNames() []string
 	HostRequiredModuleNames() []string
 	TargetRequiredModuleNames() []string
@@ -323,6 +328,8 @@ type commonProperties struct {
 	//  ["//visibility:public"]: Anyone can use this module.
 	//  ["//visibility:private"]: Only rules in the module's package (not its subpackages) can use
 	//      this module.
+	//  ["//visibility:override"]: Discards any rules inherited from defaults or a creating module.
+	//      Can only be used at the beginning of a list of visibility rules.
 	//  ["//some/package:__pkg__", "//other/package:__pkg__"]: Only modules in some/package and
 	//      other/package (defined in some/package/*.bp and other/package/*.bp) have access to
 	//      this module. Note that sub-packages do not have access to the rule; for example,
@@ -611,10 +618,8 @@ func InitAndroidModule(m Module) {
 	base.customizableProperties = m.GetProperties()
 
 	// The default_visibility property needs to be checked and parsed by the visibility module during
-	// its checking and parsing phases.
-	base.primaryVisibilityProperty =
-		newVisibilityProperty("visibility", &base.commonProperties.Visibility)
-	base.visibilityPropertyInfo = []visibilityProperty{base.primaryVisibilityProperty}
+	// its checking and parsing phases so make it the primary visibility property.
+	setPrimaryVisibilityProperty(m, "visibility", &base.commonProperties.Visibility)
 }
 
 func InitAndroidArchModule(m Module, hod HostOrDeviceSupported, defaultMultilib Multilib) {
@@ -801,15 +806,6 @@ func (m *ModuleBase) visibilityProperties() []visibilityProperty {
 	return m.visibilityPropertyInfo
 }
 
-func (m *ModuleBase) visibility() []string {
-	// The soong_namespace module does not initialize the primaryVisibilityProperty.
-	if m.primaryVisibilityProperty != nil {
-		return m.primaryVisibilityProperty.getStrings()
-	} else {
-		return nil
-	}
-}
-
 func (m *ModuleBase) Target() Target {
 	return m.commonProperties.CompileTarget
 }
@@ -900,6 +896,13 @@ func (m *ModuleBase) ProductSpecific() bool {
 
 func (m *ModuleBase) SystemExtSpecific() bool {
 	return Bool(m.commonProperties.System_ext_specific)
+}
+
+// RequiresStableAPIs returns true if the module will be installed to a partition that may
+// be updated separately from the system image.
+func (m *ModuleBase) RequiresStableAPIs(ctx BaseModuleContext) bool {
+	return m.SocSpecific() || m.DeviceSpecific() ||
+		(m.ProductSpecific() && ctx.Config().EnforceProductPartitionInterface())
 }
 
 func (m *ModuleBase) PartitionTag(config DeviceConfig) string {
@@ -1734,6 +1737,41 @@ func (b *baseModuleContext) GetWalkPath() []Module {
 
 func (b *baseModuleContext) GetTagPath() []blueprint.DependencyTag {
 	return b.tagPath
+}
+
+// A regexp for removing boilerplate from BaseDependencyTag from the string representation of
+// a dependency tag.
+var tagCleaner = regexp.MustCompile(`\QBaseDependencyTag:blueprint.BaseDependencyTag{}\E(, )?`)
+
+// PrettyPrintTag returns string representation of the tag, but prefers
+// custom String() method if available.
+func PrettyPrintTag(tag blueprint.DependencyTag) string {
+	// Use tag's custom String() method if available.
+	if stringer, ok := tag.(fmt.Stringer); ok {
+		return stringer.String()
+	}
+
+	// Otherwise, get a default string representation of the tag's struct.
+	tagString := fmt.Sprintf("%#v", tag)
+
+	// Remove the boilerplate from BaseDependencyTag as it adds no value.
+	tagString = tagCleaner.ReplaceAllString(tagString, "")
+	return tagString
+}
+
+func (b *baseModuleContext) GetPathString(skipFirst bool) string {
+	sb := strings.Builder{}
+	tagPath := b.GetTagPath()
+	walkPath := b.GetWalkPath()
+	if !skipFirst {
+		sb.WriteString(walkPath[0].String())
+	}
+	for i, m := range walkPath[1:] {
+		sb.WriteString("\n")
+		sb.WriteString(fmt.Sprintf("           via tag %s\n", PrettyPrintTag(tagPath[i])))
+		sb.WriteString(fmt.Sprintf("    -> %s", m.String()))
+	}
+	return sb.String()
 }
 
 func (m *moduleContext) VisitAllModuleVariants(visit func(Module)) {

@@ -18,7 +18,6 @@ import (
 	"fmt"
 	"path"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -228,7 +227,6 @@ func makeApexAvailableWhitelist() map[string][]string {
 		"netd_aidl_interface-unstable-java",
 		"netd_event_listener_interface-java",
 		"netlink-client",
-		"networkstack-aidl-interfaces-unstable-java",
 		"networkstack-client",
 		"sap-api-java-static",
 		"services.net",
@@ -242,19 +240,6 @@ func makeApexAvailableWhitelist() map[string][]string {
 	//
 	m["com.android.conscrypt"] = []string{
 		"libnativehelper_header_only",
-	}
-	//
-	// Module separator
-	//
-	m["com.android.extservices"] = []string{
-		"flatbuffer_headers",
-		"liblua",
-		"libtextclassifier",
-		"libtextclassifier_hash_static",
-		"libtflite_static",
-		"libutf",
-		"libz_current",
-		"tensorflow_headers",
 	}
 	//
 	// Module separator
@@ -680,7 +665,6 @@ func makeApexAvailableWhitelist() map[string][]string {
 		"netd_aidl_interface-unstable-java",
 		"netd_event_listener_interface-java",
 		"netlink-client",
-		"networkstack-aidl-interfaces-unstable-java",
 		"networkstack-client",
 		"services.net",
 		"wifi-lite-protos",
@@ -726,6 +710,7 @@ func init() {
 	android.RegisterModuleType("apex_defaults", defaultsFactory)
 	android.RegisterModuleType("prebuilt_apex", PrebuiltFactory)
 	android.RegisterModuleType("override_apex", overrideApexFactory)
+	android.RegisterModuleType("apex_set", apexSetFactory)
 
 	android.PreDepsMutators(RegisterPreDepsMutators)
 	android.PostDepsMutators(RegisterPostDepsMutators)
@@ -1217,6 +1202,7 @@ type apexFile struct {
 	module     android.Module
 	// list of symlinks that will be created in installDir that point to this apexFile
 	symlinks      []string
+	dataPaths     android.Paths
 	transitiveDep bool
 	moduleDir     string
 
@@ -1252,16 +1238,20 @@ func (af *apexFile) Ok() bool {
 	return af.builtFile != nil && af.builtFile.String() != ""
 }
 
+func (af *apexFile) apexRelativePath(path string) string {
+	return filepath.Join(af.installDir, path)
+}
+
 // Path() returns path of this apex file relative to the APEX root
 func (af *apexFile) Path() string {
-	return filepath.Join(af.installDir, af.builtFile.Base())
+	return af.apexRelativePath(af.builtFile.Base())
 }
 
 // SymlinkPaths() returns paths of the symlinks (if any) relative to the APEX root
 func (af *apexFile) SymlinkPaths() []string {
 	var ret []string
 	for _, symlink := range af.symlinks {
-		ret = append(ret, filepath.Join(af.installDir, symlink))
+		ret = append(ret, af.apexRelativePath(symlink))
 	}
 	return ret
 }
@@ -1274,12 +1264,6 @@ func (af *apexFile) AvailableToPlatform() bool {
 		return am.AvailableFor(android.AvailableToPlatform)
 	}
 	return false
-}
-
-type depInfo struct {
-	to         string
-	from       []string
-	isExternal bool
 }
 
 type apexBundle struct {
@@ -1316,7 +1300,7 @@ type apexBundle struct {
 	requiredDeps []string
 
 	// list of module names that this APEX is including (to be shown via *-deps-info target)
-	depInfos map[string]depInfo
+	android.ApexBundleDepsInfo
 
 	testApex        bool
 	vndkApex        bool
@@ -1611,6 +1595,8 @@ func (a *apexBundle) IsSanitizerEnabled(ctx android.BaseModuleContext, sanitizer
 	return android.InList(sanitizerName, globalSanitizerNames)
 }
 
+var _ cc.Coverage = (*apexBundle)(nil)
+
 func (a *apexBundle) IsNativeCoverageNeeded(ctx android.BaseModuleContext) bool {
 	return ctx.Device() && (ctx.DeviceConfig().NativeCoverageEnabled() || ctx.DeviceConfig().ClangCoverageEnabled())
 }
@@ -1626,6 +1612,8 @@ func (a *apexBundle) HideFromMake() {
 func (a *apexBundle) MarkAsCoverageVariant(coverage bool) {
 	a.properties.IsCoverageVariant = coverage
 }
+
+func (a *apexBundle) EnableCoverageIfNeeded() {}
 
 // TODO(jiyong) move apexFileFor* close to the apexFile type definition
 func apexFileForNativeLibrary(ctx android.BaseModuleContext, ccMod *cc.Module, handleSpecialLibs bool) apexFile {
@@ -1669,6 +1657,7 @@ func apexFileForExecutable(ctx android.BaseModuleContext, cc *cc.Module) apexFil
 	fileToCopy := cc.OutputFile().Path()
 	af := newApexFile(ctx, fileToCopy, cc.Name(), dirInApex, nativeExecutable, cc)
 	af.symlinks = cc.Symlinks()
+	af.dataPaths = cc.DataPaths()
 	return af
 }
 
@@ -1699,16 +1688,10 @@ func apexFileForShBinary(ctx android.BaseModuleContext, sh *android.ShBinary) ap
 	return af
 }
 
-// TODO(b/146586360): replace javaLibrary(in apex/apex.go) with java.Dependency
-type javaLibrary interface {
-	android.Module
-	java.Dependency
-}
-
-func apexFileForJavaLibrary(ctx android.BaseModuleContext, lib javaLibrary) apexFile {
+func apexFileForJavaLibrary(ctx android.BaseModuleContext, lib java.Dependency, module android.Module) apexFile {
 	dirInApex := "javalib"
 	fileToCopy := lib.DexJar()
-	af := newApexFile(ctx, fileToCopy, lib.Name(), dirInApex, javaSharedLib, lib)
+	af := newApexFile(ctx, fileToCopy, module.Name(), dirInApex, javaSharedLib, module)
 	af.jacocoReportClassesFile = lib.JacocoReportClassesFile()
 	return af
 }
@@ -1815,24 +1798,6 @@ func (a *apexBundle) minSdkVersion(ctx android.BaseModuleContext) int {
 	return intVer
 }
 
-// A regexp for removing boilerplate from BaseDependencyTag from the string representation of
-// a dependency tag.
-var tagCleaner = regexp.MustCompile(`\QBaseDependencyTag:blueprint.BaseDependencyTag{}\E(, )?`)
-
-func PrettyPrintTag(tag blueprint.DependencyTag) string {
-	// Use tag's custom String() method if available.
-	if stringer, ok := tag.(fmt.Stringer); ok {
-		return stringer.String()
-	}
-
-	// Otherwise, get a default string representation of the tag's struct.
-	tagString := fmt.Sprintf("%#v", tag)
-
-	// Remove the boilerplate from BaseDependencyTag as it adds no value.
-	tagString = tagCleaner.ReplaceAllString(tagString, "")
-	return tagString
-}
-
 // Ensures that the dependencies are marked as available for this APEX
 func (a *apexBundle) checkApexAvailability(ctx android.ModuleContext) {
 	// Let's be practical. Availability for test, host, and the VNDK apex isn't important
@@ -1867,14 +1832,7 @@ func (a *apexBundle) checkApexAvailability(ctx android.ModuleContext) {
 		if to.AvailableFor(apexName) || whitelistedApexAvailable(apexName, toName) {
 			return true
 		}
-		message := ""
-		tagPath := ctx.GetTagPath()
-		// Skip the first module as that will be added at the start of the error message by ctx.ModuleErrorf().
-		walkPath := ctx.GetWalkPath()[1:]
-		for i, m := range walkPath {
-			message = fmt.Sprintf("%s\n           via tag %s\n    -> %s", message, PrettyPrintTag(tagPath[i]), m.String())
-		}
-		ctx.ModuleErrorf("%q requires %q that is not available for the APEX. Dependency path:%s", fromName, toName, message)
+		ctx.ModuleErrorf("%q requires %q that is not available for the APEX. Dependency path:%s", fromName, toName, ctx.GetPathString(true))
 		// Visit this module's dependencies to check and report any issues with their availability.
 		return true
 	})
@@ -1885,36 +1843,9 @@ func (a *apexBundle) checkUpdatable(ctx android.ModuleContext) {
 		if String(a.properties.Min_sdk_version) == "" {
 			ctx.PropertyErrorf("updatable", "updatable APEXes should set min_sdk_version as well")
 		}
+
+		a.checkJavaStableSdkVersion(ctx)
 	}
-}
-
-// Collects the list of module names that directly or indirectly contributes to the payload of this APEX
-func (a *apexBundle) collectDepsInfo(ctx android.ModuleContext) {
-	a.depInfos = make(map[string]depInfo)
-	a.walkPayloadDeps(ctx, func(ctx android.ModuleContext, from blueprint.Module, to android.ApexModule, externalDep bool) bool {
-		if from.Name() == to.Name() {
-			// This can happen for cc.reuseObjTag. We are not interested in tracking this.
-			// As soon as the dependency graph crosses the APEX boundary, don't go further.
-			return !externalDep
-		}
-
-		if info, exists := a.depInfos[to.Name()]; exists {
-			if !android.InList(from.Name(), info.from) {
-				info.from = append(info.from, from.Name())
-			}
-			info.isExternal = info.isExternal && externalDep
-			a.depInfos[to.Name()] = info
-		} else {
-			a.depInfos[to.Name()] = depInfo{
-				to:         to.Name(),
-				from:       []string{from.Name()},
-				isExternal: externalDep,
-			}
-		}
-
-		// As soon as the dependency graph crosses the APEX boundary, don't go further.
-		return !externalDep
-	})
 }
 
 func (a *apexBundle) GenerateAndroidBuildActions(ctx android.ModuleContext) {
@@ -1954,8 +1885,6 @@ func (a *apexBundle) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 
 	a.checkApexAvailability(ctx)
 	a.checkUpdatable(ctx)
-
-	a.collectDepsInfo(ctx)
 
 	handleSpecialLibs := !android.Bool(a.properties.Ignore_system_library_special_case)
 
@@ -2030,7 +1959,7 @@ func (a *apexBundle) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 				}
 			case javaLibTag:
 				if javaLib, ok := child.(*java.Library); ok {
-					af := apexFileForJavaLibrary(ctx, javaLib)
+					af := apexFileForJavaLibrary(ctx, javaLib, javaLib)
 					if !af.Ok() {
 						ctx.PropertyErrorf("java_libs", "%q is not configured to be compiled into dex", depName)
 					} else {
@@ -2038,7 +1967,7 @@ func (a *apexBundle) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 						return true // track transitive dependencies
 					}
 				} else if sdkLib, ok := child.(*java.SdkLibrary); ok {
-					af := apexFileForJavaLibrary(ctx, sdkLib)
+					af := apexFileForJavaLibrary(ctx, sdkLib, sdkLib)
 					if !af.Ok() {
 						ctx.PropertyErrorf("java_libs", "%q is not configured to be compiled into dex", depName)
 						return false
@@ -2082,13 +2011,13 @@ func (a *apexBundle) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 						// We do not add this variation to `filesInfo`, as it has no output;
 						// however, we do add the other variations of this module as indirect
 						// dependencies (see below).
-						return true
 					} else {
 						// Single-output test module (where `test_per_src: false`).
 						af := apexFileForExecutable(ctx, ccTest)
 						af.class = nativeTest
 						filesInfo = append(filesInfo, af)
 					}
+					return true // track transitive dependencies
 				} else {
 					ctx.PropertyErrorf("tests", "%q is not a cc module", depName)
 				}
@@ -2134,8 +2063,8 @@ func (a *apexBundle) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 							//
 							// Always include if we are a host-apex however since those won't have any
 							// system libraries.
-							if !android.DirectlyInAnyApex(ctx, cc.Name()) && !android.InList(cc.Name(), a.requiredDeps) {
-								a.requiredDeps = append(a.requiredDeps, cc.Name())
+							if !android.DirectlyInAnyApex(ctx, cc.Name()) && !android.InList(cc.BaseModuleName(), a.requiredDeps) {
+								a.requiredDeps = append(a.requiredDeps, cc.BaseModuleName())
 							}
 							requireNativeLibs = append(requireNativeLibs, cc.OutputFile().Path().Base())
 							// Don't track further
@@ -2167,7 +2096,7 @@ func (a *apexBundle) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 						filesInfo = append(filesInfo, apexFileForPrebuiltEtc(ctx, prebuilt, depName))
 					}
 				} else if am.CanHaveApexVariants() && am.IsInstallableToApex() {
-					ctx.ModuleErrorf("unexpected tag %s for indirect dependency %q", PrettyPrintTag(depTag), depName)
+					ctx.ModuleErrorf("unexpected tag %s for indirect dependency %q", android.PrettyPrintTag(depTag), depName)
 				}
 			}
 		}
@@ -2272,6 +2201,23 @@ func (a *apexBundle) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 	a.compatSymlinks = makeCompatSymlinks(a.BaseModuleName(), ctx)
 
 	a.buildApexDependencyInfo(ctx)
+}
+
+// Enforce that Java deps of the apex are using stable SDKs to compile
+func (a *apexBundle) checkJavaStableSdkVersion(ctx android.ModuleContext) {
+	// Visit direct deps only. As long as we guarantee top-level deps are using
+	// stable SDKs, java's checkLinkType guarantees correct usage for transitive deps
+	ctx.VisitDirectDepsBlueprint(func(module blueprint.Module) {
+		tag := ctx.OtherModuleDependencyTag(module)
+		switch tag {
+		case javaLibTag, androidAppTag:
+			if m, ok := module.(interface{ CheckStableSdkVersion() error }); ok {
+				if err := m.CheckStableSdkVersion(); err != nil {
+					ctx.ModuleErrorf("cannot depend on \"%v\": %v", ctx.OtherModuleName(module), err)
+				}
+			}
+		}
+	})
 }
 
 func whitelistedApexAvailable(apex, moduleName string) bool {
