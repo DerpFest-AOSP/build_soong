@@ -342,8 +342,13 @@ type CompilerDeviceProperties struct {
 	// set the name of the output
 	Stem *string
 
-	UncompressDex bool `blueprint:"mutated"`
-	IsSDKLibrary  bool `blueprint:"mutated"`
+	// Keep the data uncompressed. We always need uncompressed dex for execution,
+	// so this might actually save space by avoiding storing the same data twice.
+	// This defaults to reasonable value based on module and should not be set.
+	// It exists only to support ART tests.
+	Uncompress_dex *bool
+
+	IsSDKLibrary bool `blueprint:"mutated"`
 
 	// If true, generate the signature file of APK Signing Scheme V4, along side the signed APK file.
 	// Defaults to false.
@@ -355,7 +360,17 @@ func (me *CompilerDeviceProperties) EffectiveOptimizeEnabled() bool {
 }
 
 // Functionality common to Module and Import
+//
+// It is embedded in Module so its functionality can be used by methods in Module
+// but it is currently only initialized by Import and Library.
 type embeddableInModuleAndImport struct {
+
+	// Functionality related to this being used as a component of a java_sdk_library.
+	EmbeddableSdkLibraryComponent
+}
+
+func (e *embeddableInModuleAndImport) initModuleAndImport(moduleBase *android.ModuleBase) {
+	e.initSdkLibraryComponent(moduleBase)
 }
 
 // Module/Import's DepIsInSameApex(...) delegates to this method.
@@ -494,11 +509,6 @@ type Dependency interface {
 	SrcJarArgs() ([]string, android.Paths)
 	BaseModuleName() string
 	JacocoReportClassesFile() android.Path
-}
-
-type SdkLibraryDependency interface {
-	SdkHeaderJars(ctx android.BaseModuleContext, sdkVersion sdkSpec) android.Paths
-	SdkImplementationJars(ctx android.BaseModuleContext, sdkVersion sdkSpec) android.Paths
 }
 
 type xref interface {
@@ -930,6 +940,12 @@ func (j *Module) collectDeps(ctx android.ModuleContext) deps {
 		}
 	}
 
+	// If this is a component library (stubs, etc.) for a java_sdk_library then
+	// add the name of that java_sdk_library to the exported sdk libs to make sure
+	// that, if necessary, a <uses-library> element for that java_sdk_library is
+	// added to the Android manifest.
+	j.exportedSdkLibs = append(j.exportedSdkLibs, j.OptionalImplicitSdkLibrary()...)
+
 	ctx.VisitDirectDeps(func(module android.Module) {
 		otherName := ctx.OtherModuleName(module)
 		tag := ctx.OtherModuleDependencyTag(module)
@@ -949,7 +965,7 @@ func (j *Module) collectDeps(ctx android.ModuleContext) deps {
 			case libTag:
 				deps.classpath = append(deps.classpath, dep.SdkHeaderJars(ctx, j.sdkVersion())...)
 				// names of sdk libs that are directly depended are exported
-				j.exportedSdkLibs = append(j.exportedSdkLibs, otherName)
+				j.exportedSdkLibs = append(j.exportedSdkLibs, dep.OptionalImplicitSdkLibrary()...)
 			case staticLibTag:
 				ctx.ModuleErrorf("dependency on java_sdk_library %q can only be in libs", otherName)
 			}
@@ -1560,7 +1576,7 @@ func (j *Module) compile(ctx android.ModuleContext, aaptSrcJar android.Path) {
 
 		// Hidden API CSV generation and dex encoding
 		dexOutputFile = j.hiddenAPI.hiddenAPI(ctx, dexOutputFile, j.implementationJarFile,
-			j.deviceProperties.UncompressDex)
+			proptools.Bool(j.deviceProperties.Uncompress_dex))
 
 		// merge dex jar with resources if necessary
 		if j.resourceJar != nil {
@@ -1568,7 +1584,7 @@ func (j *Module) compile(ctx android.ModuleContext, aaptSrcJar android.Path) {
 			combinedJar := android.PathForModuleOut(ctx, "dex-withres", jarName)
 			TransformJarsToJar(ctx, combinedJar, "for dex resources", jars, android.OptionalPath{},
 				false, nil, nil)
-			if j.deviceProperties.UncompressDex {
+			if *j.deviceProperties.Uncompress_dex {
 				combinedAlignedJar := android.PathForModuleOut(ctx, "dex-withres-aligned", jarName)
 				TransformZipAlign(ctx, combinedAlignedJar, combinedJar)
 				dexOutputFile = combinedAlignedJar
@@ -1845,8 +1861,11 @@ func (j *Library) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 	j.checkSdkVersions(ctx)
 	j.dexpreopter.installPath = android.PathForModuleInstall(ctx, "framework", j.Stem()+".jar")
 	j.dexpreopter.isSDKLibrary = j.deviceProperties.IsSDKLibrary
-	j.dexpreopter.uncompressedDex = shouldUncompressDex(ctx, &j.dexpreopter)
-	j.deviceProperties.UncompressDex = j.dexpreopter.uncompressedDex
+	if j.deviceProperties.Uncompress_dex == nil {
+		// If the value was not force-set by the user, use reasonable default based on the module.
+		j.deviceProperties.Uncompress_dex = proptools.BoolPtr(shouldUncompressDex(ctx, &j.dexpreopter))
+	}
+	j.dexpreopter.uncompressedDex = *j.deviceProperties.Uncompress_dex
 	j.compile(ctx, nil)
 
 	exclusivelyForApex := android.InAnyApex(ctx.ModuleName()) && !j.IsForPlatform()
@@ -1989,6 +2008,8 @@ func LibraryFactory() android.Module {
 		&module.Module.dexpreoptProperties,
 		&module.Module.protoProperties,
 		&module.libraryProperties)
+
+	module.initModuleAndImport(&module.ModuleBase)
 
 	android.InitApexModule(module)
 	android.InitSdkAwareModule(module)
@@ -2451,6 +2472,12 @@ func (j *Import) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 	}
 	j.combinedClasspathFile = outputFile
 
+	// If this is a component library (impl, stubs, etc.) for a java_sdk_library then
+	// add the name of that java_sdk_library to the exported sdk libs to make sure
+	// that, if necessary, a <uses-library> element for that java_sdk_library is
+	// added to the Android manifest.
+	j.exportedSdkLibs = append(j.exportedSdkLibs, j.OptionalImplicitSdkLibrary()...)
+
 	ctx.VisitDirectDeps(func(module android.Module) {
 		otherName := ctx.OtherModuleName(module)
 		tag := ctx.OtherModuleDependencyTag(module)
@@ -2566,6 +2593,8 @@ func ImportFactory() android.Module {
 	module := &Import{}
 
 	module.AddProperties(&module.properties)
+
+	module.initModuleAndImport(&module.ModuleBase)
 
 	android.InitPrebuiltModule(module, &module.properties.Jars)
 	android.InitApexModule(module)
