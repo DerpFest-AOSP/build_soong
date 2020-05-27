@@ -140,7 +140,7 @@ func (r packageRule) matches(m qualifiedModuleName) bool {
 }
 
 func (r packageRule) String() string {
-	return fmt.Sprintf("//%s:__pkg__", r.pkg)
+	return fmt.Sprintf("//%s", r.pkg) // :__pkg__ is the default, so skip it.
 }
 
 // A subpackagesRule is a visibility rule that matches modules in a specific package (i.e.
@@ -245,15 +245,9 @@ func checkRules(ctx BaseModuleContext, currentPkg, property string, visibility [
 		return
 	}
 
-	for _, v := range visibility {
-		ok, pkg, name := splitRule(v, currentPkg)
+	for i, v := range visibility {
+		ok, pkg, name := splitRule(ctx, v, currentPkg, property)
 		if !ok {
-			// Visibility rule is invalid so ignore it. Keep going rather than aborting straight away to
-			// ensure all the rules on this module are checked.
-			ctx.PropertyErrorf(property,
-				"invalid visibility pattern %q must match"+
-					" //<package>:<module>, //<package> or :<module>",
-				v)
 			continue
 		}
 
@@ -263,11 +257,18 @@ func checkRules(ctx BaseModuleContext, currentPkg, property string, visibility [
 			case "legacy_public":
 				ctx.PropertyErrorf(property, "//visibility:legacy_public must not be used")
 				continue
+			case "override":
+				// This keyword does not create a rule so pretend it does not exist.
+				ruleCount -= 1
 			default:
 				ctx.PropertyErrorf(property, "unrecognized visibility rule %q", v)
 				continue
 			}
-			if ruleCount != 1 {
+			if name == "override" {
+				if i != 0 {
+					ctx.PropertyErrorf(property, `"%v" may only be used at the start of the visibility rules`, v)
+				}
+			} else if ruleCount != 1 {
 				ctx.PropertyErrorf(property, "cannot mix %q with any other visibility rules", v)
 				continue
 			}
@@ -301,21 +302,24 @@ func visibilityRuleGatherer(ctx BottomUpMutatorContext) {
 
 	// Parse the visibility rules that control access to the module and store them by id
 	// for use when enforcing the rules.
-	if visibility := m.visibility(); visibility != nil {
-		rule := parseRules(ctx, currentPkg, m.visibility())
-		if rule != nil {
-			moduleToVisibilityRuleMap(ctx.Config()).Store(qualifiedModuleId, rule)
+	primaryProperty := m.base().primaryVisibilityProperty
+	if primaryProperty != nil {
+		if visibility := primaryProperty.getStrings(); visibility != nil {
+			rule := parseRules(ctx, currentPkg, primaryProperty.getName(), visibility)
+			if rule != nil {
+				moduleToVisibilityRuleMap(ctx.Config()).Store(qualifiedModuleId, rule)
+			}
 		}
 	}
 }
 
-func parseRules(ctx BaseModuleContext, currentPkg string, visibility []string) compositeRule {
+func parseRules(ctx BaseModuleContext, currentPkg, property string, visibility []string) compositeRule {
 	rules := make(compositeRule, 0, len(visibility))
 	hasPrivateRule := false
 	hasPublicRule := false
 	hasNonPrivateRule := false
 	for _, v := range visibility {
-		ok, pkg, name := splitRule(v, currentPkg)
+		ok, pkg, name := splitRule(ctx, v, currentPkg, property)
 		if !ok {
 			continue
 		}
@@ -330,6 +334,14 @@ func parseRules(ctx BaseModuleContext, currentPkg string, visibility []string) c
 			case "public":
 				r = publicRule{}
 				hasPublicRule = true
+			case "override":
+				// Discard all preceding rules and any state based on them.
+				rules = nil
+				hasPrivateRule = false
+				hasPublicRule = false
+				hasNonPrivateRule = false
+				// This does not actually create a rule so continue onto the next rule.
+				continue
 			}
 		} else {
 			switch name {
@@ -376,10 +388,16 @@ func isAllowedFromOutsideVendor(pkg string, name string) bool {
 	return !isAncestor("vendor", pkg)
 }
 
-func splitRule(ruleExpression string, currentPkg string) (bool, string, string) {
+func splitRule(ctx BaseModuleContext, ruleExpression string, currentPkg, property string) (bool, string, string) {
 	// Make sure that the rule is of the correct format.
 	matches := visibilityRuleRegexp.FindStringSubmatch(ruleExpression)
 	if ruleExpression == "" || matches == nil {
+		// Visibility rule is invalid so ignore it. Keep going rather than aborting straight away to
+		// ensure all the rules on this module are checked.
+		ctx.PropertyErrorf(property,
+			"invalid visibility pattern %q must match"+
+				" //<package>:<module>, //<package> or :<module>",
+			ruleExpression)
 		return false, "", ""
 	}
 
@@ -478,5 +496,48 @@ func EffectiveVisibilityRules(ctx BaseModuleContext, module Module) []string {
 
 	rule := effectiveVisibilityRules(ctx.Config(), qualified)
 
+	// Modules are implicitly visible to other modules in the same package,
+	// without checking the visibility rules. Here we need to add that visibility
+	// explicitly.
+	if rule != nil && !rule.matches(qualified) {
+		if len(rule) == 1 {
+			if _, ok := rule[0].(privateRule); ok {
+				// If the rule is //visibility:private we can't append another
+				// visibility to it. Semantically we need to convert it to a package
+				// visibility rule for the location where the result is used, but since
+				// modules are implicitly visible within the package we get the same
+				// result without any rule at all, so just make it an empty list to be
+				// appended below.
+				rule = compositeRule{}
+			}
+		}
+		rule = append(rule, packageRule{dir})
+	}
+
 	return rule.Strings()
+}
+
+// Clear the default visibility properties so they can be replaced.
+func clearVisibilityProperties(module Module) {
+	module.base().visibilityPropertyInfo = nil
+}
+
+// Add a property that contains visibility rules so that they are checked for
+// correctness.
+func AddVisibilityProperty(module Module, name string, stringsProperty *[]string) {
+	addVisibilityProperty(module, name, stringsProperty)
+}
+
+func addVisibilityProperty(module Module, name string, stringsProperty *[]string) visibilityProperty {
+	base := module.base()
+	property := newVisibilityProperty(name, stringsProperty)
+	base.visibilityPropertyInfo = append(base.visibilityPropertyInfo, property)
+	return property
+}
+
+// Set the primary visibility property.
+//
+// Also adds the property to the list of properties to be validated.
+func setPrimaryVisibilityProperty(module Module, name string, stringsProperty *[]string) {
+	module.base().primaryVisibilityProperty = addVisibilityProperty(module, name, stringsProperty)
 }

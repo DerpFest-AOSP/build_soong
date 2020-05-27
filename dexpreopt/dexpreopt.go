@@ -47,6 +47,8 @@ import (
 const SystemPartition = "/system/"
 const SystemOtherPartition = "/system_other/"
 
+var DexpreoptRunningInSoong = false
+
 // GenerateDexpreoptRule generates a set of commands that will preopt a module based on a GlobalConfig and a
 // ModuleConfig.  The produced files and their install locations will be available through rule.Installs().
 func GenerateDexpreoptRule(ctx android.PathContext, globalSoong *GlobalSoongConfig,
@@ -80,7 +82,7 @@ func GenerateDexpreoptRule(ctx android.PathContext, globalSoong *GlobalSoongConf
 
 	if !dexpreoptDisabled(ctx, global, module) {
 		// Don't preopt individual boot jars, they will be preopted together.
-		if !contains(global.BootJars, module.Name) {
+		if !contains(android.GetJarsFromApexJarPairs(ctx, global.BootJars), module.Name) {
 			appImage := (generateProfile || module.ForceCreateAppImage || global.DefaultAppImages) &&
 				!module.NoCreateAppImage
 
@@ -102,7 +104,7 @@ func dexpreoptDisabled(ctx android.PathContext, global *GlobalConfig, module *Mo
 
 	// Don't preopt system server jars that are updatable.
 	for _, p := range global.UpdatableSystemServerJars {
-		if _, jar := android.SplitApexJarPair(p); jar == module.Name {
+		if _, jar := android.SplitApexJarPair(ctx, p); jar == module.Name {
 			return true
 		}
 	}
@@ -111,7 +113,7 @@ func dexpreoptDisabled(ctx android.PathContext, global *GlobalConfig, module *Mo
 	// Also preopt system server jars since selinux prevents system server from loading anything from
 	// /data. If we don't do this they will need to be extracted which is not favorable for RAM usage
 	// or performance. If PreoptExtractedApk is true, we ignore the only preopt boot image options.
-	if global.OnlyPreoptBootImageAndSystemServer && !contains(global.BootJars, module.Name) &&
+	if global.OnlyPreoptBootImageAndSystemServer && !contains(android.GetJarsFromApexJarPairs(ctx, global.BootJars), module.Name) &&
 		!contains(global.SystemServerJars, module.Name) && !module.PreoptExtractedApk {
 		return true
 	}
@@ -559,18 +561,9 @@ func makefileMatch(pattern, s string) bool {
 }
 
 // Expected format for apexJarValue = <apex name>:<jar name>
-func GetJarLocationFromApexJarPair(apexJarValue string) string {
-	apex, jar := android.SplitApexJarPair(apexJarValue)
+func GetJarLocationFromApexJarPair(ctx android.PathContext, apexJarValue string) string {
+	apex, jar := android.SplitApexJarPair(ctx, apexJarValue)
 	return filepath.Join("/apex", apex, "javalib", jar+".jar")
-}
-
-func GetJarsFromApexJarPairs(apexJarPairs []string) []string {
-	modules := make([]string, len(apexJarPairs))
-	for i, p := range apexJarPairs {
-		_, jar := android.SplitApexJarPair(p)
-		modules[i] = jar
-	}
-	return modules
 }
 
 var nonUpdatableSystemServerJarsKey = android.NewOnceKey("nonUpdatableSystemServerJars")
@@ -580,7 +573,7 @@ var nonUpdatableSystemServerJarsKey = android.NewOnceKey("nonUpdatableSystemServ
 func NonUpdatableSystemServerJars(ctx android.PathContext, global *GlobalConfig) []string {
 	return ctx.Config().Once(nonUpdatableSystemServerJarsKey, func() interface{} {
 		return android.RemoveListFromList(global.SystemServerJars,
-			GetJarsFromApexJarPairs(global.UpdatableSystemServerJars))
+			android.GetJarsFromApexJarPairs(ctx, global.UpdatableSystemServerJars))
 	}).([]string)
 }
 
@@ -589,7 +582,14 @@ func NonUpdatableSystemServerJars(ctx android.PathContext, global *GlobalConfig)
 // at that time (Soong processes the jars in dependency order, which may be different from the
 // the system server classpath order).
 func SystemServerDexJarHostPath(ctx android.PathContext, jar string) android.OutputPath {
-	return android.PathForOutput(ctx, "system_server_dexjars", jar+".jar")
+	if DexpreoptRunningInSoong {
+		// Soong module, just use the default output directory $OUT/soong.
+		return android.PathForOutput(ctx, "system_server_dexjars", jar+".jar")
+	} else {
+		// Make module, default output directory is $OUT (passed via the "null config" created
+		// by dexpreopt_gen). Append Soong subdirectory to match Soong module paths.
+		return android.PathForOutput(ctx, "soong", "system_server_dexjars", jar+".jar")
+	}
 }
 
 func contains(l []string, s string) bool {

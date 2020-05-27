@@ -71,10 +71,10 @@ var (
 			ExecStrategy:    "${config.RECXXLinksExecStrategy}",
 			Inputs:          []string{"${out}.rsp"},
 			RSPFile:         "${out}.rsp",
-			OutputFiles:     []string{"${out}"},
+			OutputFiles:     []string{"${out}", "$implicitOutputs"},
 			ToolchainInputs: []string{"$ldCmd"},
 			Platform:        map[string]string{remoteexec.PoolKey: "${config.RECXXLinksPool}"},
-		}, []string{"ldCmd", "crtBegin", "libFlags", "crtEnd", "ldFlags", "extraLibFlags"}, nil)
+		}, []string{"ldCmd", "crtBegin", "libFlags", "crtEnd", "ldFlags", "extraLibFlags"}, []string{"implicitOutputs"})
 
 	partialLd, partialLdRE = remoteexec.StaticRules(pctx, "partialLd",
 		blueprint.RuleParams{
@@ -83,13 +83,12 @@ var (
 			Command:     "$reTemplate$ldCmd -fuse-ld=lld -nostdlib -no-pie -Wl,-r ${in} -o ${out} ${ldFlags}",
 			CommandDeps: []string{"$ldCmd"},
 		}, &remoteexec.REParams{
-			Labels:          map[string]string{"type": "link", "tool": "clang"},
-			ExecStrategy:    "${config.RECXXLinksExecStrategy}",
-			Inputs:          []string{"$inCommaList"},
-			OutputFiles:     []string{"${out}"},
+			Labels:       map[string]string{"type": "link", "tool": "clang"},
+			ExecStrategy: "${config.RECXXLinksExecStrategy}", Inputs: []string{"$inCommaList"},
+			OutputFiles:     []string{"${out}", "$implicitOutputs"},
 			ToolchainInputs: []string{"$ldCmd"},
 			Platform:        map[string]string{remoteexec.PoolKey: "${config.RECXXLinksPool}"},
-		}, []string{"ldCmd", "ldFlags"}, []string{"inCommaList"})
+		}, []string{"ldCmd", "ldFlags"}, []string{"inCommaList", "implicitOutputs"})
 
 	ar = pctx.AndroidStaticRule("ar",
 		blueprint.RuleParams{
@@ -99,6 +98,15 @@ var (
 			RspfileContent: "${in}",
 		},
 		"arCmd", "arFlags")
+
+	arWithLibs = pctx.AndroidStaticRule("arWithLibs",
+		blueprint.RuleParams{
+			Command:        "rm -f ${out} && $arCmd $arObjFlags $out @${out}.rsp && $arCmd $arLibFlags $out $arLibs",
+			CommandDeps:    []string{"$arCmd"},
+			Rspfile:        "${out}.rsp",
+			RspfileContent: "${arObjs}",
+		},
+		"arCmd", "arObjFlags", "arObjs", "arLibFlags", "arLibs")
 
 	darwinStrip = pctx.AndroidStaticRule("darwinStrip",
 		blueprint.RuleParams{
@@ -208,15 +216,23 @@ var (
 		}, []string{"cFlags", "exportDirs"}, nil)
 
 	_ = pctx.SourcePathVariable("sAbiLinker", "prebuilts/clang-tools/${config.HostPrebuiltTag}/bin/header-abi-linker")
+	_ = pctx.SourcePathVariable("sAbiLinkerLibs", "prebuilts/clang-tools/${config.HostPrebuiltTag}/lib64")
 
-	sAbiLink = pctx.AndroidStaticRule("sAbiLink",
+	sAbiLink, sAbiLinkRE = remoteexec.StaticRules(pctx, "sAbiLink",
 		blueprint.RuleParams{
-			Command:        "$sAbiLinker -o ${out} $symbolFilter -arch $arch  $exportedHeaderFlags @${out}.rsp ",
+			Command:        "$reTemplate$sAbiLinker -o ${out} $symbolFilter -arch $arch  $exportedHeaderFlags @${out}.rsp ",
 			CommandDeps:    []string{"$sAbiLinker"},
 			Rspfile:        "${out}.rsp",
 			RspfileContent: "${in}",
-		},
-		"symbolFilter", "arch", "exportedHeaderFlags")
+		}, &remoteexec.REParams{
+			Labels:          map[string]string{"type": "tool", "name": "abi-linker"},
+			ExecStrategy:    "${config.REAbiLinkerExecStrategy}",
+			Inputs:          []string{"$sAbiLinkerLibs", "${out}.rsp", "$implicits"},
+			RSPFile:         "${out}.rsp",
+			OutputFiles:     []string{"$out"},
+			ToolchainInputs: []string{"$sAbiLinker"},
+			Platform:        map[string]string{remoteexec.PoolKey: "${config.RECXXPool}"},
+		}, []string{"symbolFilter", "arch", "exportedHeaderFlags"}, []string{"implicits"})
 
 	_ = pctx.SourcePathVariable("sAbiDiffer", "prebuilts/clang-tools/${config.HostPrebuiltTag}/bin/header-abi-diff")
 
@@ -256,7 +272,11 @@ var (
 	kytheExtract = pctx.StaticRule("kythe",
 		blueprint.RuleParams{
 			Command: `rm -f $out && ` +
-				`KYTHE_CORPUS=${kytheCorpus} KYTHE_OUTPUT_FILE=$out KYTHE_VNAMES=$kytheVnames KYTHE_KZIP_ENCODING=${kytheCuEncoding} ` +
+				`KYTHE_CORPUS=${kytheCorpus} ` +
+				`KYTHE_OUTPUT_FILE=$out ` +
+				`KYTHE_VNAMES=$kytheVnames ` +
+				`KYTHE_KZIP_ENCODING=${kytheCuEncoding} ` +
+				`KYTHE_CANONICALIZE_VNAME_PATHS=prefer-relative ` +
 				`$cxxExtractor $cFlags $in `,
 			CommandDeps: []string{"$cxxExtractor", "$kytheVnames"},
 		},
@@ -598,26 +618,45 @@ func TransformSourceToObj(ctx android.ModuleContext, subdir string, srcFiles and
 }
 
 // Generate a rule for compiling multiple .o files to a static library (.a)
-func TransformObjToStaticLib(ctx android.ModuleContext, objFiles android.Paths,
+func TransformObjToStaticLib(ctx android.ModuleContext,
+	objFiles android.Paths, wholeStaticLibs android.Paths,
 	flags builderFlags, outputFile android.ModuleOutPath, deps android.Paths) {
 
 	arCmd := "${config.ClangBin}/llvm-ar"
-	arFlags := "crsPD"
+	arFlags := ""
 	if !ctx.Darwin() {
 		arFlags += " -format=gnu"
 	}
 
-	ctx.Build(pctx, android.BuildParams{
-		Rule:        ar,
-		Description: "static link " + outputFile.Base(),
-		Output:      outputFile,
-		Inputs:      objFiles,
-		Implicits:   deps,
-		Args: map[string]string{
-			"arFlags": arFlags,
-			"arCmd":   arCmd,
-		},
-	})
+	if len(wholeStaticLibs) == 0 {
+		ctx.Build(pctx, android.BuildParams{
+			Rule:        ar,
+			Description: "static link " + outputFile.Base(),
+			Output:      outputFile,
+			Inputs:      objFiles,
+			Implicits:   deps,
+			Args: map[string]string{
+				"arFlags": "crsPD" + arFlags,
+				"arCmd":   arCmd,
+			},
+		})
+
+	} else {
+		ctx.Build(pctx, android.BuildParams{
+			Rule:        arWithLibs,
+			Description: "static link " + outputFile.Base(),
+			Output:      outputFile,
+			Inputs:      append(objFiles, wholeStaticLibs...),
+			Implicits:   deps,
+			Args: map[string]string{
+				"arCmd":      arCmd,
+				"arObjFlags": "crsPD" + arFlags,
+				"arObjs":     strings.Join(objFiles.Strings(), " "),
+				"arLibFlags": "cqsL" + arFlags,
+				"arLibs":     strings.Join(wholeStaticLibs.Strings(), " "),
+			},
+		})
+	}
 }
 
 // Generate a rule for compiling multiple .o files, plus static libraries, whole static libraries,
@@ -676,8 +715,17 @@ func TransformObjToDynamicBinary(ctx android.ModuleContext,
 	}
 
 	rule := ld
+	args := map[string]string{
+		"ldCmd":         ldCmd,
+		"crtBegin":      crtBegin.String(),
+		"libFlags":      strings.Join(libFlagsList, " "),
+		"extraLibFlags": flags.extraLibFlags,
+		"ldFlags":       flags.globalLdFlags + " " + flags.localLdFlags,
+		"crtEnd":        crtEnd.String(),
+	}
 	if ctx.Config().IsEnvTrue("RBE_CXX_LINKS") {
 		rule = ldRE
+		args["implicitOutputs"] = strings.Join(implicitOutputs.Strings(), ",")
 	}
 
 	ctx.Build(pctx, android.BuildParams{
@@ -687,14 +735,7 @@ func TransformObjToDynamicBinary(ctx android.ModuleContext,
 		ImplicitOutputs: implicitOutputs,
 		Inputs:          objFiles,
 		Implicits:       deps,
-		Args: map[string]string{
-			"ldCmd":         ldCmd,
-			"crtBegin":      crtBegin.String(),
-			"libFlags":      strings.Join(libFlagsList, " "),
-			"extraLibFlags": flags.extraLibFlags,
-			"ldFlags":       flags.globalLdFlags + " " + flags.localLdFlags,
-			"crtEnd":        crtEnd.String(),
-		},
+		Args:            args,
 	})
 }
 
@@ -719,17 +760,30 @@ func TransformDumpToLinkedDump(ctx android.ModuleContext, sAbiDumps android.Path
 	for _, tag := range excludedSymbolTags {
 		symbolFilterStr += " --exclude-symbol-tag " + tag
 	}
+	rule := sAbiLink
+	args := map[string]string{
+		"symbolFilter":        symbolFilterStr,
+		"arch":                ctx.Arch().ArchType.Name,
+		"exportedHeaderFlags": exportedHeaderFlags,
+	}
+	if ctx.Config().IsEnvTrue("RBE_ABI_LINKER") {
+		rule = sAbiLinkRE
+		rbeImplicits := implicits.Strings()
+		for _, p := range strings.Split(exportedHeaderFlags, " ") {
+			if len(p) > 2 {
+				// Exclude the -I prefix.
+				rbeImplicits = append(rbeImplicits, p[2:])
+			}
+		}
+		args["implicits"] = strings.Join(rbeImplicits, ",")
+	}
 	ctx.Build(pctx, android.BuildParams{
-		Rule:        sAbiLink,
+		Rule:        rule,
 		Description: "header-abi-linker " + outputFile.Base(),
 		Output:      outputFile,
 		Inputs:      sAbiDumps,
 		Implicits:   implicits,
-		Args: map[string]string{
-			"symbolFilter":        symbolFilterStr,
-			"arch":                ctx.Arch().ArchType.Name,
-			"exportedHeaderFlags": exportedHeaderFlags,
-		},
+		Args:        args,
 	})
 	return android.OptionalPathForPath(outputFile)
 }

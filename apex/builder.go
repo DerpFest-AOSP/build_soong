@@ -61,6 +61,7 @@ func init() {
 	pctx.HostBinToolVariable("zipalign", "zipalign")
 	pctx.HostBinToolVariable("jsonmodify", "jsonmodify")
 	pctx.HostBinToolVariable("conv_apex_manifest", "conv_apex_manifest")
+	pctx.HostBinToolVariable("extract_apks", "extract_apks")
 }
 
 var (
@@ -350,6 +351,19 @@ func (a *apexBundle) buildUnflattenedApex(ctx android.ModuleContext) {
 			symlinkDest := android.PathForModuleOut(ctx, "image"+suffix, symlinkPath).String()
 			copyCommands = append(copyCommands, "ln -sfn "+filepath.Base(destPath)+" "+symlinkDest)
 		}
+		for _, d := range fi.dataPaths {
+			// TODO(eakammer): This is now the third repetition of ~this logic for test paths, refactoring should be possible
+			relPath := d.Rel()
+			dataPath := d.String()
+			if !strings.HasSuffix(dataPath, relPath) {
+				panic(fmt.Errorf("path %q does not end with %q", dataPath, relPath))
+			}
+
+			dataDest := android.PathForModuleOut(ctx, "image"+suffix, fi.apexRelativePath(relPath)).String()
+
+			copyCommands = append(copyCommands, "cp -f "+d.String()+" "+dataDest)
+			implicitInputs = append(implicitInputs, d)
+		}
 	}
 
 	// TODO(jiyong): use RuleBuilder
@@ -406,6 +420,9 @@ func (a *apexBundle) buildUnflattenedApex(ctx android.ModuleContext) {
 			pathInApex := filepath.Join(f.installDir, f.builtFile.Base())
 			if f.installDir == "bin" || strings.HasPrefix(f.installDir, "bin/") {
 				executablePaths = append(executablePaths, pathInApex)
+				for _, d := range f.dataPaths {
+					readOnlyPaths = append(readOnlyPaths, filepath.Join(f.installDir, d.Rel()))
+				}
 				for _, s := range f.symlinks {
 					executablePaths = append(executablePaths, filepath.Join(f.installDir, s))
 				}
@@ -453,11 +470,11 @@ func (a *apexBundle) buildUnflattenedApex(ctx android.ModuleContext) {
 		}
 
 		targetSdkVersion := ctx.Config().DefaultAppTargetSdk()
+		// TODO(b/157078772): propagate min_sdk_version to apexer.
 		minSdkVersion := ctx.Config().DefaultAppTargetSdk()
 
 		if a.minSdkVersion(ctx) == android.SdkVersion_Android10 {
 			minSdkVersion = strconv.Itoa(a.minSdkVersion(ctx))
-			targetSdkVersion = strconv.Itoa(a.minSdkVersion(ctx))
 		}
 
 		if java.UseApiFingerprint(ctx) {
@@ -491,6 +508,10 @@ func (a *apexBundle) buildUnflattenedApex(ctx android.ModuleContext) {
 			// don't need hashtree for activation. Therefore, by removing hashtree from
 			// apex bundle (filesystem image in it, to be specific), we can save storage.
 			optFlags = append(optFlags, "--no_hashtree")
+		}
+
+		if a.testOnlyShouldSkipPayloadSign() {
+			optFlags = append(optFlags, "--unsigned_payload")
 		}
 
 		if a.properties.Apex_name != nil {
@@ -684,29 +705,48 @@ func (a *apexBundle) buildApexDependencyInfo(ctx android.ModuleContext) {
 		return
 	}
 
-	var content strings.Builder
-	for _, key := range android.SortedStringKeys(a.depInfos) {
-		info := a.depInfos[key]
-		toName := info.to
-		if info.isExternal {
-			toName = toName + " (external)"
+	depInfos := android.DepNameToDepInfoMap{}
+	a.walkPayloadDeps(ctx, func(ctx android.ModuleContext, from blueprint.Module, to android.ApexModule, externalDep bool) bool {
+		if from.Name() == to.Name() {
+			// This can happen for cc.reuseObjTag. We are not interested in tracking this.
+			// As soon as the dependency graph crosses the APEX boundary, don't go further.
+			return !externalDep
 		}
-		fmt.Fprintf(&content, "%s <- %s\\n", toName, strings.Join(android.SortedUniqueStrings(info.from), ", "))
-	}
 
-	depsInfoFile := android.PathForOutput(ctx, a.Name()+"-deps-info.txt")
-	ctx.Build(pctx, android.BuildParams{
-		Rule:        android.WriteFile,
-		Description: "Dependency Info",
-		Output:      depsInfoFile,
-		Args: map[string]string{
-			"content": content.String(),
-		},
+		if info, exists := depInfos[to.Name()]; exists {
+			if !android.InList(from.Name(), info.From) {
+				info.From = append(info.From, from.Name())
+			}
+			info.IsExternal = info.IsExternal && externalDep
+			depInfos[to.Name()] = info
+		} else {
+			toMinSdkVersion := "(no version)"
+			if m, ok := to.(interface{ MinSdkVersion() string }); ok {
+				if v := m.MinSdkVersion(); v != "" {
+					toMinSdkVersion = v
+				}
+			}
+
+			depInfos[to.Name()] = android.ApexModuleDepInfo{
+				To:            to.Name(),
+				From:          []string{from.Name()},
+				IsExternal:    externalDep,
+				MinSdkVersion: toMinSdkVersion,
+			}
+		}
+
+		// As soon as the dependency graph crosses the APEX boundary, don't go further.
+		return !externalDep
 	})
+
+	a.ApexBundleDepsInfo.BuildDepsInfoLists(ctx, proptools.String(a.properties.Min_sdk_version), depInfos)
 
 	ctx.Build(pctx, android.BuildParams{
 		Rule:   android.Phony,
 		Output: android.PathForPhony(ctx, a.Name()+"-deps-info"),
-		Inputs: []android.Path{depsInfoFile},
+		Inputs: []android.Path{
+			a.ApexBundleDepsInfo.FullListPath(),
+			a.ApexBundleDepsInfo.FlatListPath(),
+		},
 	})
 }

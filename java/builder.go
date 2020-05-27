@@ -27,6 +27,7 @@ import (
 	"github.com/google/blueprint/proptools"
 
 	"android/soong/android"
+	"android/soong/remoteexec"
 )
 
 var (
@@ -39,12 +40,12 @@ var (
 	// (if the rule produces .class files) or a .srcjar file (if the rule produces .java files).
 	// .srcjar files are unzipped into a temporary directory when compiled with javac.
 	// TODO(b/143658984): goma can't handle the --system argument to javac.
-	javac = pctx.AndroidRemoteStaticRule("javac", android.RemoteRuleSupports{Goma: false, RBE: true, RBEFlag: android.RBE_JAVAC},
+	javac, javacRE = remoteexec.StaticRules(pctx, "javac",
 		blueprint.RuleParams{
 			Command: `rm -rf "$outDir" "$annoDir" "$srcJarDir" && mkdir -p "$outDir" "$annoDir" "$srcJarDir" && ` +
 				`${config.ZipSyncCmd} -d $srcJarDir -l $srcJarDir/list -f "*.java" $srcJars && ` +
 				`(if [ -s $srcJarDir/list ] || [ -s $out.rsp ] ; then ` +
-				`${config.SoongJavacWrapper} ${config.JavacWrapper}${config.JavacCmd} ` +
+				`${config.SoongJavacWrapper} $reTemplate${config.JavacCmd} ` +
 				`${config.JavacHeapFlags} ${config.JavacVmFlags} ${config.CommonJdkFlags} ` +
 				`$processorpath $processor $javacFlags $bootClasspath $classpath ` +
 				`-source $javaVersion -target $javaVersion ` +
@@ -59,9 +60,12 @@ var (
 			CommandOrderOnly: []string{"${config.SoongJavacWrapper}"},
 			Rspfile:          "$out.rsp",
 			RspfileContent:   "$in",
-		},
-		"javacFlags", "bootClasspath", "classpath", "processorpath", "processor", "srcJars", "srcJarDir",
-		"outDir", "annoDir", "javaVersion")
+		}, &remoteexec.REParams{
+			Labels:       map[string]string{"type": "compile", "lang": "java", "compiler": "javac"},
+			ExecStrategy: "${config.REJavacExecStrategy}",
+			Platform:     map[string]string{remoteexec.PoolKey: "${config.REJavaPool}"},
+		}, []string{"javacFlags", "bootClasspath", "classpath", "processorpath", "processor", "srcJars", "srcJarDir",
+			"outDir", "annoDir", "javaVersion"}, nil)
 
 	_ = pctx.VariableFunc("kytheCorpus",
 		func(ctx android.PackageVarContext) string { return ctx.Config().XrefCorpusName() })
@@ -100,10 +104,22 @@ var (
 		"javacFlags", "bootClasspath", "classpath", "processorpath", "processor", "srcJars", "srcJarDir",
 		"outDir", "annoDir", "javaVersion")
 
-	turbine = pctx.AndroidStaticRule("turbine",
+	extractMatchingApks = pctx.StaticRule(
+		"extractMatchingApks",
+		blueprint.RuleParams{
+			Command: `rm -rf "$out" && ` +
+				`${config.ExtractApksCmd} -o "${out}" -allow-prereleased=${allow-prereleased} ` +
+				`-sdk-version=${sdk-version} -abis=${abis} ` +
+				`--screen-densities=${screen-densities} --stem=${stem} ` +
+				`${in}`,
+			CommandDeps: []string{"${config.ExtractApksCmd}"},
+		},
+		"abis", "allow-prereleased", "screen-densities", "sdk-version", "stem")
+
+	turbine, turbineRE = remoteexec.StaticRules(pctx, "turbine",
 		blueprint.RuleParams{
 			Command: `rm -rf "$outDir" && mkdir -p "$outDir" && ` +
-				`${config.JavaCmd} ${config.JavaVmFlags} -jar ${config.TurbineJar} --output $out.tmp ` +
+				`$reTemplate${config.JavaCmd} ${config.JavaVmFlags} -jar ${config.TurbineJar} --output $out.tmp ` +
 				`--temp_dir "$outDir" --sources @$out.rsp  --source_jars $srcJars ` +
 				`--javacopts ${config.CommonJdkFlags} ` +
 				`$javacFlags -source $javaVersion -target $javaVersion -- $bootClasspath $classpath && ` +
@@ -118,7 +134,15 @@ var (
 			RspfileContent: "$in",
 			Restat:         true,
 		},
-		"javacFlags", "bootClasspath", "classpath", "srcJars", "outDir", "javaVersion")
+		&remoteexec.REParams{Labels: map[string]string{"type": "tool", "name": "turbine"},
+			ExecStrategy:      "${config.RETurbineExecStrategy}",
+			Inputs:            []string{"${config.TurbineJar}", "${out}.rsp", "$implicits"},
+			RSPFile:           "${out}.rsp",
+			OutputFiles:       []string{"$out.tmp"},
+			OutputDirectories: []string{"$outDir"},
+			ToolchainInputs:   []string{"${config.JavaCmd}"},
+			Platform:          map[string]string{remoteexec.PoolKey: "${config.REJavaPool}"},
+		}, []string{"javacFlags", "bootClasspath", "classpath", "srcJars", "outDir", "javaVersion"}, []string{"implicits"})
 
 	jar = pctx.AndroidStaticRule("jar",
 		blueprint.RuleParams{
@@ -188,6 +212,7 @@ var (
 func init() {
 	pctx.Import("android/soong/android")
 	pctx.Import("android/soong/java/config")
+	pctx.Import("android/soong/remoteexec")
 }
 
 type javaBuilderFlags struct {
@@ -329,20 +354,26 @@ func TransformJavaToHeaderClasses(ctx android.ModuleContext, outputFile android.
 	deps = append(deps, classpath...)
 	deps = append(deps, flags.processorPath...)
 
+	rule := turbine
+	args := map[string]string{
+		"javacFlags":    flags.javacFlags,
+		"bootClasspath": bootClasspath,
+		"srcJars":       strings.Join(srcJars.Strings(), " "),
+		"classpath":     classpath.FormTurbineClassPath("--classpath "),
+		"outDir":        android.PathForModuleOut(ctx, "turbine", "classes").String(),
+		"javaVersion":   flags.javaVersion.String(),
+	}
+	if ctx.Config().IsEnvTrue("RBE_TURBINE") {
+		rule = turbineRE
+		args["implicits"] = strings.Join(deps.Strings(), ",")
+	}
 	ctx.Build(pctx, android.BuildParams{
-		Rule:        turbine,
+		Rule:        rule,
 		Description: "turbine",
 		Output:      outputFile,
 		Inputs:      srcFiles,
 		Implicits:   deps,
-		Args: map[string]string{
-			"javacFlags":    flags.javacFlags,
-			"bootClasspath": bootClasspath,
-			"srcJars":       strings.Join(srcJars.Strings(), " "),
-			"classpath":     classpath.FormTurbineClassPath("--classpath "),
-			"outDir":        android.PathForModuleOut(ctx, "turbine", "classes").String(),
-			"javaVersion":   flags.javaVersion.String(),
-		},
+		Args:        args,
 	})
 }
 
@@ -398,8 +429,12 @@ func transformJavaToClasses(ctx android.ModuleContext, outputFile android.Writab
 		outDir = filepath.Join(shardDir, outDir)
 		annoDir = filepath.Join(shardDir, annoDir)
 	}
+	rule := javac
+	if ctx.Config().IsEnvTrue("RBE_JAVAC") {
+		rule = javacRE
+	}
 	ctx.Build(pctx, android.BuildParams{
-		Rule:        javac,
+		Rule:        rule,
 		Description: desc,
 		Output:      outputFile,
 		Inputs:      srcFiles,

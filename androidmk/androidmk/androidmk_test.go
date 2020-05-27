@@ -1342,6 +1342,31 @@ android_app_import {
 `,
 	},
 	{
+		desc: "android_test_import prebuilt",
+		in: `
+		include $(CLEAR_VARS)
+		LOCAL_MODULE := foo
+		LOCAL_SRC_FILES := foo.apk
+		LOCAL_MODULE_CLASS := APPS
+		LOCAL_MODULE_TAGS := tests
+		LOCAL_MODULE_SUFFIX := .apk
+		LOCAL_CERTIFICATE := PRESIGNED
+		LOCAL_REPLACE_PREBUILT_APK_INSTALLED := $(LOCAL_PATH)/foo.apk
+		LOCAL_COMPATIBILITY_SUITE := cts
+		include $(BUILD_PREBUILT)
+		`,
+		expected: `
+android_test_import {
+	name: "foo",
+	srcs: ["foo.apk"],
+
+	certificate: "PRESIGNED",
+	preprocessed: true,
+	test_suites: ["cts"],
+}
+`,
+	},
+	{
 		desc: "undefined_boolean_var",
 		in: `
 include $(CLEAR_VARS)
@@ -1356,6 +1381,29 @@ cc_binary {
     srcs: ["a.cpp"],
     // ANDROIDMK TRANSLATION ERROR: value should evaluate to boolean literal
     // LOCAL_32_BIT_ONLY := $(FLAG)
+
+}
+`,
+	},
+	{
+		desc: "runtime_resource_overlay",
+		in: `
+include $(CLEAR_VARS)
+LOCAL_PACKAGE_NAME := foo
+LOCAL_PRODUCT_MODULE := true
+LOCAL_RESOURCE_DIR := $(LOCAL_PATH)/res
+LOCAL_SDK_VERSION := current
+LOCAL_RRO_THEME := FooTheme
+
+include $(BUILD_RRO_PACKAGE)
+`,
+		expected: `
+runtime_resource_overlay {
+	name: "foo",
+	product_specific: true,
+	resource_dirs: ["res"],
+	sdk_version: "current",
+	theme: "FooTheme",
 
 }
 `,

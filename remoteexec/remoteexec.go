@@ -75,6 +75,9 @@ type REParams struct {
 	// OutputFiles is a list of output file paths or ninja variables as placeholders for rule
 	// outputs.
 	OutputFiles []string
+	// OutputDirectories is a list of output directory paths or ninja variables as placeholders
+	// for rule outputs.
+	OutputDirectories []string
 	// ToolchainInputs is a list of paths or ninja variables pointing to the location of
 	// toolchain binaries used by the rule.
 	ToolchainInputs []string
@@ -82,17 +85,31 @@ type REParams struct {
 
 func init() {
 	pctx.VariableFunc("Wrapper", func(ctx android.PackageVarContext) string {
-		if override := ctx.Config().Getenv("RBE_WRAPPER"); override != "" {
-			return override
-		}
-		return DefaultWrapperPath
+		return wrapper(ctx.Config())
 	})
 }
 
-// Generate the remote execution wrapper template to be added as a prefix to the rule's command.
-func (r *REParams) Template() string {
-	template := "${remoteexec.Wrapper}"
+func wrapper(cfg android.Config) string {
+	if override := cfg.Getenv("RBE_WRAPPER"); override != "" {
+		return override
+	}
+	return DefaultWrapperPath
+}
 
+// Template generates the remote execution wrapper template to be added as a prefix to the rule's
+// command.
+func (r *REParams) Template() string {
+	return "${remoteexec.Wrapper}" + r.wrapperArgs()
+}
+
+// NoVarTemplate generate the remote execution wrapper template without variables, to be used in
+// RuleBuilder.
+func (r *REParams) NoVarTemplate(cfg android.Config) string {
+	return wrapper(cfg) + r.wrapperArgs()
+}
+
+func (r *REParams) wrapperArgs() string {
+	args := ""
 	var kvs []string
 	labels := r.Labels
 	if len(labels) == 0 {
@@ -102,7 +119,7 @@ func (r *REParams) Template() string {
 		kvs = append(kvs, k+"="+v)
 	}
 	sort.Strings(kvs)
-	template += " --labels=" + strings.Join(kvs, ",")
+	args += " --labels=" + strings.Join(kvs, ",")
 
 	var platform []string
 	for k, v := range r.Platform {
@@ -116,36 +133,42 @@ func (r *REParams) Template() string {
 	}
 	if platform != nil {
 		sort.Strings(platform)
-		template += " --platform=\"" + strings.Join(platform, ",") + "\""
+		args += " --platform=\"" + strings.Join(platform, ",") + "\""
 	}
 
 	strategy := r.ExecStrategy
 	if strategy == "" {
 		strategy = defaultExecStrategy
 	}
-	template += " --exec_strategy=" + strategy
+	args += " --exec_strategy=" + strategy
 
 	if len(r.Inputs) > 0 {
-		template += " --inputs=" + strings.Join(r.Inputs, ",")
+		args += " --inputs=" + strings.Join(r.Inputs, ",")
 	}
 
 	if r.RSPFile != "" {
-		template += " --input_list_paths=" + r.RSPFile
+		args += " --input_list_paths=" + r.RSPFile
 	}
 
 	if len(r.OutputFiles) > 0 {
-		template += " --output_files=" + strings.Join(r.OutputFiles, ",")
+		args += " --output_files=" + strings.Join(r.OutputFiles, ",")
+	}
+
+	if len(r.OutputDirectories) > 0 {
+		args += " --output_directories=" + strings.Join(r.OutputDirectories, ",")
 	}
 
 	if len(r.ToolchainInputs) > 0 {
-		template += " --toolchain_inputs=" + strings.Join(r.ToolchainInputs, ",")
+		args += " --toolchain_inputs=" + strings.Join(r.ToolchainInputs, ",")
 	}
 
-	return template + " -- "
+	return args + " -- "
 }
 
 // StaticRules returns a pair of rules based on the given RuleParams, where the first rule is a
-// locally executable rule and the second rule is a remotely executable rule.
+// locally executable rule and the second rule is a remotely executable rule. commonArgs are args
+// used for both the local and remotely executable rules. reArgs are used only for remote
+// execution.
 func StaticRules(ctx android.PackageContext, name string, ruleParams blueprint.RuleParams, reParams *REParams, commonArgs []string, reArgs []string) (blueprint.Rule, blueprint.Rule) {
 	ruleParamsRE := ruleParams
 	ruleParams.Command = strings.ReplaceAll(ruleParams.Command, "$reTemplate", "")
@@ -153,4 +176,15 @@ func StaticRules(ctx android.PackageContext, name string, ruleParams blueprint.R
 
 	return ctx.AndroidStaticRule(name, ruleParams, commonArgs...),
 		ctx.AndroidRemoteStaticRule(name+"RE", android.RemoteRuleSupports{RBE: true}, ruleParamsRE, append(commonArgs, reArgs...)...)
+}
+
+// EnvOverrideFunc retrieves a variable func that evaluates to the value of the given environment
+// variable if set, otherwise the given default.
+func EnvOverrideFunc(envVar, defaultVal string) func(ctx android.PackageVarContext) string {
+	return func(ctx android.PackageVarContext) string {
+		if override := ctx.Config().Getenv(envVar); override != "" {
+			return override
+		}
+		return defaultVal
+	}
 }
