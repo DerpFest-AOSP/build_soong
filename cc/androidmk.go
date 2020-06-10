@@ -92,6 +92,9 @@ func (c *Module) AndroidMkEntries() []android.AndroidMkEntries {
 				if len(c.Properties.AndroidMkWholeStaticLibs) > 0 {
 					entries.AddStrings("LOCAL_WHOLE_STATIC_LIBRARIES", c.Properties.AndroidMkWholeStaticLibs...)
 				}
+				if len(c.Properties.AndroidMkHeaderLibs) > 0 {
+					entries.AddStrings("LOCAL_HEADER_LIBRARIES", c.Properties.AndroidMkHeaderLibs...)
+				}
 				entries.SetString("LOCAL_SOONG_LINK_TYPE", c.makeLinkType)
 				if c.UseVndk() {
 					entries.SetBool("LOCAL_USE_VNDK", true)
@@ -146,7 +149,7 @@ func (c *Module) AndroidMkEntries() []android.AndroidMkEntries {
 	return []android.AndroidMkEntries{entries}
 }
 
-func androidMkWriteTestData(data android.Paths, ctx AndroidMkContext, entries *android.AndroidMkEntries) {
+func AndroidMkDataPaths(data android.Paths) []string {
 	var testFiles []string
 	for _, d := range data {
 		rel := d.Rel()
@@ -157,6 +160,11 @@ func androidMkWriteTestData(data android.Paths, ctx AndroidMkContext, entries *a
 		path = strings.TrimSuffix(path, rel)
 		testFiles = append(testFiles, path+":"+rel)
 	}
+	return testFiles
+}
+
+func androidMkWriteTestData(data android.Paths, ctx AndroidMkContext, entries *android.AndroidMkEntries) {
+	testFiles := AndroidMkDataPaths(data)
 	if len(testFiles) > 0 {
 		entries.ExtraEntries = append(entries.ExtraEntries, func(entries *android.AndroidMkEntries) {
 			entries.AddStrings("LOCAL_TEST_DATA", testFiles...)
@@ -538,6 +546,25 @@ func (c *vendorSnapshotBinaryDecorator) AndroidMkEntries(ctx AndroidMkContext, e
 	entries.ExtraEntries = append(entries.ExtraEntries, func(entries *android.AndroidMkEntries) {
 		entries.AddStrings("LOCAL_MODULE_SYMLINKS", c.Properties.Symlinks...)
 	})
+}
+
+func (c *vendorSnapshotObjectLinker) AndroidMkEntries(ctx AndroidMkContext, entries *android.AndroidMkEntries) {
+	entries.Class = "STATIC_LIBRARIES"
+
+	if c.androidMkVendorSuffix {
+		entries.SubName = vendorSuffix
+	} else {
+		entries.SubName = ""
+	}
+
+	entries.ExtraFooters = append(entries.ExtraFooters,
+		func(w io.Writer, name, prefix, moduleDir string, entries *android.AndroidMkEntries) {
+			out := entries.OutputFile.Path()
+			varname := fmt.Sprintf("SOONG_%sOBJECT_%s%s", prefix, name, entries.SubName)
+
+			fmt.Fprintf(w, "\n%s := %s\n", varname, out.String())
+			fmt.Fprintln(w, ".KATI_READONLY: "+varname)
+		})
 }
 
 func (c *ndkPrebuiltStlLinker) AndroidMkEntries(ctx AndroidMkContext, entries *android.AndroidMkEntries) {

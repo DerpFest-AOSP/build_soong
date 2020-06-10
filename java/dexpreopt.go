@@ -37,7 +37,7 @@ type dexpreopter struct {
 	usesLibs         []string
 	optionalUsesLibs []string
 	enforceUsesLibs  bool
-	libraryPaths     map[string]android.Path
+	libraryPaths     dexpreopt.LibraryPaths
 
 	builtInstalled string
 }
@@ -60,6 +60,10 @@ type DexpreoptProperties struct {
 		// profile location set by PRODUCT_DEX_PREOPT_PROFILE_DIR, or empty if not found.
 		Profile *string `android:"path"`
 	}
+}
+
+func init() {
+	dexpreopt.DexpreoptRunningInSoong = true
 }
 
 func (d *dexpreopter) dexpreoptDisabled(ctx android.BaseModuleContext) bool {

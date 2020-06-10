@@ -18,20 +18,20 @@ import (
 	"fmt"
 	"path"
 	"path/filepath"
-	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
-
-	"android/soong/android"
-	"android/soong/cc"
-	"android/soong/java"
-	"android/soong/python"
 
 	"github.com/google/blueprint"
 	"github.com/google/blueprint/bootstrap"
 	"github.com/google/blueprint/proptools"
+
+	"android/soong/android"
+	"android/soong/cc"
+	prebuilt_etc "android/soong/etc"
+	"android/soong/java"
+	"android/soong/python"
+	"android/soong/sh"
 )
 
 const (
@@ -63,6 +63,7 @@ var (
 	certificateTag = dependencyTag{name: "certificate"}
 	usesTag        = dependencyTag{name: "uses"}
 	androidAppTag  = dependencyTag{name: "androidApp", payload: true}
+	rroTag         = dependencyTag{name: "rro", payload: true}
 	apexAvailWl    = makeApexAvailableWhitelist()
 
 	inverseApexAvailWl = invertApexWhiteList(apexAvailWl)
@@ -91,89 +92,6 @@ func WhitelistedApexAvailable(moduleName string) []string {
 func makeApexAvailableWhitelist() map[string][]string {
 	// The "Module separator"s below are employed to minimize merge conflicts.
 	m := make(map[string][]string)
-	//
-	// Module separator
-	//
-	m["com.android.adbd"] = []string{
-		"libadbd_auth",
-		"libbuildversion",
-		"libcap",
-		"libmdnssd",
-		"libminijail",
-		"libminijail_gen_constants",
-		"libminijail_gen_constants_obj",
-		"libminijail_gen_syscall",
-		"libminijail_gen_syscall_obj",
-		"libminijail_generated",
-		"libpackagelistparser",
-		"libpcre2",
-		"libprocessgroup_headers",
-	}
-	//
-	// Module separator
-	//
-	artApexContents := []string{
-		"art_cmdlineparser_headers",
-		"art_disassembler_headers",
-		"art_libartbase_headers",
-		"bionic_libc_platform_headers",
-		"core-repackaged-icu4j",
-		"cpp-define-generator-asm-support",
-		"cpp-define-generator-definitions",
-		"crtbegin_dynamic",
-		"crtbegin_dynamic1",
-		"crtbegin_so1",
-		"crtbrand",
-		"dex2oat_headers",
-		"dt_fd_forward_export",
-		"icu4c_extra_headers",
-		"javavm_headers",
-		"jni_platform_headers",
-		"libPlatformProperties",
-		"libadbconnection_client",
-		"libadbconnection_server",
-		"libandroidicuinit",
-		"libart_runtime_headers_ndk",
-		"libartd-disassembler",
-		"libasync_safe",
-		"libdexfile_all_headers",
-		"libdexfile_external_headers",
-		"libdexfile_support",
-		"libdmabufinfo",
-		"libexpat",
-		"libfdlibm",
-		"libgtest_prod",
-		"libicui18n_headers",
-		"libicuuc",
-		"libicuuc_headers",
-		"libicuuc_stubdata",
-		"libjdwp_headers",
-		"liblz4",
-		"liblzma",
-		"libmeminfo",
-		"libnativebridge-headers",
-		"libnativehelper_header_only",
-		"libnativeloader-headers",
-		"libnpt_headers",
-		"libopenjdkjvmti_headers",
-		"libperfetto_client_experimental",
-		"libprocinfo",
-		"libunwind_llvm",
-		"libunwindstack",
-		"libv8",
-		"libv8base",
-		"libv8gen",
-		"libv8platform",
-		"libv8sampler",
-		"libv8src",
-		"libvixl",
-		"libvixld",
-		"libz",
-		"libziparchive",
-		"perfetto_trace_protos",
-	}
-	m["com.android.art.debug"] = artApexContents
-	m["com.android.art.release"] = artApexContents
 	//
 	// Module separator
 	//
@@ -232,13 +150,10 @@ func makeApexAvailableWhitelist() map[string][]string {
 		"libevent",
 		"libfmq",
 		"libg722codec",
-		"libgtest_prod",
 		"libgui_headers",
 		"libmedia_headers",
 		"libmodpb64",
 		"libosi",
-		"libprocessgroup",
-		"libprocessgroup_headers",
 		"libstagefright_foundation_headers",
 		"libstagefright_headers",
 		"libstatslog",
@@ -251,7 +166,6 @@ func makeApexAvailableWhitelist() map[string][]string {
 		"netd_aidl_interface-unstable-java",
 		"netd_event_listener_interface-java",
 		"netlink-client",
-		"networkstack-aidl-interfaces-unstable-java",
 		"networkstack-client",
 		"sap-api-java-static",
 		"services.net",
@@ -264,34 +178,7 @@ func makeApexAvailableWhitelist() map[string][]string {
 	// Module separator
 	//
 	m["com.android.conscrypt"] = []string{
-		"boringssl_self_test",
 		"libnativehelper_header_only",
-		"unsupportedappusage",
-	}
-	//
-	// Module separator
-	//
-	m["com.android.extservices"] = []string{
-		"flatbuffer_headers",
-		"liblua",
-		"libtextclassifier",
-		"libtextclassifier_hash_static",
-		"libtflite_static",
-		"libutf",
-		"libz_current",
-		"tensorflow_headers",
-	}
-	//
-	// Module separator
-	//
-	m["com.android.cronet"] = []string{
-		"cronet_impl_common_java",
-		"cronet_impl_native_java",
-		"cronet_impl_platform_java",
-		"libcronet.80.0.3986.0",
-		"org.chromium.net.cronet",
-		"org.chromium.net.cronet.xml",
-		"prebuilt_libcronet.80.0.3986.0",
 	}
 	//
 	// Module separator
@@ -308,8 +195,6 @@ func makeApexAvailableWhitelist() map[string][]string {
 		"libarect",
 		"libbuildversion",
 		"libmath",
-		"libprocessgroup",
-		"libprocessgroup_headers",
 		"libprocpartition",
 		"libsync",
 	}
@@ -341,7 +226,10 @@ func makeApexAvailableWhitelist() map[string][]string {
 		"android.hidl.token@1.0",
 		"android.hidl.token@1.0-utils",
 		"bionic_libc_platform_headers",
+		"exoplayer2-extractor",
+		"exoplayer2-extractor-annotation-stubs",
 		"gl_headers",
+		"jsr305",
 		"libEGL",
 		"libEGL_blobCache",
 		"libEGL_getProcAddress",
@@ -352,7 +240,6 @@ func makeApexAvailableWhitelist() map[string][]string {
 		"libaacextractor",
 		"libamrextractor",
 		"libarect",
-		"libasync_safe",
 		"libaudio_system_headers",
 		"libaudioclient",
 		"libaudioclient_headers",
@@ -406,13 +293,10 @@ func makeApexAvailableWhitelist() map[string][]string {
 		"libnblog",
 		"liboggextractor",
 		"libpackagelistparser",
-		"libpcre2",
 		"libpdx",
 		"libpdx_default_transport",
 		"libpdx_headers",
 		"libpdx_uds",
-		"libprocessgroup",
-		"libprocessgroup_headers",
 		"libprocinfo",
 		"libsonivox",
 		"libspeexresampler",
@@ -478,7 +362,6 @@ func makeApexAvailableWhitelist() map[string][]string {
 		"libFraunhoferAAC",
 		"libLibGuiProperties",
 		"libarect",
-		"libasync_safe",
 		"libaudio_system_headers",
 		"libaudioutils",
 		"libaudioutils",
@@ -492,7 +375,6 @@ func makeApexAvailableWhitelist() map[string][]string {
 		"libbluetooth-types-header",
 		"libbufferhub_headers",
 		"libc_scudo",
-		"libcap",
 		"libcodec2",
 		"libcodec2_headers",
 		"libcodec2_hidl@1.0",
@@ -551,21 +433,12 @@ func makeApexAvailableWhitelist() map[string][]string {
 		"libmath",
 		"libmedia_codecserviceregistrant",
 		"libmedia_headers",
-		"libminijail",
-		"libminijail_gen_constants",
-		"libminijail_gen_constants_obj",
-		"libminijail_gen_syscall",
-		"libminijail_gen_syscall_obj",
-		"libminijail_generated",
 		"libmpeg2dec",
 		"libnativebase_headers",
 		"libnativebridge_lazy",
 		"libnativeloader_lazy",
 		"libnativewindow_headers",
-		"libopus",
 		"libpdx_headers",
-		"libprocessgroup",
-		"libprocessgroup_headers",
 		"libscudo_wrapper",
 		"libsfplugin_ccodec_utils",
 		"libstagefright_amrnb_common",
@@ -611,12 +484,6 @@ func makeApexAvailableWhitelist() map[string][]string {
 	// Module separator
 	//
 	m["com.android.permission"] = []string{
-		"androidx.annotation_annotation",
-		"androidx.annotation_annotation-nodeps",
-		"androidx.lifecycle_lifecycle-common",
-		"androidx.lifecycle_lifecycle-common-java8",
-		"androidx.lifecycle_lifecycle-common-java8-nodeps",
-		"androidx.lifecycle_lifecycle-common-nodeps",
 		"kotlin-annotations",
 		"kotlin-stdlib",
 		"kotlin-stdlib-jdk7",
@@ -633,8 +500,6 @@ func makeApexAvailableWhitelist() map[string][]string {
 	m["com.android.runtime"] = []string{
 		"bionic_libc_platform_headers",
 		"libarm-optimized-routines-math",
-		"libasync_safe",
-		"libasync_safe_headers",
 		"libc_aeabi",
 		"libc_bionic",
 		"libc_bionic_ndk",
@@ -670,13 +535,11 @@ func makeApexAvailableWhitelist() map[string][]string {
 		"libdexfile_support",
 		"libdexfile_support_static",
 		"libdl_static",
-		"libgtest_prod",
 		"libjemalloc5",
 		"liblinker_main",
 		"liblinker_malloc",
 		"liblz4",
 		"liblzma",
-		"libprocessgroup_headers",
 		"libprocinfo",
 		"libpropertyinfoparser",
 		"libscudo",
@@ -690,37 +553,22 @@ func makeApexAvailableWhitelist() map[string][]string {
 	//
 	// Module separator
 	//
-	m["com.android.resolv"] = []string{
-		"dnsresolver_aidl_interface-unstable-ndk_platform",
-		"libgtest_prod",
-		"libnativehelper_header_only",
-		"libnetd_client_headers",
-		"libnetd_resolv",
-		"libnetdutils",
-		"libprocessgroup",
-		"libprocessgroup_headers",
-		"libstatslog_resolv",
-		"libstatspush_compat",
-		"libstatssocket",
-		"libstatssocket_headers",
-		"libsysutils",
-		"netd_event_listener_interface-ndk_platform",
-		"server_configurable_flags",
-		"stats_proto",
-	}
-	//
-	// Module separator
-	//
 	m["com.android.tethering"] = []string{
-		"libnativehelper_compat_libc++",
-		"android.hardware.tetheroffload.config@1.0",
+		"android.hardware.tetheroffload.config-V1.0-java",
+		"android.hardware.tetheroffload.control-V1.0-java",
+		"android.hidl.base-V1.0-java",
+		"ipmemorystore-aidl-interfaces-java",
 		"libcgrouprc",
 		"libcgrouprc_format",
-		"libprocessgroup",
-		"libprocessgroup_headers",
+		"libnativehelper_compat_libc++",
 		"libtetherutilsjni",
 		"libvndksupport",
+		"net-utils-framework-common",
+		"netd_aidl_interface-V3-java",
+		"netlink-client",
+		"networkstack-aidl-interfaces-java",
 		"tethering-aidl-interfaces-java",
+		"TetheringApiCurrentLib",
 	}
 	//
 	// Module separator
@@ -744,8 +592,6 @@ func makeApexAvailableWhitelist() map[string][]string {
 		"android.hidl.manager-V1.0-java",
 		"android.hidl.manager-V1.1-java",
 		"android.hidl.manager-V1.2-java",
-		"androidx.annotation_annotation",
-		"androidx.annotation_annotation-nodeps",
 		"bouncycastle-unbundled",
 		"dnsresolver_aidl_interface-V2-java",
 		"error_prone_annotations",
@@ -755,22 +601,18 @@ func makeApexAvailableWhitelist() map[string][]string {
 		"ipmemorystore-aidl-interfaces-java",
 		"ksoap2",
 		"libnanohttpd",
-		"libprocessgroup",
-		"libprocessgroup_headers",
 		"libwifi-jni",
 		"net-utils-services-common",
 		"netd_aidl_interface-V2-java",
 		"netd_aidl_interface-unstable-java",
 		"netd_event_listener_interface-java",
 		"netlink-client",
-		"networkstack-aidl-interfaces-unstable-java",
 		"networkstack-client",
 		"services.net",
 		"wifi-lite-protos",
 		"wifi-nano-protos",
 		"wifi-service-pre-jarjar",
 		"wifi-service-resources",
-		"prebuilt_androidx.annotation_annotation-nodeps",
 	}
 	//
 	// Module separator
@@ -784,13 +626,21 @@ func makeApexAvailableWhitelist() map[string][]string {
 	// Module separator
 	//
 	m["com.android.os.statsd"] = []string{
-		"libprocessgroup_headers",
 		"libstatssocket",
 	}
 	//
 	// Module separator
 	//
 	m[android.AvailableToAnyApex] = []string{
+		// TODO(b/156996905) Set apex_available/min_sdk_version for androidx/extras support libraries
+		"androidx",
+		"androidx-constraintlayout_constraintlayout",
+		"androidx-constraintlayout_constraintlayout-nodeps",
+		"androidx-constraintlayout_constraintlayout-solver",
+		"androidx-constraintlayout_constraintlayout-solver-nodeps",
+		"com.google.android.material_material",
+		"com.google.android.material_material-nodeps",
+
 		"libatomic",
 		"libclang_rt",
 		"libgcc_stripped",
@@ -810,6 +660,7 @@ func init() {
 	android.RegisterModuleType("apex_defaults", defaultsFactory)
 	android.RegisterModuleType("prebuilt_apex", PrebuiltFactory)
 	android.RegisterModuleType("override_apex", overrideApexFactory)
+	android.RegisterModuleType("apex_set", apexSetFactory)
 
 	android.PreDepsMutators(RegisterPreDepsMutators)
 	android.PostDepsMutators(RegisterPostDepsMutators)
@@ -831,17 +682,22 @@ func RegisterPostDepsMutators(ctx android.RegisterMutatorsContext) {
 	ctx.BottomUp("apex", apexMutator).Parallel()
 	ctx.BottomUp("apex_flattened", apexFlattenedMutator).Parallel()
 	ctx.BottomUp("apex_uses", apexUsesMutator).Parallel()
+	ctx.BottomUp("mark_platform_availability", markPlatformAvailability).Parallel()
 }
 
 // Mark the direct and transitive dependencies of apex bundles so that they
 // can be built for the apex bundles.
 func apexDepsMutator(mctx android.TopDownMutatorContext) {
+	if !mctx.Module().Enabled() {
+		return
+	}
 	var apexBundles []android.ApexInfo
 	var directDep bool
 	if a, ok := mctx.Module().(*apexBundle); ok && !a.vndkApex {
-		apexBundles = []android.ApexInfo{android.ApexInfo{
+		apexBundles = []android.ApexInfo{{
 			ApexName:      mctx.ModuleName(),
 			MinSdkVersion: a.minSdkVersion(mctx),
+			Updatable:     a.Updatable(),
 		}}
 		directDep = true
 	} else if am, ok := mctx.Module().(android.ApexModule); ok {
@@ -865,6 +721,60 @@ func apexDepsMutator(mctx android.TopDownMutatorContext) {
 	})
 }
 
+// mark if a module cannot be available to platform. A module cannot be available
+// to platform if 1) it is explicitly marked as not available (i.e. "//apex_available:platform"
+// is absent) or 2) it depends on another module that isn't (or can't be) available to platform
+func markPlatformAvailability(mctx android.BottomUpMutatorContext) {
+	// Host and recovery are not considered as platform
+	if mctx.Host() || mctx.Module().InstallInRecovery() {
+		return
+	}
+
+	if am, ok := mctx.Module().(android.ApexModule); ok {
+		availableToPlatform := am.AvailableFor(android.AvailableToPlatform)
+
+		// In a rare case when a lib is marked as available only to an apex
+		// but the apex doesn't exist. This can happen in a partial manifest branch
+		// like master-art. Currently, libstatssocket in the stats APEX is causing
+		// this problem.
+		// Include the lib in platform because the module SDK that ought to provide
+		// it doesn't exist, so it would otherwise be left out completely.
+		// TODO(b/154888298) remove this by adding those libraries in module SDKS and skipping
+		// this check for libraries provided by SDKs.
+		if !availableToPlatform && !android.InAnyApex(am.Name()) {
+			availableToPlatform = true
+		}
+
+		// If any of the dep is not available to platform, this module is also considered
+		// as being not available to platform even if it has "//apex_available:platform"
+		mctx.VisitDirectDeps(func(child android.Module) {
+			if !am.DepIsInSameApex(mctx, child) {
+				// if the dependency crosses apex boundary, don't consider it
+				return
+			}
+			if dep, ok := child.(android.ApexModule); ok && dep.NotAvailableForPlatform() {
+				availableToPlatform = false
+				// TODO(b/154889534) trigger an error when 'am' has "//apex_available:platform"
+			}
+		})
+
+		// Exception 1: stub libraries and native bridge libraries are always available to platform
+		if cc, ok := mctx.Module().(*cc.Module); ok &&
+			(cc.IsStubs() || cc.Target().NativeBridge == android.NativeBridgeEnabled) {
+			availableToPlatform = true
+		}
+
+		// Exception 2: bootstrap bionic libraries are also always available to platform
+		if cc.InstallToBootstrap(mctx.ModuleName(), mctx.Config()) {
+			availableToPlatform = true
+		}
+
+		if !availableToPlatform {
+			am.SetNotAvailableForPlatform()
+		}
+	}
+}
+
 // If a module in an APEX depends on a module from an SDK then it needs an APEX
 // specific variant created for it. Refer to sdk.sdkDepsReplaceMutator.
 func inAnySdk(module android.Module) bool {
@@ -877,6 +787,9 @@ func inAnySdk(module android.Module) bool {
 
 // Create apex variations if a module is included in APEX(s).
 func apexMutator(mctx android.BottomUpMutatorContext) {
+	if !mctx.Module().Enabled() {
+		return
+	}
 	if am, ok := mctx.Module().(android.ApexModule); ok && am.CanHaveApexVariants() {
 		am.CreateApexVariations(mctx)
 	} else if a, ok := mctx.Module().(*apexBundle); ok && !a.vndkApex {
@@ -914,6 +827,9 @@ func addFlattenedFileContextsInfos(ctx android.BaseModuleContext, fileContextsIn
 }
 
 func apexFlattenedMutator(mctx android.BottomUpMutatorContext) {
+	if !mctx.Module().Enabled() {
+		return
+	}
 	if ab, ok := mctx.Module().(*apexBundle); ok {
 		var variants []string
 		switch proptools.StringDefault(ab.properties.Payload_type, "image") {
@@ -1093,11 +1009,17 @@ type apexBundleProperties struct {
 	// Should be only used in tests#.
 	Test_only_no_hashtree *bool
 
+	// Whenever apex_payload.img of the APEX should not be dm-verity signed.
+	// Should be only used in tests#.
+	Test_only_unsigned_payload *bool
+
 	IsCoverageVariant bool `blueprint:"mutated"`
 
 	// Whether this APEX is considered updatable or not. When set to true, this will enforce additional
-	// rules for making sure that the APEX is truely updatable. This will also disable the size optimizations
-	// like symlinking to the system libs. Default is false.
+	// rules for making sure that the APEX is truly updatable.
+	// - To be updatable, min_sdk_version should be set as well
+	// This will also disable the size optimizations like symlinking to the system libs.
+	// Default is false.
 	Updatable *bool
 
 	// The minimum SDK version that this apex must be compatibile with.
@@ -1131,6 +1053,9 @@ type apexTargetBundleProperties struct {
 type overridableProperties struct {
 	// List of APKs to package inside APEX
 	Apps []string
+
+	// List of runtime resource overlays (RROs) inside APEX
+	Rros []string
 
 	// Names of modules to be overridden. Listed modules can only be other binaries
 	// (in Make or Soong).
@@ -1190,6 +1115,7 @@ const (
 	javaSharedLib
 	nativeTest
 	app
+	appSet
 )
 
 func (class apexFileClass) NameInMake() string {
@@ -1204,7 +1130,7 @@ func (class apexFileClass) NameInMake() string {
 		return "JAVA_LIBRARIES"
 	case nativeTest:
 		return "NATIVE_TESTS"
-	case app:
+	case app, appSet:
 		// b/142537672 Why isn't this APP? We want to have full control over
 		// the paths and file names of the apk file under the flattend APEX.
 		// If this is set to APP, then the paths and file names are modified
@@ -1221,12 +1147,14 @@ func (class apexFileClass) NameInMake() string {
 // apexFile represents a file in an APEX bundle
 type apexFile struct {
 	builtFile  android.Path
+	stem       string
 	moduleName string
 	installDir string
 	class      apexFileClass
 	module     android.Module
 	// list of symlinks that will be created in installDir that point to this apexFile
 	symlinks      []string
+	dataPaths     android.Paths
 	transitiveDep bool
 	moduleDir     string
 
@@ -1262,16 +1190,27 @@ func (af *apexFile) Ok() bool {
 	return af.builtFile != nil && af.builtFile.String() != ""
 }
 
+func (af *apexFile) apexRelativePath(path string) string {
+	return filepath.Join(af.installDir, path)
+}
+
 // Path() returns path of this apex file relative to the APEX root
 func (af *apexFile) Path() string {
-	return filepath.Join(af.installDir, af.builtFile.Base())
+	return af.apexRelativePath(af.Stem())
+}
+
+func (af *apexFile) Stem() string {
+	if af.stem != "" {
+		return af.stem
+	}
+	return af.builtFile.Base()
 }
 
 // SymlinkPaths() returns paths of the symlinks (if any) relative to the APEX root
 func (af *apexFile) SymlinkPaths() []string {
 	var ret []string
 	for _, symlink := range af.symlinks {
-		ret = append(ret, filepath.Join(af.installDir, symlink))
+		ret = append(ret, af.apexRelativePath(symlink))
 	}
 	return ret
 }
@@ -1284,12 +1223,6 @@ func (af *apexFile) AvailableToPlatform() bool {
 		return am.AvailableFor(android.AvailableToPlatform)
 	}
 	return false
-}
-
-type depInfo struct {
-	to         string
-	from       []string
-	isExternal bool
 }
 
 type apexBundle struct {
@@ -1326,7 +1259,7 @@ type apexBundle struct {
 	requiredDeps []string
 
 	// list of module names that this APEX is including (to be shown via *-deps-info target)
-	depInfos map[string]depInfo
+	android.ApexBundleDepsInfo
 
 	testApex        bool
 	vndkApex        bool
@@ -1477,19 +1410,7 @@ func (a *apexBundle) DepsMutator(ctx android.BottomUpMutatorContext) {
 					target,
 					a.getImageVariation(config))
 			}
-
-			if strings.HasPrefix(ctx.ModuleName(), "com.android.runtime") && target.Os.Class == android.Device {
-				for _, sanitizer := range ctx.Config().SanitizeDevice() {
-					if sanitizer == "hwaddress" {
-						addDependenciesForNativeModules(ctx,
-							ApexNativeDependencies{[]string{"libclang_rt.hwasan-aarch64-android"}, nil, nil, nil},
-							target, a.getImageVariation(config))
-						break
-					}
-				}
-			}
 		}
-
 	}
 
 	// For prebuilt_etc, use the first variant (64 on 64/32bit device,
@@ -1542,6 +1463,8 @@ func (a *apexBundle) DepsMutator(ctx android.BottomUpMutatorContext) {
 func (a *apexBundle) OverridablePropertiesDepsMutator(ctx android.BottomUpMutatorContext) {
 	ctx.AddFarVariationDependencies(ctx.Config().AndroidCommonTarget.Variations(),
 		androidAppTag, a.overridableProperties.Apps...)
+	ctx.AddFarVariationDependencies(ctx.Config().AndroidCommonTarget.Variations(),
+		rroTag, a.overridableProperties.Rros...)
 }
 
 func (a *apexBundle) DepIsInSameApex(ctx android.BaseModuleContext, dep android.Module) bool {
@@ -1580,6 +1503,10 @@ func (a *apexBundle) testOnlyShouldSkipHashtreeGeneration() bool {
 	return proptools.Bool(a.properties.Test_only_no_hashtree)
 }
 
+func (a *apexBundle) testOnlyShouldSkipPayloadSign() bool {
+	return proptools.Bool(a.properties.Test_only_unsigned_payload)
+}
+
 func (a *apexBundle) getImageVariation(config android.DeviceConfig) string {
 	if a.vndkApex {
 		return cc.VendorVariationPrefix + a.vndkVersion(config)
@@ -1615,6 +1542,23 @@ func (a *apexBundle) IsSanitizerEnabled(ctx android.BaseModuleContext, sanitizer
 	return android.InList(sanitizerName, globalSanitizerNames)
 }
 
+func (a *apexBundle) AddSanitizerDependencies(ctx android.BottomUpMutatorContext, sanitizerName string) {
+	if ctx.Device() && sanitizerName == "hwaddress" && strings.HasPrefix(a.Name(), "com.android.runtime") {
+		for _, target := range ctx.MultiTargets() {
+			if target.Arch.ArchType.Multilib == "lib64" {
+				ctx.AddFarVariationDependencies(append(target.Variations(), []blueprint.Variation{
+					{Mutator: "image", Variation: a.getImageVariation(ctx.DeviceConfig())},
+					{Mutator: "link", Variation: "shared"},
+					{Mutator: "version", Variation: ""}, // "" is the non-stub variant
+				}...), sharedLibTag, "libclang_rt.hwasan-aarch64-android")
+				break
+			}
+		}
+	}
+}
+
+var _ cc.Coverage = (*apexBundle)(nil)
+
 func (a *apexBundle) IsNativeCoverageNeeded(ctx android.BaseModuleContext) bool {
 	return ctx.Device() && (ctx.DeviceConfig().NativeCoverageEnabled() || ctx.DeviceConfig().ClangCoverageEnabled())
 }
@@ -1630,6 +1574,8 @@ func (a *apexBundle) HideFromMake() {
 func (a *apexBundle) MarkAsCoverageVariant(coverage bool) {
 	a.properties.IsCoverageVariant = coverage
 }
+
+func (a *apexBundle) EnableCoverageIfNeeded() {}
 
 // TODO(jiyong) move apexFileFor* close to the apexFile type definition
 func apexFileForNativeLibrary(ctx android.BaseModuleContext, ccMod *cc.Module, handleSpecialLibs bool) apexFile {
@@ -1673,6 +1619,7 @@ func apexFileForExecutable(ctx android.BaseModuleContext, cc *cc.Module) apexFil
 	fileToCopy := cc.OutputFile().Path()
 	af := newApexFile(ctx, fileToCopy, cc.Name(), dirInApex, nativeExecutable, cc)
 	af.symlinks = cc.Symlinks()
+	af.dataPaths = cc.DataPaths()
 	return af
 }
 
@@ -1695,7 +1642,7 @@ func apexFileForGoBinary(ctx android.BaseModuleContext, depName string, gb boots
 	return newApexFile(ctx, fileToCopy, depName, dirInApex, goBinary, nil)
 }
 
-func apexFileForShBinary(ctx android.BaseModuleContext, sh *android.ShBinary) apexFile {
+func apexFileForShBinary(ctx android.BaseModuleContext, sh *sh.ShBinary) apexFile {
 	dirInApex := filepath.Join("bin", sh.SubDir())
 	fileToCopy := sh.OutputFile()
 	af := newApexFile(ctx, fileToCopy, sh.Name(), dirInApex, shBinary, sh)
@@ -1703,21 +1650,22 @@ func apexFileForShBinary(ctx android.BaseModuleContext, sh *android.ShBinary) ap
 	return af
 }
 
-// TODO(b/146586360): replace javaLibrary(in apex/apex.go) with java.Dependency
-type javaLibrary interface {
-	android.Module
-	java.Dependency
+type javaDependency interface {
+	DexJarBuildPath() android.Path
+	JacocoReportClassesFile() android.Path
+	Stem() string
 }
 
-func apexFileForJavaLibrary(ctx android.BaseModuleContext, lib javaLibrary) apexFile {
+func apexFileForJavaLibrary(ctx android.BaseModuleContext, lib javaDependency, module android.Module) apexFile {
 	dirInApex := "javalib"
-	fileToCopy := lib.DexJar()
-	af := newApexFile(ctx, fileToCopy, lib.Name(), dirInApex, javaSharedLib, lib)
+	fileToCopy := lib.DexJarBuildPath()
+	af := newApexFile(ctx, fileToCopy, module.Name(), dirInApex, javaSharedLib, module)
 	af.jacocoReportClassesFile = lib.JacocoReportClassesFile()
+	af.stem = lib.Stem() + ".jar"
 	return af
 }
 
-func apexFileForPrebuiltEtc(ctx android.BaseModuleContext, prebuilt android.PrebuiltEtcModule, depName string) apexFile {
+func apexFileForPrebuiltEtc(ctx android.BaseModuleContext, prebuilt prebuilt_etc.PrebuiltEtcModule, depName string) apexFile {
 	dirInApex := filepath.Join("etc", prebuilt.SubDir())
 	fileToCopy := prebuilt.OutputFile()
 	return newApexFile(ctx, fileToCopy, depName, dirInApex, etc, prebuilt)
@@ -1732,15 +1680,16 @@ func apexFileForCompatConfig(ctx android.BaseModuleContext, config java.Platform
 func apexFileForAndroidApp(ctx android.BaseModuleContext, aapp interface {
 	android.Module
 	Privileged() bool
+	InstallApkName() string
 	OutputFile() android.Path
 	JacocoReportClassesFile() android.Path
 	Certificate() java.Certificate
-}, pkgName string) apexFile {
+}) apexFile {
 	appDir := "app"
 	if aapp.Privileged() {
 		appDir = "priv-app"
 	}
-	dirInApex := filepath.Join(appDir, pkgName)
+	dirInApex := filepath.Join(appDir, aapp.InstallApkName())
 	fileToCopy := aapp.OutputFile()
 	af := newApexFile(ctx, fileToCopy, aapp.Name(), dirInApex, app, aapp)
 	af.jacocoReportClassesFile = aapp.JacocoReportClassesFile()
@@ -1750,6 +1699,21 @@ func apexFileForAndroidApp(ctx android.BaseModuleContext, aapp interface {
 		OverriddenManifestPackageName() string
 	}); ok {
 		af.overriddenPackageName = app.OverriddenManifestPackageName()
+	}
+	return af
+}
+
+func apexFileForRuntimeResourceOverlay(ctx android.BaseModuleContext, rro java.RuntimeResourceOverlayModule) apexFile {
+	rroDir := "overlay"
+	dirInApex := filepath.Join(rroDir, rro.Theme())
+	fileToCopy := rro.OutputFile()
+	af := newApexFile(ctx, fileToCopy, rro.Name(), dirInApex, app, rro)
+	af.certificate = rro.Certificate()
+
+	if a, ok := rro.(interface {
+		OverriddenManifestPackageName() string
+	}); ok {
+		af.overriddenPackageName = a.OverriddenManifestPackageName()
 	}
 	return af
 }
@@ -1796,33 +1760,18 @@ func (a *apexBundle) walkPayloadDeps(ctx android.ModuleContext, do payloadDepsCa
 
 func (a *apexBundle) minSdkVersion(ctx android.BaseModuleContext) int {
 	ver := proptools.StringDefault(a.properties.Min_sdk_version, "current")
-	if ver != "current" {
-		minSdkVersion, err := strconv.Atoi(ver)
-		if err != nil {
-			ctx.PropertyErrorf("min_sdk_version", "should be \"current\" or <number>, but %q", ver)
-		}
-		return minSdkVersion
+	intVer, err := android.ApiStrToNum(ctx, ver)
+	if err != nil {
+		ctx.PropertyErrorf("min_sdk_version", "%s", err.Error())
 	}
-	return android.FutureApiLevel
+	return intVer
 }
 
-// A regexp for removing boilerplate from BaseDependencyTag from the string representation of
-// a dependency tag.
-var tagCleaner = regexp.MustCompile(`\QBaseDependencyTag:blueprint.BaseDependencyTag{}\E(, )?`)
-
-func PrettyPrintTag(tag blueprint.DependencyTag) string {
-	// Use tag's custom String() method if available.
-	if stringer, ok := tag.(fmt.Stringer); ok {
-		return stringer.String()
-	}
-
-	// Otherwise, get a default string representation of the tag's struct.
-	tagString := fmt.Sprintf("%#v", tag)
-
-	// Remove the boilerplate from BaseDependencyTag as it adds no value.
-	tagString = tagCleaner.ReplaceAllString(tagString, "")
-	return tagString
+func (a *apexBundle) Updatable() bool {
+	return proptools.Bool(a.properties.Updatable)
 }
+
+var _ android.ApexBundleDepsInfoIntf = (*apexBundle)(nil)
 
 // Ensures that the dependencies are marked as available for this APEX
 func (a *apexBundle) checkApexAvailability(ctx android.ModuleContext) {
@@ -1858,45 +1807,64 @@ func (a *apexBundle) checkApexAvailability(ctx android.ModuleContext) {
 		if to.AvailableFor(apexName) || whitelistedApexAvailable(apexName, toName) {
 			return true
 		}
-		message := ""
-		tagPath := ctx.GetTagPath()
-		// Skip the first module as that will be added at the start of the error message by ctx.ModuleErrorf().
-		walkPath := ctx.GetWalkPath()[1:]
-		for i, m := range walkPath {
-			message = fmt.Sprintf("%s\n           via tag %s\n    -> %s", message, PrettyPrintTag(tagPath[i]), m.String())
-		}
-		ctx.ModuleErrorf("%q requires %q that is not available for the APEX. Dependency path:%s", fromName, toName, message)
+		ctx.ModuleErrorf("%q requires %q that is not available for the APEX. Dependency path:%s", fromName, toName, ctx.GetPathString(true))
 		// Visit this module's dependencies to check and report any issues with their availability.
 		return true
 	})
 }
 
-// Collects the list of module names that directly or indirectly contributes to the payload of this APEX
-func (a *apexBundle) collectDepsInfo(ctx android.ModuleContext) {
-	a.depInfos = make(map[string]depInfo)
+func (a *apexBundle) checkUpdatable(ctx android.ModuleContext) {
+	if a.Updatable() {
+		if String(a.properties.Min_sdk_version) == "" {
+			ctx.PropertyErrorf("updatable", "updatable APEXes should set min_sdk_version as well")
+		}
+
+		a.checkJavaStableSdkVersion(ctx)
+	}
+}
+
+// Ensures that a lib providing stub isn't statically linked
+func (a *apexBundle) checkStaticLinkingToStubLibraries(ctx android.ModuleContext) {
+	// Practically, we only care about regular APEXes on the device.
+	if ctx.Host() || a.testApex || a.vndkApex {
+		return
+	}
+
 	a.walkPayloadDeps(ctx, func(ctx android.ModuleContext, from blueprint.Module, to android.ApexModule, externalDep bool) bool {
-		if from.Name() == to.Name() {
-			// This can happen for cc.reuseObjTag. We are not interested in tracking this.
-			// As soon as the dependency graph crosses the APEX boundary, don't go further.
-			return !externalDep
-		}
+		if ccm, ok := to.(*cc.Module); ok {
+			apexName := ctx.ModuleName()
+			fromName := ctx.OtherModuleName(from)
+			toName := ctx.OtherModuleName(to)
 
-		if info, exists := a.depInfos[to.Name()]; exists {
-			if !android.InList(from.Name(), info.from) {
-				info.from = append(info.from, from.Name())
+			// If `to` is not actually in the same APEX as `from` then it does not need apex_available and neither
+			// do any of its dependencies.
+			if am, ok := from.(android.DepIsInSameApex); ok && !am.DepIsInSameApex(ctx, to) {
+				// As soon as the dependency graph crosses the APEX boundary, don't go further.
+				return false
 			}
-			info.isExternal = info.isExternal && externalDep
-			a.depInfos[to.Name()] = info
-		} else {
-			a.depInfos[to.Name()] = depInfo{
-				to:         to.Name(),
-				from:       []string{from.Name()},
-				isExternal: externalDep,
-			}
-		}
 
-		// As soon as the dependency graph crosses the APEX boundary, don't go further.
-		return !externalDep
+			// TODO(jiyong) remove this check when R is published to AOSP. Currently, libstatssocket
+			// is capable of providing a stub variant, but is being statically linked from the bluetooth
+			// APEX.
+			if toName == "libstatssocket" {
+				return false
+			}
+
+			// The dynamic linker and crash_dump tool in the runtime APEX is the only exception to this rule.
+			// It can't make the static dependencies dynamic because it can't
+			// do the dynamic linking for itself.
+			if apexName == "com.android.runtime" && (fromName == "linker" || fromName == "crash_dump") {
+				return false
+			}
+
+			isStubLibraryFromOtherApex := ccm.HasStubsVariants() && !android.DirectlyInApex(apexName, toName)
+			if isStubLibraryFromOtherApex && !externalDep {
+				ctx.ModuleErrorf("%q required by %q is a native library providing stub. "+
+					"It shouldn't be included in this APEX via static linking. Dependency path: %s", to.String(), fromName, ctx.GetPathString(false))
+			}
+
+		}
+		return true
 	})
 }
 
@@ -1936,8 +1904,8 @@ func (a *apexBundle) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 	}
 
 	a.checkApexAvailability(ctx)
-
-	a.collectDepsInfo(ctx)
+	a.checkUpdatable(ctx)
+	a.checkStaticLinkingToStubLibraries(ctx)
 
 	handleSpecialLibs := !android.Bool(a.properties.Ignore_system_library_special_case)
 
@@ -1982,13 +1950,13 @@ func (a *apexBundle) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 			case sharedLibTag, jniLibTag:
 				isJniLib := depTag == jniLibTag
 				if c, ok := child.(*cc.Module); ok {
-					// bootstrap bionic libs are treated as provided by system
-					if c.HasStubsVariants() && !cc.InstallToBootstrap(c.BaseModuleName(), ctx.Config()) {
-						provideNativeLibs = append(provideNativeLibs, c.OutputFile().Path().Base())
-					}
 					fi := apexFileForNativeLibrary(ctx, c, handleSpecialLibs)
 					fi.isJniLib = isJniLib
 					filesInfo = append(filesInfo, fi)
+					// bootstrap bionic libs are treated as provided by system
+					if c.HasStubsVariants() && !cc.InstallToBootstrap(c.BaseModuleName(), ctx.Config()) {
+						provideNativeLibs = append(provideNativeLibs, fi.Stem())
+					}
 					return true // track transitive dependencies
 				} else {
 					propertyName := "native_shared_libs"
@@ -2001,7 +1969,7 @@ func (a *apexBundle) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 				if cc, ok := child.(*cc.Module); ok {
 					filesInfo = append(filesInfo, apexFileForExecutable(ctx, cc))
 					return true // track transitive dependencies
-				} else if sh, ok := child.(*android.ShBinary); ok {
+				} else if sh, ok := child.(*sh.ShBinary); ok {
 					filesInfo = append(filesInfo, apexFileForShBinary(ctx, sh))
 				} else if py, ok := child.(*python.Module); ok && py.HostToolPath().Valid() {
 					filesInfo = append(filesInfo, apexFileForPyBinary(ctx, py))
@@ -2011,39 +1979,46 @@ func (a *apexBundle) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 					ctx.PropertyErrorf("binaries", "%q is neither cc_binary, (embedded) py_binary, (host) blueprint_go_binary, (host) bootstrap_go_binary, nor sh_binary", depName)
 				}
 			case javaLibTag:
-				if javaLib, ok := child.(*java.Library); ok {
-					af := apexFileForJavaLibrary(ctx, javaLib)
-					if !af.Ok() {
-						ctx.PropertyErrorf("java_libs", "%q is not configured to be compiled into dex", depName)
-					} else {
-						filesInfo = append(filesInfo, af)
-						return true // track transitive dependencies
-					}
-				} else if sdkLib, ok := child.(*java.SdkLibrary); ok {
-					af := apexFileForJavaLibrary(ctx, sdkLib)
+				switch child.(type) {
+				case *java.Library, *java.SdkLibrary, *java.DexImport:
+					af := apexFileForJavaLibrary(ctx, child.(javaDependency), child.(android.Module))
 					if !af.Ok() {
 						ctx.PropertyErrorf("java_libs", "%q is not configured to be compiled into dex", depName)
 						return false
 					}
 					filesInfo = append(filesInfo, af)
 					return true // track transitive dependencies
-				} else {
+				default:
 					ctx.PropertyErrorf("java_libs", "%q of type %q is not supported", depName, ctx.OtherModuleType(child))
 				}
 			case androidAppTag:
-				pkgName := ctx.DeviceConfig().OverridePackageNameFor(depName)
 				if ap, ok := child.(*java.AndroidApp); ok {
-					filesInfo = append(filesInfo, apexFileForAndroidApp(ctx, ap, pkgName))
+					filesInfo = append(filesInfo, apexFileForAndroidApp(ctx, ap))
 					return true // track transitive dependencies
 				} else if ap, ok := child.(*java.AndroidAppImport); ok {
-					filesInfo = append(filesInfo, apexFileForAndroidApp(ctx, ap, pkgName))
+					filesInfo = append(filesInfo, apexFileForAndroidApp(ctx, ap))
 				} else if ap, ok := child.(*java.AndroidTestHelperApp); ok {
-					filesInfo = append(filesInfo, apexFileForAndroidApp(ctx, ap, pkgName))
+					filesInfo = append(filesInfo, apexFileForAndroidApp(ctx, ap))
+				} else if ap, ok := child.(*java.AndroidAppSet); ok {
+					appDir := "app"
+					if ap.Privileged() {
+						appDir = "priv-app"
+					}
+					af := newApexFile(ctx, ap.OutputFile(), ap.Name(),
+						filepath.Join(appDir, ap.BaseModuleName()), appSet, ap)
+					af.certificate = java.PresignedCertificate
+					filesInfo = append(filesInfo, af)
 				} else {
 					ctx.PropertyErrorf("apps", "%q is not an android_app module", depName)
 				}
+			case rroTag:
+				if rro, ok := child.(java.RuntimeResourceOverlayModule); ok {
+					filesInfo = append(filesInfo, apexFileForRuntimeResourceOverlay(ctx, rro))
+				} else {
+					ctx.PropertyErrorf("rros", "%q is not an runtime_resource_overlay module", depName)
+				}
 			case prebuiltTag:
-				if prebuilt, ok := child.(android.PrebuiltEtcModule); ok {
+				if prebuilt, ok := child.(prebuilt_etc.PrebuiltEtcModule); ok {
 					filesInfo = append(filesInfo, apexFileForPrebuiltEtc(ctx, prebuilt, depName))
 				} else if prebuilt, ok := child.(java.PlatformCompatConfigIntf); ok {
 					filesInfo = append(filesInfo, apexFileForCompatConfig(ctx, prebuilt, depName))
@@ -2059,13 +2034,13 @@ func (a *apexBundle) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 						// We do not add this variation to `filesInfo`, as it has no output;
 						// however, we do add the other variations of this module as indirect
 						// dependencies (see below).
-						return true
 					} else {
 						// Single-output test module (where `test_per_src: false`).
 						af := apexFileForExecutable(ctx, ccTest)
 						af.class = nativeTest
 						filesInfo = append(filesInfo, af)
 					}
+					return true // track transitive dependencies
 				} else {
 					ctx.PropertyErrorf("tests", "%q is not a cc module", depName)
 				}
@@ -2103,6 +2078,8 @@ func (a *apexBundle) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 							// don't include it in this APEX
 							return false
 						}
+						af := apexFileForNativeLibrary(ctx, cc, handleSpecialLibs)
+						af.transitiveDep = true
 						if !a.Host() && !android.DirectlyInApex(ctx.ModuleName(), ctx.OtherModuleName(cc)) && (cc.IsStubs() || cc.HasStubsVariants()) {
 							// If the dependency is a stubs lib, don't include it in this APEX,
 							// but make sure that the lib is installed on the device.
@@ -2111,15 +2088,13 @@ func (a *apexBundle) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 							//
 							// Always include if we are a host-apex however since those won't have any
 							// system libraries.
-							if !android.DirectlyInAnyApex(ctx, cc.Name()) && !android.InList(cc.Name(), a.requiredDeps) {
-								a.requiredDeps = append(a.requiredDeps, cc.Name())
+							if !android.DirectlyInAnyApex(ctx, cc.Name()) && !android.InList(cc.BaseModuleName(), a.requiredDeps) {
+								a.requiredDeps = append(a.requiredDeps, cc.BaseModuleName())
 							}
-							requireNativeLibs = append(requireNativeLibs, cc.OutputFile().Path().Base())
+							requireNativeLibs = append(requireNativeLibs, af.Stem())
 							// Don't track further
 							return false
 						}
-						af := apexFileForNativeLibrary(ctx, cc, handleSpecialLibs)
-						af.transitiveDep = true
 						filesInfo = append(filesInfo, af)
 						return true // track transitive dependencies
 					}
@@ -2140,11 +2115,11 @@ func (a *apexBundle) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 					// Because APK-in-APEX embeds jni_libs transitively, we don't need to track transitive deps
 					return false
 				} else if java.IsXmlPermissionsFileDepTag(depTag) {
-					if prebuilt, ok := child.(android.PrebuiltEtcModule); ok {
+					if prebuilt, ok := child.(prebuilt_etc.PrebuiltEtcModule); ok {
 						filesInfo = append(filesInfo, apexFileForPrebuiltEtc(ctx, prebuilt, depName))
 					}
 				} else if am.CanHaveApexVariants() && am.IsInstallableToApex() {
-					ctx.ModuleErrorf("unexpected tag %s for indirect dependency %q", PrettyPrintTag(depTag), depName)
+					ctx.ModuleErrorf("unexpected tag %s for indirect dependency %q", android.PrettyPrintTag(depTag), depName)
 				}
 			}
 		}
@@ -2227,7 +2202,7 @@ func (a *apexBundle) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 
 	// We don't need the optimization for updatable APEXes, as it might give false signal
 	// to the system health when the APEXes are still bundled (b/149805758)
-	if proptools.Bool(a.properties.Updatable) && a.properties.ApexType == imageApex {
+	if a.Updatable() && a.properties.ApexType == imageApex {
 		a.linkToSystemLib = false
 	}
 
@@ -2249,6 +2224,23 @@ func (a *apexBundle) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 	a.compatSymlinks = makeCompatSymlinks(a.BaseModuleName(), ctx)
 
 	a.buildApexDependencyInfo(ctx)
+}
+
+// Enforce that Java deps of the apex are using stable SDKs to compile
+func (a *apexBundle) checkJavaStableSdkVersion(ctx android.ModuleContext) {
+	// Visit direct deps only. As long as we guarantee top-level deps are using
+	// stable SDKs, java's checkLinkType guarantees correct usage for transitive deps
+	ctx.VisitDirectDepsBlueprint(func(module blueprint.Module) {
+		tag := ctx.OtherModuleDependencyTag(module)
+		switch tag {
+		case javaLibTag, androidAppTag:
+			if m, ok := module.(interface{ CheckStableSdkVersion() error }); ok {
+				if err := m.CheckStableSdkVersion(); err != nil {
+					ctx.ModuleErrorf("cannot depend on \"%v\": %v", ctx.OtherModuleName(module), err)
+				}
+			}
+		}
+	})
 }
 
 func whitelistedApexAvailable(apex, moduleName string) bool {
@@ -2276,6 +2268,10 @@ func normalizeModuleName(moduleName string) string {
 		// We don't want to list them all
 		moduleName = "libclang_rt"
 	}
+	if strings.HasPrefix(moduleName, "androidx.") {
+		// TODO(b/156996905) Set apex_available/min_sdk_version for androidx support libraries
+		moduleName = "androidx"
+	}
 	return moduleName
 }
 
@@ -2284,9 +2280,6 @@ func newApexBundle() *apexBundle {
 	module.AddProperties(&module.properties)
 	module.AddProperties(&module.targetProperties)
 	module.AddProperties(&module.overridableProperties)
-	module.Prefer32(func(ctx android.BaseModuleContext, base *android.ModuleBase, class android.OsClass) bool {
-		return class == android.Device && ctx.Config().DevicePrefer32BitExecutables()
-	})
 	android.InitAndroidMultiTargetsArchModule(module, android.HostAndDeviceSupported, android.MultilibCommon)
 	android.InitDefaultableModule(module)
 	android.InitSdkAwareModule(module)

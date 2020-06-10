@@ -55,42 +55,62 @@ func TestConfig(buildDir string, env map[string]string, bp string, fs map[string
 		"assets_a/a":             nil,
 		"assets_b/b":             nil,
 
-		"prebuilts/sdk/14/public/android.jar":         nil,
-		"prebuilts/sdk/14/public/framework.aidl":      nil,
-		"prebuilts/sdk/14/system/android.jar":         nil,
-		"prebuilts/sdk/17/public/android.jar":         nil,
-		"prebuilts/sdk/17/public/framework.aidl":      nil,
-		"prebuilts/sdk/17/system/android.jar":         nil,
-		"prebuilts/sdk/29/public/android.jar":         nil,
-		"prebuilts/sdk/29/public/framework.aidl":      nil,
-		"prebuilts/sdk/29/system/android.jar":         nil,
-		"prebuilts/sdk/29/system/foo.jar":             nil,
-		"prebuilts/sdk/current/core/android.jar":      nil,
-		"prebuilts/sdk/current/public/android.jar":    nil,
-		"prebuilts/sdk/current/public/framework.aidl": nil,
-		"prebuilts/sdk/current/public/core.jar":       nil,
-		"prebuilts/sdk/current/system/android.jar":    nil,
-		"prebuilts/sdk/current/test/android.jar":      nil,
-		"prebuilts/sdk/28/public/api/foo.txt":         nil,
-		"prebuilts/sdk/28/system/api/foo.txt":         nil,
-		"prebuilts/sdk/28/test/api/foo.txt":           nil,
-		"prebuilts/sdk/28/public/api/foo-removed.txt": nil,
-		"prebuilts/sdk/28/system/api/foo-removed.txt": nil,
-		"prebuilts/sdk/28/test/api/foo-removed.txt":   nil,
-		"prebuilts/sdk/28/public/api/bar.txt":         nil,
-		"prebuilts/sdk/28/system/api/bar.txt":         nil,
-		"prebuilts/sdk/28/test/api/bar.txt":           nil,
-		"prebuilts/sdk/28/public/api/bar-removed.txt": nil,
-		"prebuilts/sdk/28/system/api/bar-removed.txt": nil,
-		"prebuilts/sdk/28/test/api/bar-removed.txt":   nil,
-		"prebuilts/sdk/tools/core-lambda-stubs.jar":   nil,
-		"prebuilts/sdk/Android.bp":                    []byte(`prebuilt_apis { name: "sdk", api_dirs: ["14", "28", "current"],}`),
+		"prebuilts/sdk/14/public/android.jar":                      nil,
+		"prebuilts/sdk/14/public/framework.aidl":                   nil,
+		"prebuilts/sdk/14/system/android.jar":                      nil,
+		"prebuilts/sdk/17/public/android.jar":                      nil,
+		"prebuilts/sdk/17/public/framework.aidl":                   nil,
+		"prebuilts/sdk/17/system/android.jar":                      nil,
+		"prebuilts/sdk/29/public/android.jar":                      nil,
+		"prebuilts/sdk/29/public/framework.aidl":                   nil,
+		"prebuilts/sdk/29/system/android.jar":                      nil,
+		"prebuilts/sdk/29/system/foo.jar":                          nil,
+		"prebuilts/sdk/30/public/android.jar":                      nil,
+		"prebuilts/sdk/30/public/framework.aidl":                   nil,
+		"prebuilts/sdk/30/system/android.jar":                      nil,
+		"prebuilts/sdk/30/system/foo.jar":                          nil,
+		"prebuilts/sdk/30/public/core-for-system-modules.jar":      nil,
+		"prebuilts/sdk/current/core/android.jar":                   nil,
+		"prebuilts/sdk/current/public/android.jar":                 nil,
+		"prebuilts/sdk/current/public/framework.aidl":              nil,
+		"prebuilts/sdk/current/public/core.jar":                    nil,
+		"prebuilts/sdk/current/public/core-for-system-modules.jar": nil,
+		"prebuilts/sdk/current/system/android.jar":                 nil,
+		"prebuilts/sdk/current/test/android.jar":                   nil,
+		"prebuilts/sdk/28/public/api/foo.txt":                      nil,
+		"prebuilts/sdk/28/system/api/foo.txt":                      nil,
+		"prebuilts/sdk/28/test/api/foo.txt":                        nil,
+		"prebuilts/sdk/28/public/api/foo-removed.txt":              nil,
+		"prebuilts/sdk/28/system/api/foo-removed.txt":              nil,
+		"prebuilts/sdk/28/test/api/foo-removed.txt":                nil,
+		"prebuilts/sdk/28/public/api/bar.txt":                      nil,
+		"prebuilts/sdk/28/system/api/bar.txt":                      nil,
+		"prebuilts/sdk/28/test/api/bar.txt":                        nil,
+		"prebuilts/sdk/28/public/api/bar-removed.txt":              nil,
+		"prebuilts/sdk/28/system/api/bar-removed.txt":              nil,
+		"prebuilts/sdk/28/test/api/bar-removed.txt":                nil,
+		"prebuilts/sdk/30/public/api/foo.txt":                      nil,
+		"prebuilts/sdk/30/system/api/foo.txt":                      nil,
+		"prebuilts/sdk/30/test/api/foo.txt":                        nil,
+		"prebuilts/sdk/30/public/api/foo-removed.txt":              nil,
+		"prebuilts/sdk/30/system/api/foo-removed.txt":              nil,
+		"prebuilts/sdk/30/test/api/foo-removed.txt":                nil,
+		"prebuilts/sdk/30/public/api/bar.txt":                      nil,
+		"prebuilts/sdk/30/system/api/bar.txt":                      nil,
+		"prebuilts/sdk/30/test/api/bar.txt":                        nil,
+		"prebuilts/sdk/30/public/api/bar-removed.txt":              nil,
+		"prebuilts/sdk/30/system/api/bar-removed.txt":              nil,
+		"prebuilts/sdk/30/test/api/bar-removed.txt":                nil,
+		"prebuilts/sdk/tools/core-lambda-stubs.jar":                nil,
+		"prebuilts/sdk/Android.bp":                                 []byte(`prebuilt_apis { name: "sdk", api_dirs: ["14", "28", "30", "current"],}`),
 
 		"prebuilts/apk/app.apk":        nil,
 		"prebuilts/apk/app_arm.apk":    nil,
 		"prebuilts/apk/app_arm64.apk":  nil,
 		"prebuilts/apk/app_xhdpi.apk":  nil,
 		"prebuilts/apk/app_xxhdpi.apk": nil,
+
+		"prebuilts/apks/app.apks": nil,
 
 		// For framework-res, which is an implicit dependency for framework
 		"AndroidManifest.xml":                        nil,
@@ -116,6 +136,7 @@ func TestConfig(buildDir string, env map[string]string, bp string, fs map[string
 
 		"cert/new_cert.x509.pem": nil,
 		"cert/new_cert.pk8":      nil,
+		"lineage.bin":            nil,
 
 		"testdata/data": nil,
 
@@ -152,7 +173,8 @@ func GatherRequiredDepsForTest() string {
 		"android_module_lib_stubs_current",
 		"android_system_server_stubs_current",
 		"core.current.stubs",
-		"core.platform.api.stubs",
+		"legacy.core.platform.api.stubs",
+		"stable.core.platform.api.stubs",
 		"kotlin-stdlib",
 		"kotlin-stdlib-jdk7",
 		"kotlin-stdlib-jdk8",
@@ -165,7 +187,7 @@ func GatherRequiredDepsForTest() string {
 				name: "%s",
 				srcs: ["a.java"],
 				sdk_version: "none",
-				system_modules: "core-platform-api-stubs-system-modules",
+				system_modules: "legacy-core-platform-api-stubs-system-modules",
 			}
 		`, extra)
 	}
@@ -175,7 +197,7 @@ func GatherRequiredDepsForTest() string {
 			name: "framework",
 			srcs: ["a.java"],
 			sdk_version: "none",
-			system_modules: "core-platform-api-stubs-system-modules",
+			system_modules: "legacy-core-platform-api-stubs-system-modules",
 			aidl: {
 				export_include_dirs: ["framework/aidl"],
 			},
@@ -190,7 +212,7 @@ func GatherRequiredDepsForTest() string {
 			name: "android.hidl.base-V1.0-java",
 			srcs: ["a.java"],
 			sdk_version: "none",
-			system_modules: "core-platform-api-stubs-system-modules",
+			system_modules: "legacy-core-platform-api-stubs-system-modules",
 			installable: true,
 		}
 
@@ -198,7 +220,7 @@ func GatherRequiredDepsForTest() string {
 			name: "android.hidl.manager-V1.0-java",
 			srcs: ["a.java"],
 			sdk_version: "none",
-			system_modules: "core-platform-api-stubs-system-modules",
+			system_modules: "legacy-core-platform-api-stubs-system-modules",
 			installable: true,
 		}
 
@@ -206,14 +228,30 @@ func GatherRequiredDepsForTest() string {
 			name: "org.apache.http.legacy",
 			srcs: ["a.java"],
 			sdk_version: "none",
-			system_modules: "core-platform-api-stubs-system-modules",
+			system_modules: "legacy-core-platform-api-stubs-system-modules",
+			installable: true,
+		}
+
+		java_library {
+			name: "android.test.base",
+			srcs: ["a.java"],
+			sdk_version: "none",
+			system_modules: "legacy-core-platform-api-stubs-system-modules",
+			installable: true,
+		}
+  
+		java_library {
+			name: "android.test.mock",
+			srcs: ["a.java"],
+			sdk_version: "none",
+			system_modules: "legacy-core-platform-api-stubs-system-modules",
 			installable: true,
 		}
 	`
 
 	systemModules := []string{
 		"core-current-stubs-system-modules",
-		"core-platform-api-stubs-system-modules",
+		"legacy-core-platform-api-stubs-system-modules",
 	}
 
 	for _, extra := range systemModules {

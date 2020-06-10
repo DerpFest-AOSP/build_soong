@@ -43,6 +43,14 @@ type PathGlobContext interface {
 var _ PathContext = SingletonContext(nil)
 var _ PathContext = ModuleContext(nil)
 
+// "Null" path context is a minimal path context for a given config.
+type NullPathContext struct {
+	config Config
+}
+
+func (NullPathContext) AddNinjaFileDeps(...string) {}
+func (ctx NullPathContext) Config() Config         { return ctx.config }
+
 type ModuleInstallPathContext interface {
 	BaseModuleContext
 
@@ -475,6 +483,15 @@ func FirstUniquePaths(list Paths) Paths {
 		return firstUniquePathsMap(list)
 	}
 	return firstUniquePathsList(list)
+}
+
+// SortedUniquePaths returns what its name says
+func SortedUniquePaths(list Paths) Paths {
+	unique := FirstUniquePaths(list)
+	sort.Slice(unique, func(i, j int) bool {
+		return unique[i].String() < unique[j].String()
+	})
+	return unique
 }
 
 func firstUniquePathsList(list Paths) Paths {

@@ -810,7 +810,7 @@ func GetOsSpecificVariantsOfCommonOSVariant(mctx BaseModuleContext) []Module {
 // Valid multilib values include:
 //    "both": compile for all Targets supported by the OsClass (generally x86_64 and x86, or arm64 and arm).
 //    "first": compile for only a single preferred Target supported by the OsClass.  This is generally x86_64 or arm64,
-//        but may be arm for a 32-bit only build or a build with TARGET_PREFER_32_BIT=true set.
+//        but may be arm for a 32-bit only build.
 //    "32": compile for only a single 32-bit Target supported by the OsClass.
 //    "64": compile for only a single 64-bit Target supported by the OsClass.
 //    "common": compile a for a single Target that will work on all Targets suported by the OsClass (for example Java).
@@ -1026,6 +1026,7 @@ func createArchPropTypeDesc(props reflect.Type) []archPropTypeDesc {
 			"Not_windows",
 			"Arm_on_x86",
 			"Arm_on_x86_64",
+			"Native_bridge",
 		}
 		for _, os := range OsTypeList {
 			targets = append(targets, os.Field)
@@ -1411,6 +1412,11 @@ func (m *ModuleBase) setArchProperties(ctx BottomUpMutatorContext) {
 						hasX8664AndroidArch(ctx.Config().Targets[Android])) {
 					field := "Arm_on_x86_64"
 					prefix := "target.arm_on_x86_64"
+					m.appendProperties(ctx, genProps, targetProp, field, prefix)
+				}
+				if os == Android && m.Target().NativeBridge == NativeBridgeEnabled {
+					field := "Native_bridge"
+					prefix := "target.native_bridge"
 					m.appendProperties(ctx, genProps, targetProp, field, prefix)
 				}
 			}

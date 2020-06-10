@@ -26,16 +26,23 @@ import (
 	"github.com/google/blueprint/proptools"
 
 	"android/soong/android"
+	"android/soong/remoteexec"
 )
 
 var (
-	Signapk = pctx.AndroidStaticRule("signapk",
+	Signapk, SignapkRE = remoteexec.StaticRules(pctx, "signapk",
 		blueprint.RuleParams{
-			Command: `${config.JavaCmd} ${config.JavaVmFlags} -Djava.library.path=$$(dirname ${config.SignapkJniLibrary}) ` +
+			Command: `$reTemplate${config.JavaCmd} ${config.JavaVmFlags} -Djava.library.path=$$(dirname ${config.SignapkJniLibrary}) ` +
 				`-jar ${config.SignapkCmd} $flags $certificates $in $out`,
 			CommandDeps: []string{"${config.SignapkCmd}", "${config.SignapkJniLibrary}"},
 		},
-		"flags", "certificates")
+		&remoteexec.REParams{Labels: map[string]string{"type": "tool", "name": "signapk"},
+			ExecStrategy:    "${config.RESignApkExecStrategy}",
+			Inputs:          []string{"${config.SignapkCmd}", "$in", "$$(dirname ${config.SignapkJniLibrary})", "$implicits"},
+			OutputFiles:     []string{"$outCommaList"},
+			ToolchainInputs: []string{"${config.JavaCmd}"},
+			Platform:        map[string]string{remoteexec.PoolKey: "${config.REJavaPool}"},
+		}, []string{"flags", "certificates"}, []string{"implicits", "outCommaList"})
 )
 
 var combineApk = pctx.AndroidStaticRule("combineApk",
@@ -45,7 +52,7 @@ var combineApk = pctx.AndroidStaticRule("combineApk",
 	})
 
 func CreateAndSignAppPackage(ctx android.ModuleContext, outputFile android.WritablePath,
-	packageFile, jniJarFile, dexJarFile android.Path, certificates []Certificate, deps android.Paths, v4SignatureFile android.WritablePath) {
+	packageFile, jniJarFile, dexJarFile android.Path, certificates []Certificate, deps android.Paths, lineageFile android.Path) {
 
 	unsignedApkName := strings.TrimSuffix(outputFile.Base(), ".apk") + "-unsigned.apk"
 	unsignedApk := android.PathForModuleOut(ctx, unsignedApkName)
@@ -66,10 +73,10 @@ func CreateAndSignAppPackage(ctx android.ModuleContext, outputFile android.Writa
 		Implicits: deps,
 	})
 
-	SignAppPackage(ctx, outputFile, unsignedApk, certificates, v4SignatureFile)
+	SignAppPackage(ctx, outputFile, unsignedApk, certificates, lineageFile)
 }
 
-func SignAppPackage(ctx android.ModuleContext, signedApk android.WritablePath, unsignedApk android.Path, certificates []Certificate, v4SignatureFile android.WritablePath) {
+func SignAppPackage(ctx android.ModuleContext, signedApk android.WritablePath, unsignedApk android.Path, certificates []Certificate, lineageFile android.Path) {
 
 	var certificateArgs []string
 	var deps android.Paths
@@ -79,22 +86,29 @@ func SignAppPackage(ctx android.ModuleContext, signedApk android.WritablePath, u
 	}
 
 	outputFiles := android.WritablePaths{signedApk}
-	var flag string = ""
-	if v4SignatureFile != nil {
-		outputFiles = append(outputFiles, v4SignatureFile)
-		flag = "--enable-v4"
+	var flags []string
+	if lineageFile != nil {
+		flags = append(flags, "--lineage", lineageFile.String())
+		deps = append(deps, lineageFile)
 	}
 
+	rule := Signapk
+	args := map[string]string{
+		"certificates": strings.Join(certificateArgs, " "),
+		"flags":        strings.Join(flags, " "),
+	}
+	if ctx.Config().IsEnvTrue("RBE_SIGNAPK") {
+		rule = SignapkRE
+		args["implicits"] = strings.Join(deps.Strings(), ",")
+		args["outCommaList"] = strings.Join(outputFiles.Strings(), ",")
+	}
 	ctx.Build(pctx, android.BuildParams{
-		Rule:        Signapk,
+		Rule:        rule,
 		Description: "signapk",
 		Outputs:     outputFiles,
 		Input:       unsignedApk,
 		Implicits:   deps,
-		Args: map[string]string{
-			"certificates": strings.Join(certificateArgs, " "),
-			"flags":        flag,
-		},
+		Args:        args,
 	})
 }
 
@@ -218,14 +232,20 @@ func TransformJniLibsToJar(ctx android.ModuleContext, outputFile android.Writabl
 			"-f", j.path.String())
 	}
 
+	rule := zip
+	args := map[string]string{
+		"jarArgs": strings.Join(proptools.NinjaAndShellEscapeList(jarArgs), " "),
+	}
+	if ctx.Config().IsEnvTrue("RBE_ZIP") {
+		rule = zipRE
+		args["implicits"] = strings.Join(deps.Strings(), ",")
+	}
 	ctx.Build(pctx, android.BuildParams{
-		Rule:        zip,
+		Rule:        rule,
 		Description: "zip jni libs",
 		Output:      outputFile,
 		Implicits:   deps,
-		Args: map[string]string{
-			"jarArgs": strings.Join(proptools.NinjaAndShellEscapeList(jarArgs), " "),
-		},
+		Args:        args,
 	})
 }
 

@@ -40,9 +40,9 @@ func getTestConfig(ctx android.ModuleContext, prop *string) android.Path {
 }
 
 var autogenTestConfig = pctx.StaticRule("autogenTestConfig", blueprint.RuleParams{
-	Command:     "sed 's&{MODULE}&${name}&g;s&{EXTRA_CONFIGS}&'${extraConfigs}'&g' $template > $out",
+	Command:     "sed 's&{MODULE}&${name}&g;s&{EXTRA_CONFIGS}&'${extraConfigs}'&g;s&{OUTPUT_FILENAME}&'${outputFileName}'&g' $template > $out",
 	CommandDeps: []string{"$template"},
-}, "name", "template", "extraConfigs")
+}, "name", "template", "extraConfigs", "outputFileName")
 
 func testConfigPath(ctx android.ModuleContext, prop *string, testSuites []string, autoGenConfig *bool, testConfigTemplateProp *string) (path android.Path, autogenPath android.WritablePath) {
 	p := getTestConfig(ctx, prop)
@@ -64,12 +64,16 @@ type Config interface {
 
 type Option struct {
 	Name  string
+	Key   string
 	Value string
 }
 
 var _ Config = Option{}
 
 func (o Option) Config() string {
+	if o.Key != "" {
+		return fmt.Sprintf(`<option name="%s" key="%s" value="%s" />`, o.Name, o.Key, o.Value)
+	}
 	return fmt.Sprintf(`<option name="%s" value="%s" />`, o.Name, o.Value)
 }
 
@@ -104,10 +108,14 @@ func (ob Object) Config() string {
 }
 
 func autogenTemplate(ctx android.ModuleContext, output android.WritablePath, template string, configs []Config) {
-	autogenTemplateWithName(ctx, ctx.ModuleName(), output, template, configs)
+	autogenTemplateWithNameAndOutputFile(ctx, ctx.ModuleName(), output, template, configs, "")
 }
 
 func autogenTemplateWithName(ctx android.ModuleContext, name string, output android.WritablePath, template string, configs []Config) {
+	autogenTemplateWithNameAndOutputFile(ctx, ctx.ModuleName(), output, template, configs, "")
+}
+
+func autogenTemplateWithNameAndOutputFile(ctx android.ModuleContext, name string, output android.WritablePath, template string, configs []Config, outputFileName string) {
 	var configStrings []string
 	for _, config := range configs {
 		configStrings = append(configStrings, config.Config())
@@ -120,9 +128,10 @@ func autogenTemplateWithName(ctx android.ModuleContext, name string, output andr
 		Description: "test config",
 		Output:      output,
 		Args: map[string]string{
-			"name":         name,
-			"template":     template,
-			"extraConfigs": extraConfigs,
+			"name":           name,
+			"template":       template,
+			"extraConfigs":   extraConfigs,
+			"outputFileName": outputFileName,
 		},
 	})
 }
@@ -140,6 +149,21 @@ func AutoGenNativeTestConfig(ctx android.ModuleContext, testConfigProp *string,
 			} else {
 				autogenTemplate(ctx, autogenPath, "${NativeHostTestConfigTemplate}", config)
 			}
+		}
+		return autogenPath
+	}
+	return path
+}
+
+func AutoGenShellTestConfig(ctx android.ModuleContext, testConfigProp *string,
+	testConfigTemplateProp *string, testSuites []string, config []Config, autoGenConfig *bool, outputFileName string) android.Path {
+	path, autogenPath := testConfigPath(ctx, testConfigProp, testSuites, autoGenConfig, testConfigTemplateProp)
+	if autogenPath != nil {
+		templatePath := getTestConfigTemplate(ctx, testConfigTemplateProp)
+		if templatePath.Valid() {
+			autogenTemplateWithNameAndOutputFile(ctx, ctx.ModuleName(), autogenPath, templatePath.String(), config, outputFileName)
+		} else {
+			autogenTemplateWithNameAndOutputFile(ctx, ctx.ModuleName(), autogenPath, "${ShellTestConfigTemplate}", config, outputFileName)
 		}
 		return autogenPath
 	}
@@ -215,31 +239,39 @@ func AutoGenRustTestConfig(ctx android.ModuleContext, name string, testConfigPro
 }
 
 var autogenInstrumentationTest = pctx.StaticRule("autogenInstrumentationTest", blueprint.RuleParams{
-	Command: "${AutoGenTestConfigScript} $out $in ${EmptyTestConfig} $template",
+	Command: "${AutoGenTestConfigScript} $out $in ${EmptyTestConfig} $template ${extraConfigs}",
 	CommandDeps: []string{
 		"${AutoGenTestConfigScript}",
 		"${EmptyTestConfig}",
 		"$template",
 	},
-}, "name", "template")
+}, "name", "template", "extraConfigs")
 
 func AutoGenInstrumentationTestConfig(ctx android.ModuleContext, testConfigProp *string,
-	testConfigTemplateProp *string, manifest android.Path, testSuites []string, autoGenConfig *bool) android.Path {
+	testConfigTemplateProp *string, manifest android.Path, testSuites []string, autoGenConfig *bool, configs []Config) android.Path {
 	path, autogenPath := testConfigPath(ctx, testConfigProp, testSuites, autoGenConfig, testConfigTemplateProp)
+	var configStrings []string
 	if autogenPath != nil {
 		template := "${InstrumentationTestConfigTemplate}"
 		moduleTemplate := getTestConfigTemplate(ctx, testConfigTemplateProp)
 		if moduleTemplate.Valid() {
 			template = moduleTemplate.String()
 		}
+		for _, config := range configs {
+			configStrings = append(configStrings, config.Config())
+		}
+		extraConfigs := strings.Join(configStrings, fmt.Sprintf("\\n%s", test_xml_indent))
+		extraConfigs = fmt.Sprintf("--extra-configs '%s'", extraConfigs)
+
 		ctx.Build(pctx, android.BuildParams{
 			Rule:        autogenInstrumentationTest,
 			Description: "test config",
 			Input:       manifest,
 			Output:      autogenPath,
 			Args: map[string]string{
-				"name":     ctx.ModuleName(),
-				"template": template,
+				"name":         ctx.ModuleName(),
+				"template":     template,
+				"extraConfigs": extraConfigs,
 			},
 		})
 		return autogenPath

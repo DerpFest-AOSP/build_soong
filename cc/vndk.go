@@ -25,6 +25,7 @@ import (
 
 	"android/soong/android"
 	"android/soong/cc/config"
+	"android/soong/etc"
 )
 
 const (
@@ -309,7 +310,13 @@ func processVndkLibrary(mctx android.BottomUpMutatorContext, m *Module) {
 		panic(err)
 	}
 
-	if m.HasStubsVariants() {
+	if m.HasStubsVariants() && name != "libz" {
+		// b/155456180 libz is the ONLY exception here. We don't want to make
+		// libz an LLNDK library because we in general can't guarantee that
+		// libz will behave consistently especially about the compression.
+		// i.e. the compressed output might be different across releases.
+		// As the library is an external one, it's risky to keep the compatibility
+		// promise if it becomes an LLNDK.
 		mctx.PropertyErrorf("vndk.enabled", "This library provides stubs. Shouldn't be VNDK. Consider making it as LLNDK")
 	}
 
@@ -410,7 +417,7 @@ type vndkLibrariesTxt struct {
 	outputFile android.OutputPath
 }
 
-var _ android.PrebuiltEtcModule = &vndkLibrariesTxt{}
+var _ etc.PrebuiltEtcModule = &vndkLibrariesTxt{}
 var _ android.OutputFileProducer = &vndkLibrariesTxt{}
 
 // vndk_libraries_txt is a special kind of module type in that it name is one of

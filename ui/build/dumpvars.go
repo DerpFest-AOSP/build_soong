@@ -54,18 +54,16 @@ func DumpMakeVars(ctx Context, config Config, goals, vars []string) (map[string]
 
 	var ret map[string]string
 	if len(makeVars) > 0 {
+		// It's not safe to use the same TMPDIR as the build, as that can be removed.
 		tmpDir, err := ioutil.TempDir("", "dumpvars")
 		if err != nil {
 			return nil, err
 		}
 		defer os.RemoveAll(tmpDir)
 
-		// It's not safe to use the same TMPDIR as the build, as that can be removed.
-		config.Environment().Set("TMPDIR", tmpDir)
+		SetupLitePath(ctx, config, tmpDir)
 
-		SetupLitePath(ctx, config)
-
-		ret, err = dumpMakeVars(ctx, config, goals, makeVars, false)
+		ret, err = dumpMakeVars(ctx, config, goals, makeVars, false, tmpDir)
 		if err != nil {
 			return ret, err
 		}
@@ -82,7 +80,7 @@ func DumpMakeVars(ctx Context, config Config, goals, vars []string) (map[string]
 	return ret, nil
 }
 
-func dumpMakeVars(ctx Context, config Config, goals, vars []string, write_soong_vars bool) (map[string]string, error) {
+func dumpMakeVars(ctx Context, config Config, goals, vars []string, write_soong_vars bool, tmpDir string) (map[string]string, error) {
 	ctx.BeginTrace(metrics.RunKati, "dumpvars")
 	defer ctx.EndTrace()
 
@@ -98,6 +96,9 @@ func dumpMakeVars(ctx Context, config Config, goals, vars []string, write_soong_
 		cmd.Environment.Set("WRITE_SOONG_VARIABLES", "true")
 	}
 	cmd.Environment.Set("DUMP_MANY_VARS", strings.Join(vars, " "))
+	if tmpDir != "" {
+		cmd.Environment.Set("TMPDIR", tmpDir)
+	}
 	cmd.Sandbox = dumpvarsSandbox
 	output := bytes.Buffer{}
 	cmd.Stdout = &output
@@ -190,6 +191,7 @@ func runMakeProductConfig(ctx Context, config Config) {
 		// compiler wrappers set up by make
 		"CC_WRAPPER",
 		"CXX_WRAPPER",
+		"RBE_WRAPPER",
 		"JAVAC_WRAPPER",
 		"R8_WRAPPER",
 		"D8_WRAPPER",
@@ -228,8 +230,6 @@ func runMakeProductConfig(ctx Context, config Config) {
 		"DEFAULT_ERROR_BUILD_MODULE_TYPES",
 		"BUILD_BROKEN_PREBUILT_ELF_FILES",
 		"BUILD_BROKEN_TREBLE_SYSPROP_NEVERALLOW",
-		"BUILD_BROKEN_USES_BUILD_AUX_EXECUTABLE",
-		"BUILD_BROKEN_USES_BUILD_AUX_STATIC_LIBRARY",
 		"BUILD_BROKEN_USES_BUILD_COPY_HEADERS",
 		"BUILD_BROKEN_USES_BUILD_EXECUTABLE",
 		"BUILD_BROKEN_USES_BUILD_FUZZ_TEST",
@@ -237,17 +237,12 @@ func runMakeProductConfig(ctx Context, config Config) {
 		"BUILD_BROKEN_USES_BUILD_HOST_DALVIK_JAVA_LIBRARY",
 		"BUILD_BROKEN_USES_BUILD_HOST_DALVIK_STATIC_JAVA_LIBRARY",
 		"BUILD_BROKEN_USES_BUILD_HOST_EXECUTABLE",
-		"BUILD_BROKEN_USES_BUILD_HOST_FUZZ_TEST",
 		"BUILD_BROKEN_USES_BUILD_HOST_JAVA_LIBRARY",
-		"BUILD_BROKEN_USES_BUILD_HOST_NATIVE_TEST",
 		"BUILD_BROKEN_USES_BUILD_HOST_PREBUILT",
 		"BUILD_BROKEN_USES_BUILD_HOST_SHARED_LIBRARY",
 		"BUILD_BROKEN_USES_BUILD_HOST_STATIC_LIBRARY",
-		"BUILD_BROKEN_USES_BUILD_HOST_STATIC_TEST_LIBRARY",
-		"BUILD_BROKEN_USES_BUILD_HOST_TEST_CONFIG",
 		"BUILD_BROKEN_USES_BUILD_JAVA_LIBRARY",
 		"BUILD_BROKEN_USES_BUILD_MULTI_PREBUILT",
-		"BUILD_BROKEN_USES_BUILD_NATIVE_BENCHMARK",
 		"BUILD_BROKEN_USES_BUILD_NATIVE_TEST",
 		"BUILD_BROKEN_USES_BUILD_NOTICE_FILE",
 		"BUILD_BROKEN_USES_BUILD_PACKAGE",
@@ -257,11 +252,9 @@ func runMakeProductConfig(ctx Context, config Config) {
 		"BUILD_BROKEN_USES_BUILD_SHARED_LIBRARY",
 		"BUILD_BROKEN_USES_BUILD_STATIC_JAVA_LIBRARY",
 		"BUILD_BROKEN_USES_BUILD_STATIC_LIBRARY",
-		"BUILD_BROKEN_USES_BUILD_STATIC_TEST_LIBRARY",
-		"BUILD_BROKEN_USES_BUILD_TARGET_TEST_CONFIG",
 	}, exportEnvVars...), BannerVars...)
 
-	make_vars, err := dumpMakeVars(ctx, config, config.Arguments(), allVars, true)
+	make_vars, err := dumpMakeVars(ctx, config, config.Arguments(), allVars, true, "")
 	if err != nil {
 		ctx.Fatalln("Error dumping make vars:", err)
 	}

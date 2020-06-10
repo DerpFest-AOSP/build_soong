@@ -102,6 +102,10 @@ type LibraryProperties struct {
 
 		// Symbol tags that should be ignored from the symbol file
 		Exclude_symbol_tags []string
+
+		// Run checks on all APIs (in addition to the ones referred by
+		// one of exported ELF symbols.)
+		Check_all_apis *bool
 	}
 
 	// Order symbols in .bss section by their sizes.  Only useful for shared libraries.
@@ -401,6 +405,31 @@ func (l *libraryDecorator) collectHeadersForSnapshot(ctx android.ModuleContext) 
 		dir := path.String()
 		// Skip if dir is for generated headers
 		if strings.HasPrefix(dir, android.PathForOutput(ctx).String()) {
+			continue
+		}
+		// libeigen wrongly exports the root directory "external/eigen". But only two
+		// subdirectories "Eigen" and "unsupported" contain exported header files. Even worse
+		// some of them have no extension. So we need special treatment for libeigen in order
+		// to glob correctly.
+		if dir == "external/eigen" {
+			// Only these two directories contains exported headers.
+			for _, subdir := range []string{"Eigen", "unsupported/Eigen"} {
+				glob, err := ctx.GlobWithDeps("external/eigen/"+subdir+"/**/*", nil)
+				if err != nil {
+					ctx.ModuleErrorf("glob failed: %#v", err)
+					return
+				}
+				for _, header := range glob {
+					if strings.HasSuffix(header, "/") {
+						continue
+					}
+					ext := filepath.Ext(header)
+					if ext != "" && ext != ".h" {
+						continue
+					}
+					ret = append(ret, android.PathForSource(ctx, header))
+				}
+			}
 			continue
 		}
 		exts := headerExts
@@ -870,7 +899,7 @@ func (library *libraryDecorator) linkStatic(ctx ModuleContext,
 		}
 	}
 
-	TransformObjToStaticLib(ctx, library.objects.objFiles, builderFlags, outputFile, objs.tidyFiles)
+	TransformObjToStaticLib(ctx, library.objects.objFiles, deps.WholeStaticLibsFromPrebuilts, builderFlags, outputFile, objs.tidyFiles)
 
 	library.coverageOutputFile = TransformCoverageFilesToZip(ctx, library.objects, ctx.ModuleName())
 
@@ -1072,7 +1101,9 @@ func (library *libraryDecorator) linkSAbiDumpFiles(ctx ModuleContext, objs Objec
 		refAbiDumpFile := getRefAbiDumpFile(ctx, vndkVersion, fileName)
 		if refAbiDumpFile != nil {
 			library.sAbiDiff = SourceAbiDiff(ctx, library.sAbiOutputFile.Path(),
-				refAbiDumpFile, fileName, exportedHeaderFlags, ctx.isLlndk(ctx.Config()), ctx.isNdk(), ctx.isVndkExt())
+				refAbiDumpFile, fileName, exportedHeaderFlags,
+				Bool(library.Properties.Header_abi_checker.Check_all_apis),
+				ctx.isLlndk(ctx.Config()), ctx.isNdk(), ctx.isVndkExt())
 		}
 	}
 }
@@ -1501,17 +1532,21 @@ func LatestStubsVersionFor(config android.Config, name string) string {
 	return ""
 }
 
-func checkVersions(ctx android.BaseModuleContext, versions []string) {
+func normalizeVersions(ctx android.BaseModuleContext, versions []string) {
 	numVersions := make([]int, len(versions))
 	for i, v := range versions {
-		numVer, err := strconv.Atoi(v)
+		numVer, err := android.ApiStrToNum(ctx, v)
 		if err != nil {
-			ctx.PropertyErrorf("versions", "%q is not a number", v)
+			ctx.PropertyErrorf("versions", "%s", err.Error())
+			return
 		}
 		numVersions[i] = numVer
 	}
 	if !sort.IsSorted(sort.IntSlice(numVersions)) {
 		ctx.PropertyErrorf("versions", "not sorted: %v", versions)
+	}
+	for i, v := range numVersions {
+		versions[i] = strconv.Itoa(v)
 	}
 }
 
@@ -1528,13 +1563,21 @@ func createVersionVariations(mctx android.BottomUpMutatorContext, versions []str
 	}
 }
 
-// Version mutator splits a module into the mandatory non-stubs variant
+func VersionVariantAvailable(module interface {
+	Host() bool
+	InRamdisk() bool
+	InRecovery() bool
+}) bool {
+	return !module.Host() && !module.InRamdisk() && !module.InRecovery()
+}
+
+// VersionMutator splits a module into the mandatory non-stubs variant
 // (which is unnamed) and zero or more stubs variants.
 func VersionMutator(mctx android.BottomUpMutatorContext) {
-	if library, ok := mctx.Module().(LinkableInterface); ok && !library.InRecovery() {
+	if library, ok := mctx.Module().(LinkableInterface); ok && VersionVariantAvailable(library) {
 		if library.CcLibrary() && library.BuildSharedVariant() && len(library.StubsVersions()) > 0 {
 			versions := library.StubsVersions()
-			checkVersions(mctx, versions)
+			normalizeVersions(mctx, versions)
 			if mctx.Failed() {
 				return
 			}
@@ -1567,7 +1610,7 @@ func VersionMutator(mctx android.BottomUpMutatorContext) {
 	}
 	if genrule, ok := mctx.Module().(*genrule.Module); ok {
 		if _, ok := genrule.Extra.(*GenruleExtraProperties); ok {
-			if !genrule.InRecovery() {
+			if VersionVariantAvailable(genrule) {
 				mctx.CreateVariations("")
 				return
 			}

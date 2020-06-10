@@ -124,9 +124,15 @@ type PathDeps struct {
 	StaticLibs, LateStaticLibs, WholeStaticLibs android.Paths
 
 	// Paths to .o files
-	Objs               Objects
+	Objs Objects
+	// Paths to .o files in dependencies that provide them. Note that these lists
+	// aren't complete since prebuilt modules don't provide the .o files.
 	StaticLibObjs      Objects
 	WholeStaticLibObjs Objects
+
+	// Paths to .a files in prebuilts. Complements WholeStaticLibObjs to contain
+	// the libs from all whole_static_lib dependencies.
+	WholeStaticLibsFromPrebuilts android.Paths
 
 	// Paths to generated source files
 	GeneratedSources android.Paths
@@ -182,11 +188,11 @@ type Flags struct {
 	// These must be after any module include flags, which will be in CommonFlags.
 	SystemIncludeFlags []string
 
-	Toolchain config.Toolchain
-	Tidy      bool
-	Coverage  bool
-	SAbiDump  bool
-	EmitXrefs bool // If true, generate Ninja rules to generate emitXrefs input files for Kythe
+	Toolchain    config.Toolchain
+	Tidy         bool
+	GcovCoverage bool
+	SAbiDump     bool
+	EmitXrefs    bool // If true, generate Ninja rules to generate emitXrefs input files for Kythe
 
 	RequiredInstructionSet string
 	DynamicLinker          string
@@ -213,6 +219,9 @@ type BaseProperties struct {
 	// two variants to be built, one for the platform and one for apps.
 	Sdk_version *string
 
+	// Minimum sdk version that the artifact should support when it runs as part of mainline modules(APEX).
+	Min_sdk_version *string
+
 	// If true, always create an sdk variant and don't create a platform variant.
 	Sdk_variant_only *bool
 
@@ -220,6 +229,7 @@ type BaseProperties struct {
 	AndroidMkStaticLibs       []string `blueprint:"mutated"`
 	AndroidMkRuntimeLibs      []string `blueprint:"mutated"`
 	AndroidMkWholeStaticLibs  []string `blueprint:"mutated"`
+	AndroidMkHeaderLibs       []string `blueprint:"mutated"`
 	HideFromMake              bool     `blueprint:"mutated"`
 	PreventInstall            bool     `blueprint:"mutated"`
 	ApexesProvidingSharedLibs []string `blueprint:"mutated"`
@@ -306,6 +316,8 @@ type ModuleContextIntf interface {
 	static() bool
 	staticBinary() bool
 	header() bool
+	binary() bool
+	object() bool
 	toolchain() config.Toolchain
 	canUseSdk() bool
 	useSdk() bool
@@ -433,7 +445,6 @@ var (
 	ndkLateStubDepTag     = DependencyTag{Name: "ndk late stub", Library: true}
 	vndkExtDepTag         = DependencyTag{Name: "vndk extends", Library: true}
 	runtimeDepTag         = DependencyTag{Name: "runtime lib"}
-	coverageDepTag        = DependencyTag{Name: "coverage"}
 	testPerSrcDepTag      = DependencyTag{Name: "test_per_src"}
 )
 
@@ -575,6 +586,10 @@ func (c *Module) StubDecorator() bool {
 
 func (c *Module) SdkVersion() string {
 	return String(c.Properties.Sdk_version)
+}
+
+func (c *Module) MinSdkVersion() string {
+	return String(c.Properties.Min_sdk_version)
 }
 
 func (c *Module) AlwaysSdk() bool {
@@ -737,6 +752,15 @@ func (c *Module) OutputFile() android.OptionalPath {
 	return c.outputFile
 }
 
+func (c *Module) CoverageFiles() android.Paths {
+	if c.linker != nil {
+		if library, ok := c.linker.(libraryInterface); ok {
+			return library.objs().coverageFiles
+		}
+	}
+	panic(fmt.Errorf("CoverageFiles called on non-library module: %q", c.BaseModuleName()))
+}
+
 var _ LinkableInterface = (*Module)(nil)
 
 func (c *Module) UnstrippedOutputFile() android.Path {
@@ -801,15 +825,8 @@ func (c *Module) Init() android.Module {
 	}
 
 	c.Prefer32(func(ctx android.BaseModuleContext, base *android.ModuleBase, class android.OsClass) bool {
-		switch class {
-		case android.Device:
-			return ctx.Config().DevicePrefer32BitExecutables()
-		case android.HostCross:
-			// Windows builds always prefer 32-bit
-			return true
-		default:
-			return false
-		}
+		// Windows builds always prefer 32-bit
+		return class == android.HostCross
 	})
 	android.InitAndroidArchModule(c, c.hod, c.multilib)
 	android.InitApexModule(c)
@@ -995,14 +1012,8 @@ func (c *Module) nativeCoverage() bool {
 }
 
 func (c *Module) isSnapshotPrebuilt() bool {
-	if _, ok := c.linker.(*vndkPrebuiltLibraryDecorator); ok {
-		return true
-	}
-	if _, ok := c.linker.(*vendorSnapshotLibraryDecorator); ok {
-		return true
-	}
-	if _, ok := c.linker.(*vendorSnapshotBinaryDecorator); ok {
-		return true
+	if p, ok := c.linker.(interface{ isSnapshotPrebuilt() bool }); ok {
+		return p.isSnapshotPrebuilt()
 	}
 	return false
 }
@@ -1052,7 +1063,7 @@ func isBionic(name string) bool {
 
 func InstallToBootstrap(name string, config android.Config) bool {
 	if name == "libclang_rt.hwasan-aarch64-android" {
-		return inList("hwaddress", config.SanitizeDevice())
+		return true
 	}
 	return isBionic(name)
 }
@@ -1105,6 +1116,14 @@ func (ctx *moduleContextImpl) staticBinary() bool {
 
 func (ctx *moduleContextImpl) header() bool {
 	return ctx.mod.header()
+}
+
+func (ctx *moduleContextImpl) binary() bool {
+	return ctx.mod.binary()
+}
+
+func (ctx *moduleContextImpl) object() bool {
+	return ctx.mod.object()
 }
 
 func (ctx *moduleContextImpl) canUseSdk() bool {
@@ -1192,6 +1211,11 @@ func (ctx *moduleContextImpl) inRecovery() bool {
 // Check whether ABI dumps should be created for this module.
 func (ctx *moduleContextImpl) shouldCreateSourceAbiDump() bool {
 	if ctx.ctx.Config().IsEnvTrue("SKIP_ABI_CHECKS") {
+		return false
+	}
+
+	// Coverage builds have extra symbols.
+	if ctx.mod.isCoverageVariant() {
 		return false
 	}
 
@@ -1372,6 +1396,15 @@ func orderStaticModuleDeps(module LinkableInterface, staticDeps []LinkableInterf
 func (c *Module) IsTestPerSrcAllTestsVariation() bool {
 	test, ok := c.linker.(testPerSrc)
 	return ok && test.isAllTestsVariation()
+}
+
+func (c *Module) DataPaths() android.Paths {
+	if p, ok := c.installer.(interface {
+		dataPaths() android.Paths
+	}); ok {
+		return p.dataPaths()
+	}
+	return nil
 }
 
 func (c *Module) getNameSuffixWithVndkVersion(ctx android.ModuleContext) string {
@@ -1889,7 +1922,7 @@ func (c *Module) DepsMutator(actx android.BottomUpMutatorContext) {
 	if deps.StaticUnwinderIfLegacy {
 		actx.AddVariationDependencies([]blueprint.Variation{
 			{Mutator: "link", Variation: "static"},
-		}, staticUnwinderDepTag, staticUnwinder(actx))
+		}, staticUnwinderDepTag, rewriteSnapshotLibs(staticUnwinder(actx), vendorSnapshotStaticLibs))
 	}
 
 	for _, lib := range deps.LateStaticLibs {
@@ -1901,8 +1934,7 @@ func (c *Module) DepsMutator(actx android.BottomUpMutatorContext) {
 	addSharedLibDependencies := func(depTag DependencyTag, name string, version string) {
 		var variations []blueprint.Variation
 		variations = append(variations, blueprint.Variation{Mutator: "link", Variation: "shared"})
-		versionVariantAvail := !c.InRecovery() && !c.InRamdisk()
-		if version != "" && versionVariantAvail {
+		if version != "" && VersionVariantAvailable(c) {
 			// Version is explicitly specified. i.e. libFoo#30
 			variations = append(variations, blueprint.Variation{Mutator: "version", Variation: version})
 			depTag.ExplicitlyVersioned = true
@@ -1912,7 +1944,7 @@ func (c *Module) DepsMutator(actx android.BottomUpMutatorContext) {
 		// If the version is not specified, add dependency to all stubs libraries.
 		// The stubs library will be used when the depending module is built for APEX and
 		// the dependent module is not in the same APEX.
-		if version == "" && versionVariantAvail {
+		if version == "" && VersionVariantAvailable(c) {
 			for _, ver := range stubsVersionsFor(actx.Config())[name] {
 				// Note that depTag.ExplicitlyVersioned is false in this case.
 				actx.AddVariationDependencies([]blueprint.Variation{
@@ -1971,11 +2003,13 @@ func (c *Module) DepsMutator(actx android.BottomUpMutatorContext) {
 
 	actx.AddVariationDependencies(nil, objDepTag, deps.ObjFiles...)
 
+	vendorSnapshotObjects := vendorSnapshotObjects(actx.Config())
+
 	if deps.CrtBegin != "" {
-		actx.AddVariationDependencies(nil, CrtBeginDepTag, deps.CrtBegin)
+		actx.AddVariationDependencies(nil, CrtBeginDepTag, rewriteSnapshotLibs(deps.CrtBegin, vendorSnapshotObjects))
 	}
 	if deps.CrtEnd != "" {
-		actx.AddVariationDependencies(nil, CrtEndDepTag, deps.CrtEnd)
+		actx.AddVariationDependencies(nil, CrtEndDepTag, rewriteSnapshotLibs(deps.CrtEnd, vendorSnapshotObjects))
 	}
 	if deps.LinkerFlagsFile != "" {
 		actx.AddDependency(c, linkerFlagsDepTag, deps.LinkerFlagsFile)
@@ -2310,7 +2344,7 @@ func (c *Module) depsToPaths(ctx android.ModuleContext) PathDeps {
 			}
 			if ccDep.CcLibrary() && !depIsStatic {
 				depIsStubs := ccDep.BuildStubs()
-				depHasStubs := ccDep.HasStubsVariants()
+				depHasStubs := VersionVariantAvailable(c) && ccDep.HasStubsVariants()
 				depInSameApex := android.DirectlyInApex(c.ApexName(), depName)
 				depInPlatform := !android.DirectlyInAnyApex(ctx, depName)
 
@@ -2326,10 +2360,19 @@ func (c *Module) depsToPaths(ctx android.ModuleContext) PathDeps {
 					// If not building for APEX, use stubs only when it is from
 					// an APEX (and not from platform)
 					useThisDep = (depInPlatform != depIsStubs)
-					if c.InRamdisk() || c.InRecovery() || c.bootstrap() {
-						// However, for ramdisk, recovery or bootstrap modules,
+					if c.bootstrap() {
+						// However, for host, ramdisk, recovery or bootstrap modules,
 						// always link to non-stub variant
 						useThisDep = !depIsStubs
+					}
+					for _, testFor := range c.TestFor() {
+						// Another exception: if this module is bundled with an APEX, then
+						// it is linked with the non-stub variant of a module in the APEX
+						// as if this is part of the APEX.
+						if android.DirectlyInApex(testFor, depName) {
+							useThisDep = !depIsStubs
+							break
+						}
 					}
 				} else {
 					// If building for APEX, use stubs only when it is not from
@@ -2444,7 +2487,11 @@ func (c *Module) depsToPaths(ctx android.ModuleContext) PathDeps {
 					}
 					ctx.AddMissingDependencies(missingDeps)
 				}
-				depPaths.WholeStaticLibObjs = depPaths.WholeStaticLibObjs.Append(staticLib.objs())
+				if _, ok := ccWholeStaticLib.linker.(prebuiltLinkerInterface); ok {
+					depPaths.WholeStaticLibsFromPrebuilts = append(depPaths.WholeStaticLibsFromPrebuilts, linkFile.Path())
+				} else {
+					depPaths.WholeStaticLibObjs = depPaths.WholeStaticLibObjs.Append(staticLib.objs())
+				}
 			} else {
 				ctx.ModuleErrorf(
 					"non-cc.Modules cannot be included as whole static libraries.", depName)
@@ -2472,13 +2519,16 @@ func (c *Module) depsToPaths(ctx android.ModuleContext) PathDeps {
 			// When combining coverage files for shared libraries and executables, coverage files
 			// in static libraries act as if they were whole static libraries. The same goes for
 			// source based Abi dump files.
-			// This should only be done for cc.Modules
 			if c, ok := ccDep.(*Module); ok {
 				staticLib := c.linker.(libraryInterface)
 				depPaths.StaticLibObjs.coverageFiles = append(depPaths.StaticLibObjs.coverageFiles,
 					staticLib.objs().coverageFiles...)
 				depPaths.StaticLibObjs.sAbiDumpFiles = append(depPaths.StaticLibObjs.sAbiDumpFiles,
 					staticLib.objs().sAbiDumpFiles...)
+			} else if c, ok := ccDep.(LinkableInterface); ok {
+				// Handle non-CC modules here
+				depPaths.StaticLibObjs.coverageFiles = append(depPaths.StaticLibObjs.coverageFiles,
+					c.CoverageFiles()...)
 			}
 		}
 
@@ -2590,6 +2640,9 @@ func (c *Module) depsToPaths(ctx android.ModuleContext) PathDeps {
 		case wholeStaticDepTag:
 			c.Properties.AndroidMkWholeStaticLibs = append(
 				c.Properties.AndroidMkWholeStaticLibs, makeLibName(depName))
+		case headerDepTag:
+			c.Properties.AndroidMkHeaderLibs = append(
+				c.Properties.AndroidMkHeaderLibs, makeLibName(depName))
 		}
 	})
 
@@ -2698,6 +2751,24 @@ func (c *Module) header() bool {
 	return false
 }
 
+func (c *Module) binary() bool {
+	if b, ok := c.linker.(interface {
+		binary() bool
+	}); ok {
+		return b.binary()
+	}
+	return false
+}
+
+func (c *Module) object() bool {
+	if o, ok := c.linker.(interface {
+		object() bool
+	}); ok {
+		return o.object()
+	}
+	return false
+}
+
 func (c *Module) getMakeLinkType(actx android.ModuleContext) string {
 	if c.UseVndk() {
 		if lib, ok := c.linker.(*llndkStubDecorator); ok {
@@ -2754,6 +2825,16 @@ func (c *Module) AvailableFor(what string) bool {
 		return c.ApexModuleBase.AvailableFor(what) || linker.availableFor(what)
 	} else {
 		return c.ApexModuleBase.AvailableFor(what)
+	}
+}
+
+func (c *Module) TestFor() []string {
+	if test, ok := c.linker.(interface {
+		testFor() []string
+	}); ok {
+		return test.testFor()
+	} else {
+		return c.ApexModuleBase.TestFor()
 	}
 }
 
@@ -2817,6 +2898,9 @@ func (c *Module) DepIsInSameApex(ctx android.BaseModuleContext, dep android.Modu
 				return false
 			}
 		}
+	} else if ctx.OtherModuleDependencyTag(dep) == llndkImplDep {
+		// We don't track beyond LLNDK
+		return false
 	}
 	return true
 }
@@ -2997,20 +3081,32 @@ func (m *Module) ImageMutatorBegin(mctx android.BaseModuleContext) {
 		// This will be available in /system, /vendor and /product
 		// or a /system directory that is available to vendor and product.
 		coreVariantNeeded = true
-		vendorVariants = append(vendorVariants, platformVndkVersion)
-		productVariants = append(productVariants, platformVndkVersion)
-		// VNDK modules must not create BOARD_VNDK_VERSION variant because its
-		// code is PLATFORM_VNDK_VERSION.
-		// On the other hand, vendor_available modules which are not VNDK should
-		// also build BOARD_VNDK_VERSION because it's installed in /vendor.
-		// vendor_available modules are also available to /product.
-		if !m.IsVndk() {
+
+		// We assume that modules under proprietary paths are compatible for
+		// BOARD_VNDK_VERSION. The other modules are regarded as AOSP, or
+		// PLATFORM_VNDK_VERSION.
+		if isVendorProprietaryPath(mctx.ModuleDir()) {
 			vendorVariants = append(vendorVariants, boardVndkVersion)
+		} else {
+			vendorVariants = append(vendorVariants, platformVndkVersion)
+		}
+
+		// vendor_available modules are also available to /product.
+		productVariants = append(productVariants, platformVndkVersion)
+		// VNDK is always PLATFORM_VNDK_VERSION
+		if !m.IsVndk() {
 			productVariants = append(productVariants, productVndkVersion)
 		}
 	} else if vendorSpecific && String(m.Properties.Sdk_version) == "" {
 		// This will be available in /vendor (or /odm) only
-		vendorVariants = append(vendorVariants, boardVndkVersion)
+		// We assume that modules under proprietary paths are compatible for
+		// BOARD_VNDK_VERSION. The other modules are regarded as AOSP, or
+		// PLATFORM_VNDK_VERSION.
+		if isVendorProprietaryPath(mctx.ModuleDir()) {
+			vendorVariants = append(vendorVariants, boardVndkVersion)
+		} else {
+			vendorVariants = append(vendorVariants, platformVndkVersion)
+		}
 	} else {
 		// This is either in /system (or similar: /data), or is a
 		// modules built with the NDK. Modules built with the NDK
