@@ -43,6 +43,9 @@ const (
 	imageApexType     = "image"
 	zipApexType       = "zip"
 	flattenedApexType = "flattened"
+
+	ext4FsType = "ext4"
+	f2fsFsType = "f2fs"
 )
 
 type dependencyTag struct {
@@ -1138,6 +1141,10 @@ type apexBundleProperties struct {
 
 	// The minimum SDK version that this apex must be compatible with.
 	Min_sdk_version *string
+
+	// The type of filesystem to use for an image apex. Either 'ext4' or 'f2fs'.
+	// Default 'ext4'.
+	Payload_fs_type *string
 }
 
 type apexTargetBundleProperties struct {
@@ -1337,6 +1344,24 @@ func (af *apexFile) AvailableToPlatform() bool {
 	return false
 }
 
+type fsType int
+
+const (
+	ext4 fsType = iota
+	f2fs
+)
+
+func (f fsType) string() string {
+	switch f {
+	case ext4:
+		return ext4FsType
+	case f2fs:
+		return f2fsFsType
+	default:
+		panic(fmt.Errorf("unknown APEX payload type %d", f))
+	}
+}
+
 type apexBundle struct {
 	android.ModuleBase
 	android.DefaultableModuleBase
@@ -1402,6 +1427,8 @@ type apexBundle struct {
 
 	// Optional list of lint report zip files for apexes that contain java or app modules
 	lintReports android.Paths
+
+	payloadFsType fsType
 }
 
 func addDependenciesForNativeModules(ctx android.BottomUpMutatorContext,
@@ -2247,6 +2274,15 @@ func (a *apexBundle) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 
 	a.installDir = android.PathForModuleInstall(ctx, "apex")
 	a.filesInfo = filesInfo
+
+	switch proptools.StringDefault(a.properties.Payload_fs_type, ext4FsType) {
+	case ext4FsType:
+		a.payloadFsType = ext4
+	case f2fsFsType:
+		a.payloadFsType = f2fs
+	default:
+		ctx.PropertyErrorf("payload_fs_type", "%q is not a valid filesystem for apex [ext4, f2fs]", *a.properties.Payload_fs_type)
+	}
 
 	if a.properties.ApexType != zipApex {
 		if a.properties.File_contexts == nil {
