@@ -291,7 +291,7 @@ func ensureListEmpty(t *testing.T, result []string) {
 
 // Minimal test
 func TestBasicApex(t *testing.T) {
-	ctx, _ := testApex(t, `
+	ctx, config := testApex(t, `
 		apex_defaults {
 			name: "myapex-defaults",
 			manifest: ":myapex.manifest",
@@ -445,6 +445,16 @@ func TestBasicApex(t *testing.T) {
 	`)
 
 	apexRule := ctx.ModuleForTests("myapex", "android_common_myapex_image").Rule("apexRule")
+
+	// Make sure that Android.mk is created
+	ab := ctx.ModuleForTests("myapex", "android_common_myapex_image").Module().(*apexBundle)
+	data := android.AndroidMkDataForTest(t, config, "", ab)
+	var builder strings.Builder
+	data.Custom(&builder, ab.BaseModuleName(), "TARGET_", "", data)
+
+	androidMk := builder.String()
+	ensureContains(t, androidMk, "LOCAL_MODULE := mylib.myapex\n")
+	ensureNotContains(t, androidMk, "LOCAL_MODULE := mylib.com.android.myapex\n")
 
 	optFlags := apexRule.Args["opt_flags"]
 	ensureContains(t, optFlags, "--pubkey vendor/foo/devkeys/testkey.avbpubkey")
@@ -963,7 +973,7 @@ func TestApexDependsOnLLNDKTransitively(t *testing.T) {
 				symbol_file: "",
 			}
 			`, func(fs map[string][]byte, config android.Config) {
-				setUseVendorWhitelistForTest(config, []string{"myapex"})
+				setUseVendorAllowListForTest(config, []string{"myapex"})
 			}, withUnbundledBuild)
 
 			// Ensure that LLNDK dep is not included
@@ -1632,7 +1642,7 @@ func TestUseVendor(t *testing.T) {
 			apex_available: [ "myapex" ],
 		}
 	`, func(fs map[string][]byte, config android.Config) {
-		setUseVendorWhitelistForTest(config, []string{"myapex"})
+		setUseVendorAllowListForTest(config, []string{"myapex"})
 	})
 
 	inputsList := []string{}
@@ -1665,9 +1675,9 @@ func TestUseVendorRestriction(t *testing.T) {
 			private_key: "testkey.pem",
 		}
 	`, func(fs map[string][]byte, config android.Config) {
-		setUseVendorWhitelistForTest(config, []string{""})
+		setUseVendorAllowListForTest(config, []string{""})
 	})
-	// no error with whitelist
+	// no error with allow list
 	testApex(t, `
 		apex {
 			name: "myapex",
@@ -1680,7 +1690,7 @@ func TestUseVendorRestriction(t *testing.T) {
 			private_key: "testkey.pem",
 		}
 	`, func(fs map[string][]byte, config android.Config) {
-		setUseVendorWhitelistForTest(config, []string{"myapex"})
+		setUseVendorAllowListForTest(config, []string{"myapex"})
 	})
 }
 
@@ -3412,7 +3422,7 @@ func TestApexUsesFailsIfUseVenderMismatch(t *testing.T) {
 			private_key: "testkey.pem",
 		}
 	`, func(fs map[string][]byte, config android.Config) {
-		setUseVendorWhitelistForTest(config, []string{"myapex"})
+		setUseVendorAllowListForTest(config, []string{"myapex"})
 	})
 }
 
