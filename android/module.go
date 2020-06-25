@@ -104,11 +104,15 @@ type EarlyModuleContext interface {
 type BaseModuleContext interface {
 	EarlyModuleContext
 
+	blueprintBaseModuleContext() blueprint.BaseModuleContext
+
 	OtherModuleName(m blueprint.Module) string
 	OtherModuleDir(m blueprint.Module) string
 	OtherModuleErrorf(m blueprint.Module, fmt string, args ...interface{})
 	OtherModuleDependencyTag(m blueprint.Module) blueprint.DependencyTag
 	OtherModuleExists(name string) bool
+	OtherModuleDependencyVariantExists(variations []blueprint.Variation, name string) bool
+	OtherModuleReverseDependencyVariantExists(name string) bool
 	OtherModuleType(m blueprint.Module) string
 
 	GetDirectDepsWithTag(tag blueprint.DependencyTag) []Module
@@ -203,6 +207,10 @@ type ModuleContext interface {
 	// Similar to blueprint.ModuleContext.Build, but takes Paths instead of []string,
 	// and performs more verification.
 	Build(pctx PackageContext, params BuildParams)
+	// Phony creates a Make-style phony rule, a rule with no commands that can depend on other
+	// phony rules or real files.  Phony can be called on the same name multiple times to add
+	// additional dependencies.
+	Phony(phony string, deps ...Path)
 
 	PrimaryModule() Module
 	FinalModule() Module
@@ -718,6 +726,7 @@ type ModuleBase struct {
 	installFiles       InstallPaths
 	checkbuildFiles    Paths
 	noticeFiles        Paths
+	phonies            map[string]Paths
 
 	// Used by buildTargetSingleton to create checkbuild and per-directory build targets
 	// Only set on the final variant of each module
@@ -824,6 +833,10 @@ func (m *ModuleBase) Os() OsType {
 
 func (m *ModuleBase) Host() bool {
 	return m.Os().Class == Host || m.Os().Class == HostCross
+}
+
+func (m *ModuleBase) Device() bool {
+	return m.Os().Class == Device
 }
 
 func (m *ModuleBase) Arch() Arch {
@@ -1089,26 +1102,17 @@ func (m *ModuleBase) generateModuleTarget(ctx ModuleContext) {
 	}
 
 	if len(allInstalledFiles) > 0 {
-		name := PathForPhony(ctx, namespacePrefix+ctx.ModuleName()+"-install")
-		ctx.Build(pctx, BuildParams{
-			Rule:      blueprint.Phony,
-			Output:    name,
-			Implicits: allInstalledFiles.Paths(),
-			Default:   !ctx.Config().EmbeddedInMake(),
-		})
-		deps = append(deps, name)
-		m.installTarget = name
+		name := namespacePrefix + ctx.ModuleName() + "-install"
+		ctx.Phony(name, allInstalledFiles.Paths()...)
+		m.installTarget = PathForPhony(ctx, name)
+		deps = append(deps, m.installTarget)
 	}
 
 	if len(allCheckbuildFiles) > 0 {
-		name := PathForPhony(ctx, namespacePrefix+ctx.ModuleName()+"-checkbuild")
-		ctx.Build(pctx, BuildParams{
-			Rule:      blueprint.Phony,
-			Output:    name,
-			Implicits: allCheckbuildFiles,
-		})
-		deps = append(deps, name)
-		m.checkbuildTarget = name
+		name := namespacePrefix + ctx.ModuleName() + "-checkbuild"
+		ctx.Phony(name, allCheckbuildFiles...)
+		m.checkbuildTarget = PathForPhony(ctx, name)
+		deps = append(deps, m.checkbuildTarget)
 	}
 
 	if len(deps) > 0 {
@@ -1117,12 +1121,7 @@ func (m *ModuleBase) generateModuleTarget(ctx ModuleContext) {
 			suffix = "-soong"
 		}
 
-		name := PathForPhony(ctx, namespacePrefix+ctx.ModuleName()+suffix)
-		ctx.Build(pctx, BuildParams{
-			Rule:      blueprint.Phony,
-			Outputs:   []WritablePath{name},
-			Implicits: deps,
-		})
+		ctx.Phony(namespacePrefix+ctx.ModuleName()+suffix, deps...)
 
 		m.blueprintDir = ctx.ModuleDir()
 	}
@@ -1309,6 +1308,9 @@ func (m *ModuleBase) GenerateBuildActions(blueprintCtx blueprint.ModuleContext) 
 		m.checkbuildFiles = append(m.checkbuildFiles, ctx.checkbuildFiles...)
 		m.initRcPaths = PathsForModuleSrc(ctx, m.commonProperties.Init_rc)
 		m.vintfFragmentsPaths = PathsForModuleSrc(ctx, m.commonProperties.Vintf_fragments)
+		for k, v := range ctx.phonies {
+			m.phonies[k] = append(m.phonies[k], v...)
+		}
 	} else if ctx.Config().AllowMissingDependencies() {
 		// If the module is not enabled it will not create any build rules, nothing will call
 		// ctx.GetMissingDependencies(), and blueprint will consider the missing dependencies to be unhandled
@@ -1431,12 +1433,22 @@ func (b *baseModuleContext) OtherModuleDependencyTag(m blueprint.Module) bluepri
 	return b.bp.OtherModuleDependencyTag(m)
 }
 func (b *baseModuleContext) OtherModuleExists(name string) bool { return b.bp.OtherModuleExists(name) }
+func (b *baseModuleContext) OtherModuleDependencyVariantExists(variations []blueprint.Variation, name string) bool {
+	return b.bp.OtherModuleDependencyVariantExists(variations, name)
+}
+func (b *baseModuleContext) OtherModuleReverseDependencyVariantExists(name string) bool {
+	return b.bp.OtherModuleReverseDependencyVariantExists(name)
+}
 func (b *baseModuleContext) OtherModuleType(m blueprint.Module) string {
 	return b.bp.OtherModuleType(m)
 }
 
 func (b *baseModuleContext) GetDirectDepWithTag(name string, tag blueprint.DependencyTag) blueprint.Module {
 	return b.bp.GetDirectDepWithTag(name, tag)
+}
+
+func (b *baseModuleContext) blueprintBaseModuleContext() blueprint.BaseModuleContext {
+	return b.bp
 }
 
 type moduleContext struct {
@@ -1446,6 +1458,7 @@ type moduleContext struct {
 	installFiles    InstallPaths
 	checkbuildFiles Paths
 	module          Module
+	phonies         map[string]Paths
 
 	// For tests
 	buildParams []BuildParams
@@ -1560,6 +1573,11 @@ func (m *moduleContext) Build(pctx PackageContext, params BuildParams) {
 
 	m.bp.Build(pctx.PackageContext, convertBuildParams(params))
 }
+
+func (m *moduleContext) Phony(name string, deps ...Path) {
+	addPhony(m.config, name, deps...)
+}
+
 func (m *moduleContext) GetMissingDependencies() []string {
 	var missingDeps []string
 	missingDeps = append(missingDeps, m.Module().base().commonProperties.MissingDeps...)
@@ -1941,7 +1959,7 @@ func (m *moduleContext) installFile(installPath InstallPath, name string, srcPat
 	rule blueprint.Rule, deps []Path) InstallPath {
 
 	fullInstallPath := installPath.Join(m, name)
-	m.module.base().hooks.runInstallHooks(m, fullInstallPath, false)
+	m.module.base().hooks.runInstallHooks(m, srcPath, fullInstallPath, false)
 
 	if !m.skipInstall(fullInstallPath) {
 
@@ -1975,7 +1993,7 @@ func (m *moduleContext) installFile(installPath InstallPath, name string, srcPat
 
 func (m *moduleContext) InstallSymlink(installPath InstallPath, name string, srcPath InstallPath) InstallPath {
 	fullInstallPath := installPath.Join(m, name)
-	m.module.base().hooks.runInstallHooks(m, fullInstallPath, true)
+	m.module.base().hooks.runInstallHooks(m, srcPath, fullInstallPath, true)
 
 	if !m.skipInstall(fullInstallPath) {
 
@@ -2004,7 +2022,7 @@ func (m *moduleContext) InstallSymlink(installPath InstallPath, name string, src
 // (e.g. /apex/...)
 func (m *moduleContext) InstallAbsoluteSymlink(installPath InstallPath, name string, absPath string) InstallPath {
 	fullInstallPath := installPath.Join(m, name)
-	m.module.base().hooks.runInstallHooks(m, fullInstallPath, true)
+	m.module.base().hooks.runInstallHooks(m, nil, fullInstallPath, true)
 
 	if !m.skipInstall(fullInstallPath) {
 		m.Build(pctx, BuildParams{
@@ -2219,9 +2237,8 @@ type buildTargetSingleton struct{}
 func (c *buildTargetSingleton) GenerateBuildActions(ctx SingletonContext) {
 	var checkbuildDeps Paths
 
-	mmTarget := func(dir string) WritablePath {
-		return PathForPhony(ctx,
-			"MODULES-IN-"+strings.Replace(filepath.Clean(dir), "/", "-", -1))
+	mmTarget := func(dir string) string {
+		return "MODULES-IN-" + strings.Replace(filepath.Clean(dir), "/", "-", -1)
 	}
 
 	modulesInDir := make(map[string]Paths)
@@ -2247,11 +2264,7 @@ func (c *buildTargetSingleton) GenerateBuildActions(ctx SingletonContext) {
 	}
 
 	// Create a top-level checkbuild target that depends on all modules
-	ctx.Build(pctx, BuildParams{
-		Rule:      blueprint.Phony,
-		Output:    PathForPhony(ctx, "checkbuild"+suffix),
-		Implicits: checkbuildDeps,
-	})
+	ctx.Phony("checkbuild"+suffix, checkbuildDeps...)
 
 	// Make will generate the MODULES-IN-* targets
 	if ctx.Config().EmbeddedInMake() {
@@ -2275,7 +2288,7 @@ func (c *buildTargetSingleton) GenerateBuildActions(ctx SingletonContext) {
 	for _, dir := range dirs {
 		p := parentDir(dir)
 		if p != "." && p != "/" {
-			modulesInDir[p] = append(modulesInDir[p], mmTarget(dir))
+			modulesInDir[p] = append(modulesInDir[p], PathForPhony(ctx, mmTarget(dir)))
 		}
 	}
 
@@ -2283,14 +2296,7 @@ func (c *buildTargetSingleton) GenerateBuildActions(ctx SingletonContext) {
 	// depends on the MODULES-IN-* targets of all of its subdirectories that contain Android.bp
 	// files.
 	for _, dir := range dirs {
-		ctx.Build(pctx, BuildParams{
-			Rule:      blueprint.Phony,
-			Output:    mmTarget(dir),
-			Implicits: modulesInDir[dir],
-			// HACK: checkbuild should be an optional build, but force it
-			// enabled for now in standalone builds
-			Default: !ctx.Config().EmbeddedInMake(),
-		})
+		ctx.Phony(mmTarget(dir), modulesInDir[dir]...)
 	}
 
 	// Create (host|host-cross|target)-<OS> phony rules to build a reduced checkbuild.
@@ -2317,23 +2323,15 @@ func (c *buildTargetSingleton) GenerateBuildActions(ctx SingletonContext) {
 			continue
 		}
 
-		name := PathForPhony(ctx, className+"-"+os.Name)
-		osClass[className] = append(osClass[className], name)
+		name := className + "-" + os.Name
+		osClass[className] = append(osClass[className], PathForPhony(ctx, name))
 
-		ctx.Build(pctx, BuildParams{
-			Rule:      blueprint.Phony,
-			Output:    name,
-			Implicits: deps,
-		})
+		ctx.Phony(name, deps...)
 	}
 
 	// Wrap those into host|host-cross|target phony rules
 	for _, class := range SortedStringKeys(osClass) {
-		ctx.Build(pctx, BuildParams{
-			Rule:      blueprint.Phony,
-			Output:    PathForPhony(ctx, class),
-			Implicits: osClass[class],
-		})
+		ctx.Phony(class, osClass[class]...)
 	}
 }
 
@@ -2360,4 +2358,10 @@ type IdeInfo struct {
 	Classes           []string `json:"class,omitempty"`
 	Installed_paths   []string `json:"installed,omitempty"`
 	SrcJars           []string `json:"srcjars,omitempty"`
+	Paths             []string `json:"path,omitempty"`
+}
+
+func CheckBlueprintSyntax(ctx BaseModuleContext, filename string, contents string) []error {
+	bpctx := ctx.blueprintBaseModuleContext()
+	return blueprint.CheckBlueprintSyntax(bpctx.ModuleFactories(), filename, contents)
 }

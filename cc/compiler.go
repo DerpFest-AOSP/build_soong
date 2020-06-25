@@ -300,8 +300,7 @@ func (compiler *baseCompiler) compilerFlags(ctx ModuleContext, flags Flags, deps
 	if !(ctx.useSdk() || ctx.useVndk()) || ctx.Host() {
 		flags.SystemIncludeFlags = append(flags.SystemIncludeFlags,
 			"${config.CommonGlobalIncludes}",
-			tc.IncludeFlags(),
-			"${config.CommonNativehelperInclude}")
+			tc.IncludeFlags())
 	}
 
 	if ctx.useSdk() {
@@ -515,7 +514,7 @@ func (compiler *baseCompiler) compilerFlags(ctx ModuleContext, flags Flags, deps
 		flags.Local.CFlags = append(flags.Local.CFlags, "-fopenmp")
 	}
 
-	// Exclude directories from manual binder interface whitelisting.
+	// Exclude directories from manual binder interface allowed list.
 	//TODO(b/145621474): Move this check into IInterface.h when clang-tidy no longer uses absolute paths.
 	if android.HasAnyPrefix(ctx.ModuleDir(), allowedManualInterfacePaths) {
 		flags.Local.CFlags = append(flags.Local.CFlags, "-DDO_NOT_CHECK_MANUAL_BINDER_INTERFACES")

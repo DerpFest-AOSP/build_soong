@@ -69,7 +69,26 @@ func (library *Library) AndroidMkEntries() []android.AndroidMkEntries {
 	if !library.ApexModuleBase.AvailableFor(android.AvailableToPlatform) {
 		hideFromMake = true
 	}
-	if !hideFromMake {
+	if hideFromMake {
+		// May still need to add some additional dependencies. This will be called
+		// once for the platform variant (even if it is not being used) and once each
+		// for the APEX specific variants. In order to avoid adding the dependency
+		// multiple times only add it for the platform variant.
+		checkedModulePaths := library.additionalCheckedModules
+		if library.IsForPlatform() && len(checkedModulePaths) != 0 {
+			mainEntries = android.AndroidMkEntries{
+				Class: "FAKE",
+				// Need at least one output file in order for this to take effect.
+				OutputFile: android.OptionalPathForPath(checkedModulePaths[0]),
+				Include:    "$(BUILD_PHONY_PACKAGE)",
+				ExtraEntries: []android.AndroidMkExtraEntriesFunc{
+					func(entries *android.AndroidMkEntries) {
+						entries.AddStrings("LOCAL_ADDITIONAL_CHECKED_MODULE", checkedModulePaths.Strings()...)
+					},
+				},
+			}
+		}
+	} else {
 		mainEntries = android.AndroidMkEntries{
 			Class:      "JAVA_LIBRARIES",
 			DistFile:   android.OptionalPathForPath(library.distFile),
@@ -211,6 +230,11 @@ func (prebuilt *DexImport) AndroidMkEntries() []android.AndroidMkEntries {
 }
 
 func (prebuilt *AARImport) AndroidMkEntries() []android.AndroidMkEntries {
+	if !prebuilt.IsForPlatform() {
+		return []android.AndroidMkEntries{{
+			Disabled: true,
+		}}
+	}
 	return []android.AndroidMkEntries{android.AndroidMkEntries{
 		Class:      "JAVA_LIBRARIES",
 		OutputFile: android.OptionalPathForPath(prebuilt.classpathFile),
@@ -416,6 +440,11 @@ func (a *AndroidTestHelperApp) AndroidMkEntries() []android.AndroidMkEntries {
 }
 
 func (a *AndroidLibrary) AndroidMkEntries() []android.AndroidMkEntries {
+	if !a.IsForPlatform() {
+		return []android.AndroidMkEntries{{
+			Disabled: true,
+		}}
+	}
 	entriesList := a.Library.AndroidMkEntries()
 	entries := &entriesList[0]
 
@@ -502,14 +531,12 @@ func (ddoc *Droiddoc) AndroidMkEntries() []android.AndroidMkEntries {
 					fmt.Fprintln(w, ddoc.Name()+"-check-last-released-api:",
 						ddoc.checkLastReleasedApiTimestamp.String())
 
-					if ddoc.Name() == "api-stubs-docs" || ddoc.Name() == "system-api-stubs-docs" {
-						fmt.Fprintln(w, ".PHONY: checkapi")
-						fmt.Fprintln(w, "checkapi:",
-							ddoc.checkLastReleasedApiTimestamp.String())
+					fmt.Fprintln(w, ".PHONY: checkapi")
+					fmt.Fprintln(w, "checkapi:",
+						ddoc.checkLastReleasedApiTimestamp.String())
 
-						fmt.Fprintln(w, ".PHONY: droidcore")
-						fmt.Fprintln(w, "droidcore: checkapi")
-					}
+					fmt.Fprintln(w, ".PHONY: droidcore")
+					fmt.Fprintln(w, "droidcore: checkapi")
 				}
 			},
 		},

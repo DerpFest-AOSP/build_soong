@@ -408,16 +408,6 @@ func (sanitize *sanitize) deps(ctx BaseModuleContext, deps Deps) Deps {
 		return deps
 	}
 
-	if ctx.Device() {
-		if Bool(sanitize.Properties.Sanitize.Address) {
-			// Compiling asan and having libc_scudo in the same
-			// executable will cause the executable to crash.
-			// Remove libc_scudo since it is only used to override
-			// allocation functions which asan already overrides.
-			_, deps.SharedLibs = removeFromList("libc_scudo", deps.SharedLibs)
-		}
-	}
-
 	return deps
 }
 
@@ -989,6 +979,7 @@ type Sanitizeable interface {
 	android.Module
 	IsSanitizerEnabled(ctx android.BaseModuleContext, sanitizerName string) bool
 	EnableSanitizer(sanitizerName string)
+	AddSanitizerDependencies(ctx android.BottomUpMutatorContext, sanitizerName string)
 }
 
 // Create sanitized variants for modules that need them
@@ -1075,6 +1066,7 @@ func sanitizerMutator(t sanitizerType) func(android.BottomUpMutatorContext) {
 			c.sanitize.Properties.SanitizeDep = false
 		} else if sanitizeable, ok := mctx.Module().(Sanitizeable); ok && sanitizeable.IsSanitizerEnabled(mctx, t.name()) {
 			// APEX modules fall here
+			sanitizeable.AddSanitizerDependencies(mctx, t.name())
 			mctx.CreateVariations(t.variationName())
 		}
 	}

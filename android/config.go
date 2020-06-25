@@ -111,6 +111,10 @@ type config struct {
 	fs         pathtools.FileSystem
 	mockBpList string
 
+	// If testAllowNonExistentPaths is true then PathForSource and PathForModuleSrc won't error
+	// in tests when a path doesn't exist.
+	testAllowNonExistentPaths bool
+
 	OncePer
 }
 
@@ -230,6 +234,10 @@ func TestConfig(buildDir string, env map[string]string, bp string, fs map[string
 		buildDir:     buildDir,
 		captureBuild: true,
 		env:          envCopy,
+
+		// Set testAllowNonExistentPaths so that test contexts don't need to specify every path
+		// passed to PathForSource or PathForModuleSrc.
+		testAllowNonExistentPaths: true,
 	}
 	config.deviceConfig = &deviceConfig{
 		config: config,
@@ -397,6 +405,14 @@ func NewConfig(srcDir, buildDir string) (Config, error) {
 	if err := config.fromEnv(); err != nil {
 		return Config{}, err
 	}
+
+	if Bool(config.productVariables.GcovCoverage) && Bool(config.productVariables.ClangCoverage) {
+		return Config{}, fmt.Errorf("GcovCoverage and ClangCoverage cannot both be set")
+	}
+
+	config.productVariables.Native_coverage = proptools.BoolPtr(
+		Bool(config.productVariables.GcovCoverage) ||
+			Bool(config.productVariables.ClangCoverage))
 
 	return Config{config}, nil
 }
@@ -704,8 +720,15 @@ func (c *config) AllowMissingDependencies() bool {
 	return Bool(c.productVariables.Allow_missing_dependencies)
 }
 
+// Returns true if building without full platform sources.
 func (c *config) UnbundledBuild() bool {
 	return Bool(c.productVariables.Unbundled_build)
+}
+
+// Returns true if building apps that aren't bundled with the platform.
+// UnbundledBuild() is always true when this is true.
+func (c *config) UnbundledBuildApps() bool {
+	return Bool(c.productVariables.Unbundled_build_apps)
 }
 
 func (c *config) UnbundledBuildUsePrebuiltSdks() bool {
@@ -730,14 +753,6 @@ func (c *config) Debuggable() bool {
 
 func (c *config) Eng() bool {
 	return Bool(c.productVariables.Eng)
-}
-
-func (c *config) DevicePrefer32BitApps() bool {
-	return Bool(c.productVariables.DevicePrefer32BitApps)
-}
-
-func (c *config) DevicePrefer32BitExecutables() bool {
-	return Bool(c.productVariables.DevicePrefer32BitExecutables)
 }
 
 func (c *config) DevicePrimaryArchType() ArchType {
@@ -897,27 +912,31 @@ func (c *config) ModulesLoadedByPrivilegedModules() []string {
 }
 
 // Expected format for apexJarValue = <apex name>:<jar name>
-func SplitApexJarPair(apexJarValue string) (string, string) {
-	var apexJarPair []string = strings.SplitN(apexJarValue, ":", 2)
-	if apexJarPair == nil || len(apexJarPair) != 2 {
-		panic(fmt.Errorf("malformed apexJarValue: %q, expected format: <apex>:<jar>",
-			apexJarValue))
+func SplitApexJarPair(ctx PathContext, str string) (string, string) {
+	pair := strings.SplitN(str, ":", 2)
+	if len(pair) == 2 {
+		return pair[0], pair[1]
+	} else {
+		reportPathErrorf(ctx, "malformed (apex, jar) pair: '%s', expected format: <apex>:<jar>", str)
+		return "error-apex", "error-jar"
 	}
-	return apexJarPair[0], apexJarPair[1]
 }
 
-func GetJarsFromApexJarPairs(apexJarPairs []string) []string {
+func GetJarsFromApexJarPairs(ctx PathContext, apexJarPairs []string) []string {
 	modules := make([]string, len(apexJarPairs))
 	for i, p := range apexJarPairs {
-		_, jar := SplitApexJarPair(p)
+		_, jar := SplitApexJarPair(ctx, p)
 		modules[i] = jar
 	}
 	return modules
 }
 
 func (c *config) BootJars() []string {
-	return append(GetJarsFromApexJarPairs(c.productVariables.BootJars),
-		GetJarsFromApexJarPairs(c.productVariables.UpdatableBootJars)...)
+	ctx := NullPathContext{Config{
+		config: c,
+	}}
+	return append(GetJarsFromApexJarPairs(ctx, c.productVariables.BootJars),
+		GetJarsFromApexJarPairs(ctx, c.productVariables.UpdatableBootJars)...)
 }
 
 func (c *config) DexpreoptGlobalConfig(ctx PathContext) ([]byte, error) {
@@ -1025,27 +1044,55 @@ func (c *deviceConfig) SamplingPGO() bool {
 	return Bool(c.config.productVariables.SamplingPGO)
 }
 
-func (c *config) NativeLineCoverage() bool {
-	return Bool(c.productVariables.NativeLineCoverage)
+// JavaCoverageEnabledForPath returns whether Java code coverage is enabled for
+// path. Coverage is enabled by default when the product variable
+// JavaCoveragePaths is empty. If JavaCoveragePaths is not empty, coverage is
+// enabled for any path which is part of this variable (and not part of the
+// JavaCoverageExcludePaths product variable). Value "*" in JavaCoveragePaths
+// represents any path.
+func (c *deviceConfig) JavaCoverageEnabledForPath(path string) bool {
+	coverage := false
+	if c.config.productVariables.JavaCoveragePaths == nil ||
+		InList("*", c.config.productVariables.JavaCoveragePaths) ||
+		HasAnyPrefix(path, c.config.productVariables.JavaCoveragePaths) {
+		coverage = true
+	}
+	if coverage && c.config.productVariables.JavaCoverageExcludePaths != nil {
+		if HasAnyPrefix(path, c.config.productVariables.JavaCoverageExcludePaths) {
+			coverage = false
+		}
+	}
+	return coverage
 }
 
+// Returns true if gcov or clang coverage is enabled.
 func (c *deviceConfig) NativeCoverageEnabled() bool {
-	return Bool(c.config.productVariables.Native_coverage) || Bool(c.config.productVariables.NativeLineCoverage)
+	return Bool(c.config.productVariables.GcovCoverage) ||
+		Bool(c.config.productVariables.ClangCoverage)
 }
 
 func (c *deviceConfig) ClangCoverageEnabled() bool {
 	return Bool(c.config.productVariables.ClangCoverage)
 }
 
-func (c *deviceConfig) CoverageEnabledForPath(path string) bool {
+func (c *deviceConfig) GcovCoverageEnabled() bool {
+	return Bool(c.config.productVariables.GcovCoverage)
+}
+
+// NativeCoverageEnabledForPath returns whether (GCOV- or Clang-based) native
+// code coverage is enabled for path. By default, coverage is not enabled for a
+// given path unless it is part of the NativeCoveragePaths product variable (and
+// not part of the NativeCoverageExcludePaths product variable). Value "*" in
+// NativeCoveragePaths represents any path.
+func (c *deviceConfig) NativeCoverageEnabledForPath(path string) bool {
 	coverage := false
-	if c.config.productVariables.CoveragePaths != nil {
-		if InList("*", c.config.productVariables.CoveragePaths) || HasAnyPrefix(path, c.config.productVariables.CoveragePaths) {
+	if c.config.productVariables.NativeCoveragePaths != nil {
+		if InList("*", c.config.productVariables.NativeCoveragePaths) || HasAnyPrefix(path, c.config.productVariables.NativeCoveragePaths) {
 			coverage = true
 		}
 	}
-	if coverage && c.config.productVariables.CoverageExcludePaths != nil {
-		if HasAnyPrefix(path, c.config.productVariables.CoverageExcludePaths) {
+	if coverage && c.config.productVariables.NativeCoverageExcludePaths != nil {
+		if HasAnyPrefix(path, c.config.productVariables.NativeCoverageExcludePaths) {
 			coverage = false
 		}
 	}
@@ -1159,8 +1206,8 @@ func (c *config) EnforceSystemCertificate() bool {
 	return Bool(c.productVariables.EnforceSystemCertificate)
 }
 
-func (c *config) EnforceSystemCertificateWhitelist() []string {
-	return c.productVariables.EnforceSystemCertificateWhitelist
+func (c *config) EnforceSystemCertificateAllowList() []string {
+	return c.productVariables.EnforceSystemCertificateAllowList
 }
 
 func (c *config) EnforceProductPartitionInterface() bool {

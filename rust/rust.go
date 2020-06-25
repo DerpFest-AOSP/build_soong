@@ -39,18 +39,16 @@ func init() {
 	android.RegisterModuleType("rust_defaults", defaultsFactory)
 	android.PreDepsMutators(func(ctx android.RegisterMutatorsContext) {
 		ctx.BottomUp("rust_libraries", LibraryMutator).Parallel()
-		ctx.BottomUp("rust_unit_tests", TestPerSrcMutator).Parallel()
 		ctx.BottomUp("rust_begin", BeginMutator).Parallel()
 	})
 	pctx.Import("android/soong/rust/config")
 }
 
 type Flags struct {
-	GlobalRustFlags []string      // Flags that apply globally to rust
-	GlobalLinkFlags []string      // Flags that apply globally to linker
-	RustFlags       []string      // Flags that apply to rust
-	LinkFlags       []string      // Flags that apply to linker
-	RustFlagsDeps   android.Paths // Files depended on by compiler flags
+	GlobalRustFlags []string // Flags that apply globally to rust
+	GlobalLinkFlags []string // Flags that apply globally to linker
+	RustFlags       []string // Flags that apply to rust
+	LinkFlags       []string // Flags that apply to linker
 	Toolchain       config.Toolchain
 	Coverage        bool
 }
@@ -194,6 +192,10 @@ func (mod *Module) SdkVersion() string {
 }
 
 func (mod *Module) AlwaysSdk() bool {
+	return false
+}
+
+func (mod *Module) IsSdkVariant() bool {
 	return false
 }
 

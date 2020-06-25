@@ -156,9 +156,9 @@ func TestClasspath(t *testing.T) {
 		{
 
 			name:           "nostdlib system_modules",
-			properties:     `sdk_version: "none", system_modules: "core-platform-api-stubs-system-modules"`,
-			system:         "core-platform-api-stubs-system-modules",
-			bootclasspath:  []string{"core-platform-api-stubs-system-modules-lib"},
+			properties:     `sdk_version: "none", system_modules: "legacy-core-platform-api-stubs-system-modules"`,
+			system:         "legacy-core-platform-api-stubs-system-modules",
+			bootclasspath:  []string{"legacy-core-platform-api-stubs-system-modules-lib"},
 			java8classpath: []string{},
 		},
 		{
@@ -252,7 +252,7 @@ func TestClasspath(t *testing.T) {
 			bootclasspath:  []string{"android_module_lib_stubs_current", "core-lambda-stubs"},
 			system:         "core-current-stubs-system-modules",
 			java9classpath: []string{"android_module_lib_stubs_current"},
-			aidl:           "-p" + buildDir + "/framework.aidl",
+			aidl:           "-p" + buildDir + "/framework_non_updatable.aidl",
 		},
 		{
 			name:           "system_server_current",

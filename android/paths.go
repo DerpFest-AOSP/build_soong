@@ -43,6 +43,14 @@ type PathGlobContext interface {
 var _ PathContext = SingletonContext(nil)
 var _ PathContext = ModuleContext(nil)
 
+// "Null" path context is a minimal path context for a given config.
+type NullPathContext struct {
+	config Config
+}
+
+func (NullPathContext) AddNinjaFileDeps(...string) {}
+func (ctx NullPathContext) Config() Config         { return ctx.config }
+
 type ModuleInstallPathContext interface {
 	BaseModuleContext
 
@@ -397,7 +405,7 @@ func expandOneSrcPath(ctx ModuleContext, s string, expandedExcludes []string) (P
 		p := pathForModuleSrc(ctx, s)
 		if exists, _, err := ctx.Config().fs.Exists(p.String()); err != nil {
 			reportPathErrorf(ctx, "%s: %s", p, err.Error())
-		} else if !exists {
+		} else if !exists && !ctx.Config().testAllowNonExistentPaths {
 			reportPathErrorf(ctx, "module source path %q does not exist", p)
 		}
 
@@ -475,6 +483,15 @@ func FirstUniquePaths(list Paths) Paths {
 		return firstUniquePathsMap(list)
 	}
 	return firstUniquePathsList(list)
+}
+
+// SortedUniquePaths returns what its name says
+func SortedUniquePaths(list Paths) Paths {
+	unique := FirstUniquePaths(list)
+	sort.Slice(unique, func(i, j int) bool {
+		return unique[i].String() < unique[j].String()
+	})
+	return unique
 }
 
 func firstUniquePathsList(list Paths) Paths {
@@ -781,7 +798,7 @@ func PathForSource(ctx PathContext, pathComponents ...string) SourcePath {
 		}
 	} else if exists, _, err := ctx.Config().fs.Exists(path.String()); err != nil {
 		reportPathErrorf(ctx, "%s: %s", path, err.Error())
-	} else if !exists {
+	} else if !exists && !ctx.Config().testAllowNonExistentPaths {
 		reportPathErrorf(ctx, "source path %q does not exist", path)
 	}
 	return path

@@ -88,8 +88,9 @@ func testRustContext(t *testing.T, bp string, coverage bool) *android.TestContex
 	config := testConfig(bp)
 
 	if coverage {
+		config.TestProductVariables.GcovCoverage = proptools.BoolPtr(true)
 		config.TestProductVariables.Native_coverage = proptools.BoolPtr(true)
-		config.TestProductVariables.CoveragePaths = []string{"*"}
+		config.TestProductVariables.NativeCoveragePaths = []string{"*"}
 	}
 
 	t.Helper()

@@ -316,6 +316,8 @@ type ModuleContextIntf interface {
 	static() bool
 	staticBinary() bool
 	header() bool
+	binary() bool
+	object() bool
 	toolchain() config.Toolchain
 	canUseSdk() bool
 	useSdk() bool
@@ -823,15 +825,8 @@ func (c *Module) Init() android.Module {
 	}
 
 	c.Prefer32(func(ctx android.BaseModuleContext, base *android.ModuleBase, class android.OsClass) bool {
-		switch class {
-		case android.Device:
-			return ctx.Config().DevicePrefer32BitExecutables()
-		case android.HostCross:
-			// Windows builds always prefer 32-bit
-			return true
-		default:
-			return false
-		}
+		// Windows builds always prefer 32-bit
+		return class == android.HostCross
 	})
 	android.InitAndroidArchModule(c, c.hod, c.multilib)
 	android.InitApexModule(c)
@@ -1017,14 +1012,8 @@ func (c *Module) nativeCoverage() bool {
 }
 
 func (c *Module) isSnapshotPrebuilt() bool {
-	if _, ok := c.linker.(*vndkPrebuiltLibraryDecorator); ok {
-		return true
-	}
-	if _, ok := c.linker.(*vendorSnapshotLibraryDecorator); ok {
-		return true
-	}
-	if _, ok := c.linker.(*vendorSnapshotBinaryDecorator); ok {
-		return true
+	if p, ok := c.linker.(interface{ isSnapshotPrebuilt() bool }); ok {
+		return p.isSnapshotPrebuilt()
 	}
 	return false
 }
@@ -1074,7 +1063,7 @@ func isBionic(name string) bool {
 
 func InstallToBootstrap(name string, config android.Config) bool {
 	if name == "libclang_rt.hwasan-aarch64-android" {
-		return inList("hwaddress", config.SanitizeDevice())
+		return true
 	}
 	return isBionic(name)
 }
@@ -1127,6 +1116,14 @@ func (ctx *moduleContextImpl) staticBinary() bool {
 
 func (ctx *moduleContextImpl) header() bool {
 	return ctx.mod.header()
+}
+
+func (ctx *moduleContextImpl) binary() bool {
+	return ctx.mod.binary()
+}
+
+func (ctx *moduleContextImpl) object() bool {
+	return ctx.mod.object()
 }
 
 func (ctx *moduleContextImpl) canUseSdk() bool {
@@ -1925,7 +1922,7 @@ func (c *Module) DepsMutator(actx android.BottomUpMutatorContext) {
 	if deps.StaticUnwinderIfLegacy {
 		actx.AddVariationDependencies([]blueprint.Variation{
 			{Mutator: "link", Variation: "static"},
-		}, staticUnwinderDepTag, staticUnwinder(actx))
+		}, staticUnwinderDepTag, rewriteSnapshotLibs(staticUnwinder(actx), vendorSnapshotStaticLibs))
 	}
 
 	for _, lib := range deps.LateStaticLibs {
@@ -2006,11 +2003,13 @@ func (c *Module) DepsMutator(actx android.BottomUpMutatorContext) {
 
 	actx.AddVariationDependencies(nil, objDepTag, deps.ObjFiles...)
 
+	vendorSnapshotObjects := vendorSnapshotObjects(actx.Config())
+
 	if deps.CrtBegin != "" {
-		actx.AddVariationDependencies(nil, CrtBeginDepTag, deps.CrtBegin)
+		actx.AddVariationDependencies(nil, CrtBeginDepTag, rewriteSnapshotLibs(deps.CrtBegin, vendorSnapshotObjects))
 	}
 	if deps.CrtEnd != "" {
-		actx.AddVariationDependencies(nil, CrtEndDepTag, deps.CrtEnd)
+		actx.AddVariationDependencies(nil, CrtEndDepTag, rewriteSnapshotLibs(deps.CrtEnd, vendorSnapshotObjects))
 	}
 	if deps.LinkerFlagsFile != "" {
 		actx.AddDependency(c, linkerFlagsDepTag, deps.LinkerFlagsFile)
@@ -2752,6 +2751,24 @@ func (c *Module) header() bool {
 	return false
 }
 
+func (c *Module) binary() bool {
+	if b, ok := c.linker.(interface {
+		binary() bool
+	}); ok {
+		return b.binary()
+	}
+	return false
+}
+
+func (c *Module) object() bool {
+	if o, ok := c.linker.(interface {
+		object() bool
+	}); ok {
+		return o.object()
+	}
+	return false
+}
+
 func (c *Module) getMakeLinkType(actx android.ModuleContext) string {
 	if c.UseVndk() {
 		if lib, ok := c.linker.(*llndkStubDecorator); ok {
@@ -2881,8 +2898,59 @@ func (c *Module) DepIsInSameApex(ctx android.BaseModuleContext, dep android.Modu
 				return false
 			}
 		}
+	} else if ctx.OtherModuleDependencyTag(dep) == llndkImplDep {
+		// We don't track beyond LLNDK
+		return false
 	}
 	return true
+}
+
+// b/154667674: refactor this to handle "current" in a consistent way
+func decodeSdkVersionString(ctx android.BaseModuleContext, versionString string) (int, error) {
+	if versionString == "" {
+		return 0, fmt.Errorf("not specified")
+	}
+	if versionString == "current" {
+		if ctx.Config().PlatformSdkCodename() == "REL" {
+			return ctx.Config().PlatformSdkVersionInt(), nil
+		}
+		return android.FutureApiLevel, nil
+	}
+	return android.ApiStrToNum(ctx, versionString)
+}
+
+func (c *Module) ShouldSupportSdkVersion(ctx android.BaseModuleContext, sdkVersion int) error {
+	// We ignore libclang_rt.* prebuilt libs since they declare sdk_version: 14(b/121358700)
+	if strings.HasPrefix(ctx.OtherModuleName(c), "libclang_rt") {
+		return nil
+	}
+	// b/154569636: set min_sdk_version correctly for toolchain_libraries
+	if c.ToolchainLibrary() {
+		return nil
+	}
+	// We don't check for prebuilt modules
+	if _, ok := c.linker.(prebuiltLinkerInterface); ok {
+		return nil
+	}
+	minSdkVersion := c.MinSdkVersion()
+	if minSdkVersion == "apex_inherit" {
+		return nil
+	}
+	if minSdkVersion == "" {
+		// JNI libs within APK-in-APEX fall into here
+		// Those are okay to set sdk_version instead
+		// We don't have to check if this is a SDK variant because
+		// non-SDK variant resets sdk_version, which works too.
+		minSdkVersion = c.SdkVersion()
+	}
+	ver, err := decodeSdkVersionString(ctx, minSdkVersion)
+	if err != nil {
+		return err
+	}
+	if ver > sdkVersion {
+		return fmt.Errorf("newer SDK(%v)", ver)
+	}
+	return nil
 }
 
 //
@@ -3061,20 +3129,41 @@ func (m *Module) ImageMutatorBegin(mctx android.BaseModuleContext) {
 		// This will be available in /system, /vendor and /product
 		// or a /system directory that is available to vendor and product.
 		coreVariantNeeded = true
-		vendorVariants = append(vendorVariants, platformVndkVersion)
-		productVariants = append(productVariants, platformVndkVersion)
-		// VNDK modules must not create BOARD_VNDK_VERSION variant because its
-		// code is PLATFORM_VNDK_VERSION.
-		// On the other hand, vendor_available modules which are not VNDK should
-		// also build BOARD_VNDK_VERSION because it's installed in /vendor.
-		// vendor_available modules are also available to /product.
-		if !m.IsVndk() {
+
+		// We assume that modules under proprietary paths are compatible for
+		// BOARD_VNDK_VERSION. The other modules are regarded as AOSP, or
+		// PLATFORM_VNDK_VERSION.
+		if isVendorProprietaryPath(mctx.ModuleDir()) {
 			vendorVariants = append(vendorVariants, boardVndkVersion)
+		} else {
+			vendorVariants = append(vendorVariants, platformVndkVersion)
+		}
+
+		// vendor_available modules are also available to /product.
+		productVariants = append(productVariants, platformVndkVersion)
+		// VNDK is always PLATFORM_VNDK_VERSION
+		if !m.IsVndk() {
 			productVariants = append(productVariants, productVndkVersion)
 		}
 	} else if vendorSpecific && String(m.Properties.Sdk_version) == "" {
 		// This will be available in /vendor (or /odm) only
-		vendorVariants = append(vendorVariants, boardVndkVersion)
+
+		// kernel_headers is a special module type whose exported headers
+		// are coming from DeviceKernelHeaders() which is always vendor
+		// dependent. They'll always have both vendor variants.
+		// For other modules, we assume that modules under proprietary
+		// paths are compatible for BOARD_VNDK_VERSION. The other modules
+		// are regarded as AOSP, which is PLATFORM_VNDK_VERSION.
+		if _, ok := m.linker.(*kernelHeadersDecorator); ok {
+			vendorVariants = append(vendorVariants,
+				platformVndkVersion,
+				boardVndkVersion,
+			)
+		} else if isVendorProprietaryPath(mctx.ModuleDir()) {
+			vendorVariants = append(vendorVariants, boardVndkVersion)
+		} else {
+			vendorVariants = append(vendorVariants, platformVndkVersion)
+		}
 	} else {
 		// This is either in /system (or similar: /data), or is a
 		// modules built with the NDK. Modules built with the NDK
@@ -3168,6 +3257,10 @@ func (c *Module) SetImageVariation(ctx android.BaseModuleContext, variant string
 	}
 }
 
+func (c *Module) IsSdkVariant() bool {
+	return c.Properties.IsSdkVariant
+}
+
 func getCurrentNdkPrebuiltVersion(ctx DepsContext) string {
 	if ctx.Config().PlatformSdkVersionInt() > config.NdkMaxPrebuiltVersionInt {
 		return strconv.Itoa(config.NdkMaxPrebuiltVersionInt)
@@ -3191,12 +3284,7 @@ func (ks *kytheExtractAllSingleton) GenerateBuildActions(ctx android.SingletonCo
 	})
 	// TODO(asmundak): Perhaps emit a rule to output a warning if there were no xrefTargets
 	if len(xrefTargets) > 0 {
-		ctx.Build(pctx, android.BuildParams{
-			Rule:   blueprint.Phony,
-			Output: android.PathForPhony(ctx, "xref_cxx"),
-			Inputs: xrefTargets,
-			//Default: true,
-		})
+		ctx.Phony("xref_cxx", xrefTargets...)
 	}
 }
 

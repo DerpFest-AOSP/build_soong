@@ -102,6 +102,7 @@ type aapt struct {
 	sdkLibraries            []string
 	hasNoCode               bool
 	LoggingParent           string
+	resourceFiles           android.Paths
 
 	splitNames []string
 	splits     []split
@@ -275,6 +276,7 @@ func (a *aapt) buildActions(ctx android.ModuleContext, sdkContext sdkContext, ex
 
 	var compiledResDirs []android.Paths
 	for _, dir := range resDirs {
+		a.resourceFiles = append(a.resourceFiles, dir.files...)
 		compiledResDirs = append(compiledResDirs, aapt2Compile(ctx, dir.dir, dir.files, compileFlags).Paths())
 	}
 
@@ -379,8 +381,11 @@ func aaptLibs(ctx android.ModuleContext, sdkContext sdkContext) (transitiveStati
 				sharedLibs = append(sharedLibs, exportPackage)
 			}
 
-			if _, ok := module.(SdkLibraryDependency); ok {
-				sdkLibraries = append(sdkLibraries, ctx.OtherModuleName(module))
+			// If the module is (or possibly could be) a component of a java_sdk_library
+			// (including the java_sdk_library) itself then append any implicit sdk library
+			// names to the list of sdk libraries to be added to the manifest.
+			if component, ok := module.(SdkLibraryComponentDependency); ok {
+				sdkLibraries = append(sdkLibraries, component.OptionalImplicitSdkLibrary()...)
 			}
 
 		case frameworkResTag:
@@ -470,6 +475,10 @@ func (a *AndroidLibrary) GenerateAndroidBuildActions(ctx android.ModuleContext) 
 	// apps manifests are handled by aapt, don't let Module see them
 	a.properties.Manifest = nil
 
+	a.linter.mergedManifest = a.aapt.mergedManifestFile
+	a.linter.manifest = a.aapt.manifestPath
+	a.linter.resources = a.aapt.resourceFiles
+
 	a.Module.extraProguardFlagFiles = append(a.Module.extraProguardFlagFiles,
 		a.proguardOptionsFile)
 
@@ -503,16 +512,15 @@ func (a *AndroidLibrary) GenerateAndroidBuildActions(ctx android.ModuleContext) 
 func AndroidLibraryFactory() android.Module {
 	module := &AndroidLibrary{}
 
+	module.Module.addHostAndDeviceProperties()
 	module.AddProperties(
-		&module.Module.properties,
-		&module.Module.deviceProperties,
-		&module.Module.dexpreoptProperties,
-		&module.Module.protoProperties,
 		&module.aaptProperties,
 		&module.androidLibraryProperties)
 
 	module.androidLibraryProperties.BuildAAR = true
+	module.Module.linter.library = true
 
+	android.InitApexModule(module)
 	InitJavaModule(module, android.DeviceSupported)
 	return module
 }
@@ -537,7 +545,11 @@ type AARImportProperties struct {
 type AARImport struct {
 	android.ModuleBase
 	android.DefaultableModuleBase
+	android.ApexModuleBase
 	prebuilt android.Prebuilt
+
+	// Functionality common to Module and Import.
+	embeddableInModuleAndImport
 
 	properties AARImportProperties
 
@@ -722,7 +734,11 @@ func (a *AARImport) ImplementationAndResourcesJars() android.Paths {
 	return android.Paths{a.classpathFile}
 }
 
-func (a *AARImport) DexJar() android.Path {
+func (a *AARImport) DexJarBuildPath() android.Path {
+	return nil
+}
+
+func (a *AARImport) DexJarInstallPath() android.Path {
 	return nil
 }
 
@@ -742,6 +758,14 @@ func (a *AARImport) SrcJarArgs() ([]string, android.Paths) {
 	return nil, nil
 }
 
+func (a *AARImport) DepIsInSameApex(ctx android.BaseModuleContext, dep android.Module) bool {
+	return a.depIsInSameApex(ctx, dep)
+}
+
+func (g *AARImport) ShouldSupportSdkVersion(ctx android.BaseModuleContext, sdkVersion int) error {
+	return nil
+}
+
 var _ android.PrebuiltInterface = (*Import)(nil)
 
 // android_library_import imports an `.aar` file into the build graph as if it was built with android_library.
@@ -754,6 +778,7 @@ func AARImportFactory() android.Module {
 	module.AddProperties(&module.properties)
 
 	android.InitPrebuiltModule(module, &module.properties.Aars)
+	android.InitApexModule(module)
 	InitJavaModule(module, android.DeviceSupported)
 	return module
 }

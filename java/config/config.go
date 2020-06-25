@@ -28,8 +28,9 @@ import (
 var (
 	pctx = android.NewPackageContext("android/soong/java/config")
 
-	DefaultBootclasspathLibraries = []string{"core.platform.api.stubs", "core-lambda-stubs"}
-	DefaultSystemModules          = "core-platform-api-stubs-system-modules"
+	// TODO(b/157640067): Don't depend on the legacy API by default in the long term.
+	DefaultBootclasspathLibraries = []string{"legacy.core.platform.api.stubs", "core-lambda-stubs"}
+	DefaultSystemModules          = "legacy-core-platform-api-stubs-system-modules"
 	DefaultLibraries              = []string{"ext", "framework"}
 	DefaultLambdaStubsLibrary     = "core-lambda-stubs"
 	SdkLambdaStubsPath            = "prebuilts/sdk/tools/core-lambda-stubs.jar"
@@ -148,6 +149,10 @@ func init() {
 	pctx.VariableFunc("REJavacExecStrategy", remoteexec.EnvOverrideFunc("RBE_JAVAC_EXEC_STRATEGY", remoteexec.LocalExecStrategy))
 	pctx.VariableFunc("RED8ExecStrategy", remoteexec.EnvOverrideFunc("RBE_D8_EXEC_STRATEGY", remoteexec.LocalExecStrategy))
 	pctx.VariableFunc("RER8ExecStrategy", remoteexec.EnvOverrideFunc("RBE_R8_EXEC_STRATEGY", remoteexec.LocalExecStrategy))
+	pctx.VariableFunc("RETurbineExecStrategy", remoteexec.EnvOverrideFunc("RBE_TURBINE_EXEC_STRATEGY", remoteexec.LocalExecStrategy))
+	pctx.VariableFunc("RESignApkExecStrategy", remoteexec.EnvOverrideFunc("RBE_SIGNAPK_EXEC_STRATEGY", remoteexec.LocalExecStrategy))
+	pctx.VariableFunc("REJarExecStrategy", remoteexec.EnvOverrideFunc("RBE_JAR_EXEC_STRATEGY", remoteexec.LocalExecStrategy))
+	pctx.VariableFunc("REZipExecStrategy", remoteexec.EnvOverrideFunc("RBE_ZIP_EXEC_STRATEGY", remoteexec.LocalExecStrategy))
 
 	pctx.HostJavaToolVariable("JacocoCLIJar", "jacoco-cli.jar")
 

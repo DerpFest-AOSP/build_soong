@@ -216,6 +216,7 @@ type productVariables struct {
 
 	Allow_missing_dependencies       *bool `json:",omitempty"`
 	Unbundled_build                  *bool `json:",omitempty"`
+	Unbundled_build_apps             *bool `json:",omitempty"`
 	Unbundled_build_sdks_from_source *bool `json:",omitempty"`
 	Malloc_not_svelte                *bool `json:",omitempty"`
 	Malloc_zero_contents             *bool `json:",omitempty"`
@@ -266,15 +267,16 @@ type productVariables struct {
 
 	SamplingPGO *bool `json:",omitempty"`
 
-	NativeLineCoverage   *bool    `json:",omitempty"`
-	Native_coverage      *bool    `json:",omitempty"`
-	ClangCoverage        *bool    `json:",omitempty"`
-	CoveragePaths        []string `json:",omitempty"`
-	CoverageExcludePaths []string `json:",omitempty"`
+	JavaCoveragePaths        []string `json:",omitempty"`
+	JavaCoverageExcludePaths []string `json:",omitempty"`
 
-	DevicePrefer32BitApps        *bool `json:",omitempty"`
-	DevicePrefer32BitExecutables *bool `json:",omitempty"`
-	HostPrefer32BitExecutables   *bool `json:",omitempty"`
+	GcovCoverage               *bool    `json:",omitempty"`
+	ClangCoverage              *bool    `json:",omitempty"`
+	NativeCoveragePaths        []string `json:",omitempty"`
+	NativeCoverageExcludePaths []string `json:",omitempty"`
+
+	// Set by NewConfig
+	Native_coverage *bool
 
 	SanitizeHost       []string `json:",omitempty"`
 	SanitizeDevice     []string `json:",omitempty"`
@@ -323,7 +325,7 @@ type productVariables struct {
 	PackageNameOverrides         []string `json:",omitempty"`
 
 	EnforceSystemCertificate          *bool    `json:",omitempty"`
-	EnforceSystemCertificateWhitelist []string `json:",omitempty"`
+	EnforceSystemCertificateAllowList []string `json:",omitempty"`
 
 	ProductHiddenAPIStubs       []string `json:",omitempty"`
 	ProductHiddenAPIStubsSystem []string `json:",omitempty"`

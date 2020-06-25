@@ -592,6 +592,7 @@ func (c *configImpl) Lunch(ctx Context, product, variant string) {
 	c.environ.Set("TARGET_BUILD_VARIANT", variant)
 	c.environ.Set("TARGET_BUILD_TYPE", "release")
 	c.environ.Unset("TARGET_BUILD_APPS")
+	c.environ.Unset("TARGET_BUILD_UNBUNDLED")
 }
 
 // Tapas configures the environment to build one or more unbundled apps,
@@ -737,6 +738,9 @@ func (c *configImpl) HighmemParallel() int {
 	} else if c.totalRAM == 0 {
 		// Couldn't detect the total RAM, don't restrict highmem processes.
 		return parallel
+	} else if c.totalRAM <= 16*1024*1024*1024 {
+		// Less than 16GB of ram, restrict to 1 highmem processes
+		return 1
 	} else if c.totalRAM <= 32*1024*1024*1024 {
 		// Less than 32GB of ram, restrict to 2 highmem processes
 		return 2
@@ -957,4 +961,15 @@ func (c *configImpl) SetPdkBuild(pdk bool) {
 
 func (c *configImpl) IsPdkBuild() bool {
 	return c.pdkBuild
+}
+
+func (c *configImpl) BuildDateTime() string {
+	return c.buildDateTime
+}
+
+func (c *configImpl) MetricsUploaderApp() string {
+	if p, ok := c.environ.Get("ANDROID_ENABLE_METRICS_UPLOAD"); ok {
+		return p
+	}
+	return ""
 }

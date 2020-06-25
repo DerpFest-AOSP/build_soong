@@ -407,6 +407,31 @@ func (l *libraryDecorator) collectHeadersForSnapshot(ctx android.ModuleContext) 
 		if strings.HasPrefix(dir, android.PathForOutput(ctx).String()) {
 			continue
 		}
+		// libeigen wrongly exports the root directory "external/eigen". But only two
+		// subdirectories "Eigen" and "unsupported" contain exported header files. Even worse
+		// some of them have no extension. So we need special treatment for libeigen in order
+		// to glob correctly.
+		if dir == "external/eigen" {
+			// Only these two directories contains exported headers.
+			for _, subdir := range []string{"Eigen", "unsupported/Eigen"} {
+				glob, err := ctx.GlobWithDeps("external/eigen/"+subdir+"/**/*", nil)
+				if err != nil {
+					ctx.ModuleErrorf("glob failed: %#v", err)
+					return
+				}
+				for _, header := range glob {
+					if strings.HasSuffix(header, "/") {
+						continue
+					}
+					ext := filepath.Ext(header)
+					if ext != "" && ext != ".h" {
+						continue
+					}
+					ret = append(ret, android.PathForSource(ctx, header))
+				}
+			}
+			continue
+		}
 		exts := headerExts
 		// Glob all files under this special directory, because of C++ headers.
 		if strings.HasPrefix(dir, "external/libcxx/include") {
@@ -1052,9 +1077,14 @@ func getRefAbiDumpFile(ctx ModuleContext, vndkVersion, fileName string) android.
 
 func (library *libraryDecorator) linkSAbiDumpFiles(ctx ModuleContext, objs Objects, fileName string, soFile android.Path) {
 	if library.shouldCreateSourceAbiDump(ctx) {
-		vndkVersion := ctx.DeviceConfig().PlatformVndkVersion()
-		if ver := ctx.DeviceConfig().VndkVersion(); ver != "" && ver != "current" {
-			vndkVersion = ver
+		var vndkVersion string
+
+		if ctx.useVndk() {
+			// For modules linking against vndk, follow its vndk version
+			vndkVersion = ctx.Module().(*Module).VndkVersion()
+		} else {
+			// Regard the other modules as PLATFORM_VNDK_VERSION
+			vndkVersion = ctx.DeviceConfig().PlatformVndkVersion()
 		}
 
 		exportIncludeDirs := library.flagExporter.exportedIncludes(ctx)
@@ -1550,7 +1580,8 @@ func VersionVariantAvailable(module interface {
 // (which is unnamed) and zero or more stubs variants.
 func VersionMutator(mctx android.BottomUpMutatorContext) {
 	if library, ok := mctx.Module().(LinkableInterface); ok && VersionVariantAvailable(library) {
-		if library.CcLibrary() && library.BuildSharedVariant() && len(library.StubsVersions()) > 0 {
+		if library.CcLibrary() && library.BuildSharedVariant() && len(library.StubsVersions()) > 0 &&
+			!library.IsSdkVariant() {
 			versions := library.StubsVersions()
 			normalizeVersions(mctx, versions)
 			if mctx.Failed() {

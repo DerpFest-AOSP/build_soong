@@ -69,11 +69,14 @@ var (
 	// by default set to (uid/gid/mode) = (1000/1000/0644)
 	// TODO(b/113082813) make this configurable using config.fs syntax
 	generateFsConfig = pctx.StaticRule("generateFsConfig", blueprint.RuleParams{
-		Command: `echo '/ 1000 1000 0755' > ${out} && ` +
-			`echo ${ro_paths} | tr ' ' '\n' | awk '{print "/"$$1 " 1000 1000 0644"}' >> ${out} && ` +
-			`echo ${exec_paths} | tr ' ' '\n' | awk '{print "/"$$1 " 0 2000 0755"}' >> ${out}`,
-		Description: "fs_config ${out}",
-	}, "ro_paths", "exec_paths")
+		Command: `( echo '/ 1000 1000 0755' ` +
+			`&& for i in ${ro_paths}; do echo "/$$i 1000 1000 0644"; done ` +
+			`&& for i in  ${exec_paths}; do echo "/$$i 0 2000 0755"; done ` +
+			`&& ( tr ' ' '\n' <${out}.apklist | for i in ${apk_paths}; do read apk; echo "/$$i 0 2000 0755"; zipinfo -1 $$apk | sed "s:\(.*\):/$$i/\1 1000 1000 0644:"; done ) ) > ${out}`,
+		Description:    "fs_config ${out}",
+		Rspfile:        "$out.apklist",
+		RspfileContent: "$in",
+	}, "ro_paths", "exec_paths", "apk_paths")
 
 	apexManifestRule = pctx.StaticRule("apexManifestRule", blueprint.RuleParams{
 		Command: `rm -f $out && ${jsonmodify} $in ` +
@@ -162,13 +165,13 @@ var (
 	diffApexContentRule = pctx.StaticRule("diffApexContentRule", blueprint.RuleParams{
 		Command: `diff --unchanged-group-format='' \` +
 			`--changed-group-format='%<' \` +
-			`${image_content_file} ${whitelisted_files_file} || (` +
+			`${image_content_file} ${allowed_files_file} || (` +
 			`echo -e "New unexpected files were added to ${apex_module_name}." ` +
 			` "To fix the build run following command:" && ` +
-			`echo "system/apex/tools/update_whitelist.sh ${whitelisted_files_file} ${image_content_file}" && ` +
+			`echo "system/apex/tools/update_allowed_list.sh ${allowed_files_file} ${image_content_file}" && ` +
 			`exit 1); touch ${out}`,
-		Description: "Diff ${image_content_file} and ${whitelisted_files_file}",
-	}, "image_content_file", "whitelisted_files_file", "apex_module_name")
+		Description: "Diff ${image_content_file} and ${allowed_files_file}",
+	}, "image_content_file", "allowed_files_file", "apex_module_name")
 )
 
 func (a *apexBundle) buildManifest(ctx android.ModuleContext, provideNativeLibs, requireNativeLibs []string) {
@@ -190,7 +193,7 @@ func (a *apexBundle) buildManifest(ctx android.ModuleContext, provideNativeLibs,
 	var jniLibs []string
 	for _, fi := range a.filesInfo {
 		if fi.isJniLib {
-			jniLibs = append(jniLibs, fi.builtFile.Base())
+			jniLibs = append(jniLibs, fi.Stem())
 		}
 	}
 	if len(jniLibs) > 0 {
@@ -231,7 +234,7 @@ func (a *apexBundle) buildManifest(ctx android.ModuleContext, provideNativeLibs,
 func (a *apexBundle) buildNoticeFiles(ctx android.ModuleContext, apexFileName string) android.NoticeOutputs {
 	var noticeFiles android.Paths
 
-	a.walkPayloadDeps(ctx, func(ctx android.ModuleContext, from blueprint.Module, to android.ApexModule, externalDep bool) bool {
+	a.WalkPayloadDeps(ctx, func(ctx android.ModuleContext, from blueprint.Module, to android.ApexModule, externalDep bool) bool {
 		if externalDep {
 			// As soon as the dependency graph crosses the APEX boundary, don't go further.
 			return false
@@ -247,7 +250,7 @@ func (a *apexBundle) buildNoticeFiles(ctx android.ModuleContext, apexFileName st
 		return android.NoticeOutputs{}
 	}
 
-	return android.BuildNoticeOutput(ctx, a.installDir, apexFileName, android.FirstUniquePaths(noticeFiles))
+	return android.BuildNoticeOutput(ctx, a.installDir, apexFileName, android.SortedUniquePaths(noticeFiles))
 }
 
 func (a *apexBundle) buildInstalledFilesFile(ctx android.ModuleContext, builtApex android.Path, imageDir android.Path) android.OutputPath {
@@ -287,7 +290,7 @@ func (a *apexBundle) buildBundleConfig(ctx android.ModuleContext) android.Output
 	// collect the manifest names and paths of android apps
 	// if their manifest names are overridden
 	for _, fi := range a.filesInfo {
-		if fi.class != app {
+		if fi.class != app && fi.class != appSet {
 			continue
 		}
 		packageName := fi.overriddenPackageName
@@ -337,13 +340,22 @@ func (a *apexBundle) buildUnflattenedApex(ctx android.ModuleContext) {
 	var copyCommands []string
 	for _, fi := range a.filesInfo {
 		destPath := android.PathForModuleOut(ctx, "image"+suffix, fi.Path()).String()
-		copyCommands = append(copyCommands, "mkdir -p "+filepath.Dir(destPath))
+		destPathDir := filepath.Dir(destPath)
+		if fi.class == appSet {
+			copyCommands = append(copyCommands, "rm -rf "+destPathDir)
+		}
+		copyCommands = append(copyCommands, "mkdir -p "+destPathDir)
 		if a.linkToSystemLib && fi.transitiveDep && fi.AvailableToPlatform() {
 			// TODO(jiyong): pathOnDevice should come from fi.module, not being calculated here
 			pathOnDevice := filepath.Join("/system", fi.Path())
 			copyCommands = append(copyCommands, "ln -sfn "+pathOnDevice+" "+destPath)
 		} else {
-			copyCommands = append(copyCommands, "cp -f "+fi.builtFile.String()+" "+destPath)
+			if fi.class == appSet {
+				copyCommands = append(copyCommands,
+					fmt.Sprintf("unzip -q -d %s %s", destPathDir, fi.builtFile.String()))
+			} else {
+				copyCommands = append(copyCommands, "cp -f "+fi.builtFile.String()+" "+destPath)
+			}
 			implicitInputs = append(implicitInputs, fi.builtFile)
 		}
 		// create additional symlinks pointing the file inside the APEX
@@ -379,7 +391,7 @@ func (a *apexBundle) buildUnflattenedApex(ctx android.ModuleContext) {
 	emitCommands = append(emitCommands, "sort -o "+imageContentFile.String()+" "+imageContentFile.String())
 	implicitInputs = append(implicitInputs, a.manifestPbOut)
 
-	if a.properties.Whitelisted_files != nil {
+	if a.overridableProperties.Allowed_files != nil {
 		ctx.Build(pctx, android.BuildParams{
 			Rule:        emitApexContentRule,
 			Implicits:   implicitInputs,
@@ -390,7 +402,7 @@ func (a *apexBundle) buildUnflattenedApex(ctx android.ModuleContext) {
 			},
 		})
 		implicitInputs = append(implicitInputs, imageContentFile)
-		whitelistedFilesFile := android.PathForModuleSrc(ctx, proptools.String(a.properties.Whitelisted_files))
+		allowedFilesFile := android.PathForModuleSrc(ctx, proptools.String(a.overridableProperties.Allowed_files))
 
 		phonyOutput := android.PathForModuleOut(ctx, a.Name()+"-diff-phony-output")
 		ctx.Build(pctx, android.BuildParams{
@@ -399,9 +411,9 @@ func (a *apexBundle) buildUnflattenedApex(ctx android.ModuleContext) {
 			Output:      phonyOutput,
 			Description: "diff apex image content",
 			Args: map[string]string{
-				"whitelisted_files_file": whitelistedFilesFile.String(),
-				"image_content_file":     imageContentFile.String(),
-				"apex_module_name":       a.Name(),
+				"allowed_files_file": allowedFilesFile.String(),
+				"image_content_file": imageContentFile.String(),
+				"apex_module_name":   a.Name(),
 			},
 		})
 
@@ -416,8 +428,10 @@ func (a *apexBundle) buildUnflattenedApex(ctx android.ModuleContext) {
 		// files and dirs that will be created in APEX
 		var readOnlyPaths = []string{"apex_manifest.json", "apex_manifest.pb"}
 		var executablePaths []string // this also includes dirs
+		var extractedAppSetPaths android.Paths
+		var extractedAppSetDirs []string
 		for _, f := range a.filesInfo {
-			pathInApex := filepath.Join(f.installDir, f.builtFile.Base())
+			pathInApex := f.Path()
 			if f.installDir == "bin" || strings.HasPrefix(f.installDir, "bin/") {
 				executablePaths = append(executablePaths, pathInApex)
 				for _, d := range f.dataPaths {
@@ -426,6 +440,9 @@ func (a *apexBundle) buildUnflattenedApex(ctx android.ModuleContext) {
 				for _, s := range f.symlinks {
 					executablePaths = append(executablePaths, filepath.Join(f.installDir, s))
 				}
+			} else if f.class == appSet {
+				extractedAppSetPaths = append(extractedAppSetPaths, f.builtFile)
+				extractedAppSetDirs = append(extractedAppSetDirs, f.installDir)
 			} else {
 				readOnlyPaths = append(readOnlyPaths, pathInApex)
 			}
@@ -446,9 +463,11 @@ func (a *apexBundle) buildUnflattenedApex(ctx android.ModuleContext) {
 			Rule:        generateFsConfig,
 			Output:      cannedFsConfig,
 			Description: "generate fs config",
+			Inputs:      extractedAppSetPaths,
 			Args: map[string]string{
 				"ro_paths":   strings.Join(readOnlyPaths, " "),
 				"exec_paths": strings.Join(executablePaths, " "),
+				"apk_paths":  strings.Join(extractedAppSetDirs, " "),
 			},
 		})
 
@@ -470,11 +489,11 @@ func (a *apexBundle) buildUnflattenedApex(ctx android.ModuleContext) {
 		}
 
 		targetSdkVersion := ctx.Config().DefaultAppTargetSdk()
+		// TODO(b/157078772): propagate min_sdk_version to apexer.
 		minSdkVersion := ctx.Config().DefaultAppTargetSdk()
 
 		if a.minSdkVersion(ctx) == android.SdkVersion_Android10 {
 			minSdkVersion = strconv.Itoa(a.minSdkVersion(ctx))
-			targetSdkVersion = strconv.Itoa(a.minSdkVersion(ctx))
 		}
 
 		if java.UseApiFingerprint(ctx) {
@@ -582,19 +601,27 @@ func (a *apexBundle) buildUnflattenedApex(ctx android.ModuleContext) {
 	}
 
 	a.outputFile = android.PathForModuleOut(ctx, a.Name()+suffix)
+	rule := java.Signapk
+	args := map[string]string{
+		"certificates": a.container_certificate_file.String() + " " + a.container_private_key_file.String(),
+		"flags":        "-a 4096", //alignment
+	}
+	implicits := android.Paths{
+		a.container_certificate_file,
+		a.container_private_key_file,
+	}
+	if ctx.Config().IsEnvTrue("RBE_SIGNAPK") {
+		rule = java.SignapkRE
+		args["implicits"] = strings.Join(implicits.Strings(), ",")
+		args["outCommaList"] = a.outputFile.String()
+	}
 	ctx.Build(pctx, android.BuildParams{
-		Rule:        java.Signapk,
+		Rule:        rule,
 		Description: "signapk",
 		Output:      a.outputFile,
 		Input:       unsignedOutputFile,
-		Implicits: []android.Path{
-			a.container_certificate_file,
-			a.container_private_key_file,
-		},
-		Args: map[string]string{
-			"certificates": a.container_certificate_file.String() + " " + a.container_private_key_file.String(),
-			"flags":        "-a 4096", //alignment
-		},
+		Implicits:   implicits,
+		Args:        args,
 	})
 
 	// Install to $OUT/soong/{target,host}/.../apex
@@ -659,7 +686,7 @@ func (a *apexBundle) buildFilesInfo(ctx android.ModuleContext) {
 			apexBundleName := a.Name()
 			for _, fi := range a.filesInfo {
 				dir := filepath.Join("apex", apexBundleName, fi.installDir)
-				target := ctx.InstallFile(android.PathForModuleInstall(ctx, dir), fi.builtFile.Base(), fi.builtFile)
+				target := ctx.InstallFile(android.PathForModuleInstall(ctx, dir), fi.Stem(), fi.builtFile)
 				for _, sym := range fi.symlinks {
 					ctx.InstallSymlink(android.PathForModuleInstall(ctx, dir), sym, target)
 				}
@@ -706,7 +733,7 @@ func (a *apexBundle) buildApexDependencyInfo(ctx android.ModuleContext) {
 	}
 
 	depInfos := android.DepNameToDepInfoMap{}
-	a.walkPayloadDeps(ctx, func(ctx android.ModuleContext, from blueprint.Module, to android.ApexModule, externalDep bool) bool {
+	a.WalkPayloadDeps(ctx, func(ctx android.ModuleContext, from blueprint.Module, to android.ApexModule, externalDep bool) bool {
 		if from.Name() == to.Name() {
 			// This can happen for cc.reuseObjTag. We are not interested in tracking this.
 			// As soon as the dependency graph crosses the APEX boundary, don't go further.

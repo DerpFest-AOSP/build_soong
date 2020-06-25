@@ -25,6 +25,7 @@ import (
 
 	"android/soong/android"
 	"android/soong/cc/config"
+	"android/soong/etc"
 )
 
 const (
@@ -309,7 +310,13 @@ func processVndkLibrary(mctx android.BottomUpMutatorContext, m *Module) {
 		panic(err)
 	}
 
-	if m.HasStubsVariants() {
+	if m.HasStubsVariants() && name != "libz" {
+		// b/155456180 libz is the ONLY exception here. We don't want to make
+		// libz an LLNDK library because we in general can't guarantee that
+		// libz will behave consistently especially about the compression.
+		// i.e. the compressed output might be different across releases.
+		// As the library is an external one, it's risky to keep the compatibility
+		// promise if it becomes an LLNDK.
 		mctx.PropertyErrorf("vndk.enabled", "This library provides stubs. Shouldn't be VNDK. Consider making it as LLNDK")
 	}
 
@@ -333,16 +340,24 @@ func processVndkLibrary(mctx android.BottomUpMutatorContext, m *Module) {
 	}
 }
 
-func IsForVndkApex(mctx android.BottomUpMutatorContext, m *Module) bool {
+// Sanity check for modules that mustn't be VNDK
+func shouldSkipVndkMutator(m *Module) bool {
 	if !m.Enabled() {
-		return false
+		return true
 	}
-
-	if !mctx.Device() {
-		return false
+	if !m.Device() {
+		// Skip non-device modules
+		return true
 	}
-
 	if m.Target().NativeBridge == android.NativeBridgeEnabled {
+		// Skip native_bridge modules
+		return true
+	}
+	return false
+}
+
+func IsForVndkApex(mctx android.BottomUpMutatorContext, m *Module) bool {
+	if shouldSkipVndkMutator(m) {
 		return false
 	}
 
@@ -376,11 +391,8 @@ func VndkMutator(mctx android.BottomUpMutatorContext) {
 	if !ok {
 		return
 	}
-	if !m.Enabled() {
-		return
-	}
-	if m.Target().NativeBridge == android.NativeBridgeEnabled {
-		// Skip native_bridge modules
+
+	if shouldSkipVndkMutator(m) {
 		return
 	}
 
@@ -410,7 +422,7 @@ type vndkLibrariesTxt struct {
 	outputFile android.OutputPath
 }
 
-var _ android.PrebuiltEtcModule = &vndkLibrariesTxt{}
+var _ etc.PrebuiltEtcModule = &vndkLibrariesTxt{}
 var _ android.OutputFileProducer = &vndkLibrariesTxt{}
 
 // vndk_libraries_txt is a special kind of module type in that it name is one of

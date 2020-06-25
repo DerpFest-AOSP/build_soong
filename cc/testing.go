@@ -273,6 +273,7 @@ func GatherRequiredDepsForTest(oses ...android.OsType) string {
 			vendor_available: true,
 			recovery_available: true,
 			host_supported: true,
+			min_sdk_version: "29",
 			apex_available: [
 				"//apex_available:platform",
 				"//apex_available:anyapex",
@@ -287,6 +288,7 @@ func GatherRequiredDepsForTest(oses ...android.OsType) string {
 			vendor_available: true,
 			recovery_available: true,
 			host_supported: true,
+			min_sdk_version: "29",
 			vndk: {
 				enabled: true,
 				support_system_process: true,
@@ -305,6 +307,7 @@ func GatherRequiredDepsForTest(oses ...android.OsType) string {
 			host_supported: false,
 			vendor_available: true,
 			recovery_available: true,
+			min_sdk_version: "29",
 			apex_available: [
 				"//apex_available:platform",
 				"//apex_available:anyapex",
@@ -338,6 +341,7 @@ func GatherRequiredDepsForTest(oses ...android.OsType) string {
 			recovery_available: true,
 			vendor_available: true,
 			native_bridge_supported: true,
+			min_sdk_version: "29",
 			stl: "none",
 		}
 
@@ -365,6 +369,7 @@ func GatherRequiredDepsForTest(oses ...android.OsType) string {
 			recovery_available: true,
 			vendor_available: true,
 			native_bridge_supported: true,
+			min_sdk_version: "29",
 			stl: "none",
 		}
 
@@ -467,15 +472,6 @@ func GatherRequiredDepsForTest(oses ...android.OsType) string {
 }
 
 func GatherRequiredFilesForTest(fs map[string][]byte) {
-	fs["prebuilts/ndk/current/sources/cxx-stl/llvm-libc++/libs/arm64-v8a/libc++_shared.so"] = nil
-	fs["prebuilts/ndk/current/platforms/android-27/arch-arm/usr/lib/crtbegin_so.o"] = nil
-	fs["prebuilts/ndk/current/platforms/android-27/arch-arm/usr/lib/crtend_so.o"] = nil
-	fs["prebuilts/ndk/current/platforms/android-27/arch-arm64/usr/lib/crtbegin_so.o"] = nil
-	fs["prebuilts/ndk/current/platforms/android-27/arch-arm64/usr/lib/crtend_so.o"] = nil
-	fs["prebuilts/ndk/current/platforms/android-27/arch-x86/usr/lib/crtbegin_so.o"] = nil
-	fs["prebuilts/ndk/current/platforms/android-27/arch-x86/usr/lib/crtend_so.o"] = nil
-	fs["prebuilts/ndk/current/platforms/android-27/arch-x86_64/usr/lib64/crtbegin_so.o"] = nil
-	fs["prebuilts/ndk/current/platforms/android-27/arch-x86_64/usr/lib64/crtend_so.o"] = nil
 }
 
 func TestConfig(buildDir string, os android.OsType, env map[string]string,
@@ -484,19 +480,7 @@ func TestConfig(buildDir string, os android.OsType, env map[string]string,
 	// add some modules that are required by the compiler and/or linker
 	bp = bp + GatherRequiredDepsForTest(os)
 
-	mockFS := map[string][]byte{
-		"foo.c":       nil,
-		"foo.lds":     nil,
-		"bar.c":       nil,
-		"baz.c":       nil,
-		"baz.o":       nil,
-		"a.proto":     nil,
-		"b.aidl":      nil,
-		"sub/c.aidl":  nil,
-		"my_include":  nil,
-		"foo.map.txt": nil,
-		"liba.so":     nil,
-	}
+	mockFS := map[string][]byte{}
 
 	GatherRequiredFilesForTest(mockFS)
 

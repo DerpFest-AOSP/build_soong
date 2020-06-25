@@ -45,9 +45,6 @@ type LibraryCompilerProperties struct {
 	Shared VariantLibraryProperties `android:"arch_variant"`
 	Static VariantLibraryProperties `android:"arch_variant"`
 
-	// path to the source file that is the main entry point of the program (e.g. src/lib.rs)
-	Srcs []string `android:"path,arch_variant"`
-
 	// path to include directories to pass to cc_* modules, only relevant for static/shared variants.
 	Include_dirs []string `android:"path,arch_variant"`
 }
@@ -75,12 +72,9 @@ type LibraryMutatedProperties struct {
 type libraryDecorator struct {
 	*baseCompiler
 
-	Properties            LibraryCompilerProperties
-	MutatedProperties     LibraryMutatedProperties
-	distFile              android.OptionalPath
-	coverageOutputZipFile android.OptionalPath
-	unstrippedOutputFile  android.Path
-	includeDirs           android.Paths
+	Properties        LibraryCompilerProperties
+	MutatedProperties LibraryMutatedProperties
+	includeDirs       android.Paths
 }
 
 type libraryInterface interface {
@@ -311,8 +305,8 @@ func (library *libraryDecorator) compilerProps() []interface{} {
 
 func (library *libraryDecorator) compilerDeps(ctx DepsContext, deps Deps) Deps {
 
-	// TODO(b/144861059) Remove if C libraries support dylib linkage in the future.
-	if !ctx.Host() && (library.static() || library.shared()) {
+	// TODO(b/155498724) Remove if C static libraries no longer require libstd as an rlib dependency.
+	if !ctx.Host() && library.static() {
 		library.setNoStdlibs()
 		for _, stdlib := range config.Stdlibs {
 			deps.Rlibs = append(deps.Rlibs, stdlib+".static")
@@ -329,19 +323,28 @@ func (library *libraryDecorator) compilerDeps(ctx DepsContext, deps Deps) Deps {
 
 	return deps
 }
+
+func (library *libraryDecorator) sharedLibFilename(ctx ModuleContext) string {
+	return library.getStem(ctx) + ctx.toolchain().SharedLibSuffix()
+}
+
 func (library *libraryDecorator) compilerFlags(ctx ModuleContext, flags Flags) Flags {
 	flags.RustFlags = append(flags.RustFlags, "-C metadata="+ctx.baseModuleName())
 	flags = library.baseCompiler.compilerFlags(ctx, flags)
 	if library.shared() || library.static() {
 		library.includeDirs = append(library.includeDirs, android.PathsForModuleSrc(ctx, library.Properties.Include_dirs)...)
 	}
+	if library.shared() {
+		flags.LinkFlags = append(flags.LinkFlags, "-Wl,-soname="+library.sharedLibFilename(ctx))
+	}
+
 	return flags
 }
 
 func (library *libraryDecorator) compile(ctx ModuleContext, flags Flags, deps PathDeps) android.Path {
 	var outputFile android.WritablePath
 
-	srcPath := srcPathFromModuleSrcs(ctx, library.Properties.Srcs)
+	srcPath := srcPathFromModuleSrcs(ctx, library.baseCompiler.Properties.Srcs)
 
 	flags.RustFlags = append(flags.RustFlags, deps.depFlags...)
 
@@ -371,7 +374,7 @@ func (library *libraryDecorator) compile(ctx ModuleContext, flags Flags, deps Pa
 		outputs := TransformSrctoStatic(ctx, srcPath, deps, flags, outputFile, deps.linkDirs)
 		library.coverageFile = outputs.coverageFile
 	} else if library.shared() {
-		fileName := library.getStem(ctx) + ctx.toolchain().SharedLibSuffix()
+		fileName := library.sharedLibFilename(ctx)
 		outputFile = android.PathForModuleOut(ctx, fileName)
 
 		outputs := TransformSrctoShared(ctx, srcPath, deps, flags, outputFile, deps.linkDirs)
