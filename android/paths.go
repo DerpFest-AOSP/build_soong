@@ -220,6 +220,15 @@ func (p OptionalPath) String() string {
 // Paths is a slice of Path objects, with helpers to operate on the collection.
 type Paths []Path
 
+func (paths Paths) containsPath(path Path) bool {
+	for _, p := range paths {
+		if p == path {
+			return true
+		}
+	}
+	return false
+}
+
 // PathsForSource returns Paths rooted from SrcDir
 func PathsForSource(ctx PathContext, paths []string) Paths {
 	ret := make(Paths, len(paths))
@@ -405,7 +414,7 @@ func expandOneSrcPath(ctx ModuleContext, s string, expandedExcludes []string) (P
 		p := pathForModuleSrc(ctx, s)
 		if exists, _, err := ctx.Config().fs.Exists(p.String()); err != nil {
 			reportPathErrorf(ctx, "%s: %s", p, err.Error())
-		} else if !exists {
+		} else if !exists && !ctx.Config().testAllowNonExistentPaths {
 			reportPathErrorf(ctx, "module source path %q does not exist", p)
 		}
 
@@ -483,6 +492,15 @@ func FirstUniquePaths(list Paths) Paths {
 		return firstUniquePathsMap(list)
 	}
 	return firstUniquePathsList(list)
+}
+
+// SortedUniquePaths returns what its name says
+func SortedUniquePaths(list Paths) Paths {
+	unique := FirstUniquePaths(list)
+	sort.Slice(unique, func(i, j int) bool {
+		return unique[i].String() < unique[j].String()
+	})
+	return unique
 }
 
 func firstUniquePathsList(list Paths) Paths {
@@ -789,7 +807,7 @@ func PathForSource(ctx PathContext, pathComponents ...string) SourcePath {
 		}
 	} else if exists, _, err := ctx.Config().fs.Exists(path.String()); err != nil {
 		reportPathErrorf(ctx, "%s: %s", path, err.Error())
-	} else if !exists {
+	} else if !exists && !ctx.Config().testAllowNonExistentPaths {
 		reportPathErrorf(ctx, "source path %q does not exist", path)
 	}
 	return path
@@ -894,6 +912,22 @@ func (p OutputPath) buildDir() string {
 
 var _ Path = OutputPath{}
 var _ WritablePath = OutputPath{}
+
+// toolDepPath is a Path representing a dependency of the build tool.
+type toolDepPath struct {
+	basePath
+}
+
+var _ Path = toolDepPath{}
+
+// pathForBuildToolDep returns a toolDepPath representing the given path string.
+// There is no validation for the path, as it is "trusted": It may fail
+// normal validation checks. For example, it may be an absolute path.
+// Only use this function to construct paths for dependencies of the build
+// tool invocation.
+func pathForBuildToolDep(ctx PathContext, path string) toolDepPath {
+	return toolDepPath{basePath{path, ctx.Config(), ""}}
+}
 
 // PathForOutput joins the provided paths and returns an OutputPath that is
 // validated to not escape the build dir.

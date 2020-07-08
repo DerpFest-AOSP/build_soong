@@ -121,6 +121,10 @@ type JavadocProperties struct {
 
 	// names of the output files used in args that will be generated
 	Out []string
+
+	// If set, metalava is sandboxed to only read files explicitly specified on the command
+	// line. Defaults to false.
+	Sandbox *bool
 }
 
 type ApiToCheck struct {
@@ -376,6 +380,7 @@ type Javadoc struct {
 	srcFiles    android.Paths
 	sourcepaths android.Paths
 	argFiles    android.Paths
+	implicits   android.Paths
 
 	args string
 
@@ -435,16 +440,11 @@ func (j *Javadoc) targetSdkVersion() sdkSpec {
 func (j *Javadoc) addDeps(ctx android.BottomUpMutatorContext) {
 	if ctx.Device() {
 		sdkDep := decodeSdkDep(ctx, sdkContext(j))
-		if sdkDep.useDefaultLibs {
-			ctx.AddVariationDependencies(nil, bootClasspathTag, config.DefaultBootclasspathLibraries...)
-			ctx.AddVariationDependencies(nil, systemModulesTag, config.DefaultSystemModules)
-			if sdkDep.hasFrameworkLibs() {
-				ctx.AddVariationDependencies(nil, libTag, config.DefaultLibraries...)
-			}
-		} else if sdkDep.useModule {
+		if sdkDep.useModule {
 			ctx.AddVariationDependencies(nil, bootClasspathTag, sdkDep.bootclasspath...)
 			ctx.AddVariationDependencies(nil, systemModulesTag, sdkDep.systemModules)
 			ctx.AddVariationDependencies(nil, java9LibTag, sdkDep.java9Classpath...)
+			ctx.AddVariationDependencies(nil, libTag, sdkDep.classpath...)
 		}
 	}
 
@@ -575,6 +575,7 @@ func (j *Javadoc) collectDeps(ctx android.ModuleContext) deps {
 	// do not pass exclude_srcs directly when expanding srcFiles since exclude_srcs
 	// may contain filegroup or genrule.
 	srcFiles := android.PathsForModuleSrcExcludes(ctx, j.properties.Srcs, j.properties.Exclude_srcs)
+	j.implicits = append(j.implicits, srcFiles...)
 
 	filterByPackage := func(srcs []android.Path, filterPackages []string) []android.Path {
 		if filterPackages == nil {
@@ -599,6 +600,24 @@ func (j *Javadoc) collectDeps(ctx android.ModuleContext) deps {
 		return filtered
 	}
 	srcFiles = filterByPackage(srcFiles, j.properties.Filter_packages)
+
+	// While metalava needs package html files, it does not need them to be explicit on the command
+	// line. More importantly, the metalava rsp file is also used by the subsequent jdiff action if
+	// jdiff_enabled=true. javadoc complains if it receives html files on the command line. The filter
+	// below excludes html files from the rsp file for both metalava and jdiff. Note that the html
+	// files are still included as implicit inputs for successful remote execution and correct
+	// incremental builds.
+	filterHtml := func(srcs []android.Path) []android.Path {
+		filtered := []android.Path{}
+		for _, src := range srcs {
+			if src.Ext() == ".html" {
+				continue
+			}
+			filtered = append(filtered, src)
+		}
+		return filtered
+	}
+	srcFiles = filterHtml(srcFiles)
 
 	flags := j.collectAidlFlags(ctx, deps)
 	srcFiles = j.genSources(ctx, srcFiles, flags)
@@ -1204,6 +1223,21 @@ func DroidstubsHostFactory() android.Module {
 	return module
 }
 
+func (d *Droidstubs) OutputFiles(tag string) (android.Paths, error) {
+	switch tag {
+	case "":
+		return android.Paths{d.stubsSrcJar}, nil
+	case ".docs.zip":
+		return android.Paths{d.docZip}, nil
+	case ".annotations.zip":
+		return android.Paths{d.annotationsZip}, nil
+	case ".api_versions.xml":
+		return android.Paths{d.apiVersionsXml}, nil
+	default:
+		return nil, fmt.Errorf("unsupported module reference tag %q", tag)
+	}
+}
+
 func (d *Droidstubs) ApiFilePath() android.Path {
 	return d.apiFilePath
 }
@@ -1314,12 +1348,9 @@ func (d *Droidstubs) annotationsFlags(ctx android.ModuleContext, cmd *android.Ru
 		d.annotationsZip = android.PathForModuleOut(ctx, ctx.ModuleName()+"_annotations.zip")
 		cmd.FlagWithOutput("--extract-annotations ", d.annotationsZip)
 
-		if len(d.properties.Merge_annotations_dirs) == 0 {
-			ctx.PropertyErrorf("merge_annotations_dirs",
-				"has to be non-empty if annotations was enabled!")
+		if len(d.properties.Merge_annotations_dirs) != 0 {
+			d.mergeAnnoDirFlags(ctx, cmd)
 		}
-
-		d.mergeAnnoDirFlags(ctx, cmd)
 
 		// TODO(tnorbye): find owners to fix these warnings when annotation was enabled.
 		cmd.FlagWithArg("--hide ", "HiddenTypedefConstant").
@@ -1382,7 +1413,7 @@ func (d *Droidstubs) apiLevelsAnnotationsFlags(ctx android.ModuleContext, cmd *a
 }
 
 func (d *Droidstubs) apiToXmlFlags(ctx android.ModuleContext, cmd *android.RuleBuilderCommand) {
-	if Bool(d.properties.Jdiff_enabled) && !ctx.Config().IsPdkBuild() {
+	if Bool(d.properties.Jdiff_enabled) && !ctx.Config().IsPdkBuild() && d.apiFile != nil {
 		if d.apiFile.String() == "" {
 			ctx.ModuleErrorf("API signature file has to be specified in Metalava when jdiff is enabled.")
 		}
@@ -1402,29 +1433,28 @@ func (d *Droidstubs) apiToXmlFlags(ctx android.ModuleContext, cmd *android.RuleB
 }
 
 func metalavaCmd(ctx android.ModuleContext, rule *android.RuleBuilder, javaVersion javaVersion, srcs android.Paths,
-	srcJarList android.Path, bootclasspath, classpath classpath, sourcepaths android.Paths) *android.RuleBuilderCommand {
+	srcJarList android.Path, bootclasspath, classpath classpath, sourcepaths android.Paths, implicitsRsp android.WritablePath, sandbox bool) *android.RuleBuilderCommand {
 	// Metalava uses lots of memory, restrict the number of metalava jobs that can run in parallel.
 	rule.HighMem()
 	cmd := rule.Command()
 	if ctx.Config().IsEnvTrue("RBE_METALAVA") {
 		rule.Remoteable(android.RemoteRuleSupports{RBE: true})
-		execStrategy := remoteexec.LocalExecStrategy
-		if v := ctx.Config().Getenv("RBE_METALAVA_EXEC_STRATEGY"); v != "" {
-			execStrategy = v
-		}
-		pool := "metalava"
-		if v := ctx.Config().Getenv("RBE_METALAVA_POOL"); v != "" {
-			pool = v
+		pool := ctx.Config().GetenvWithDefault("RBE_METALAVA_POOL", "metalava")
+		execStrategy := ctx.Config().GetenvWithDefault("RBE_METALAVA_EXEC_STRATEGY", remoteexec.LocalExecStrategy)
+		labels := map[string]string{"type": "compile", "lang": "java", "compiler": "metalava"}
+		if !sandbox {
+			execStrategy = remoteexec.LocalExecStrategy
+			labels["shallow"] = "true"
 		}
 		inputs := []string{android.PathForOutput(ctx, "host", ctx.Config().PrebuiltOS(), "framework", "metalava.jar").String()}
-		inputs = append(inputs, sourcepaths.Strings()...)
 		if v := ctx.Config().Getenv("RBE_METALAVA_INPUTS"); v != "" {
 			inputs = append(inputs, strings.Split(v, ",")...)
 		}
 		cmd.Text((&remoteexec.REParams{
-			Labels:          map[string]string{"type": "compile", "lang": "java", "compiler": "metalava"},
+			Labels:          labels,
 			ExecStrategy:    execStrategy,
 			Inputs:          inputs,
+			RSPFile:         implicitsRsp.String(),
 			ToolchainInputs: []string{config.JavaCmd(ctx).String()},
 			Platform:        map[string]string{remoteexec.PoolKey: pool},
 		}).NoVarTemplate(ctx.Config()))
@@ -1436,6 +1466,20 @@ func metalavaCmd(ctx android.ModuleContext, rule *android.RuleBuilder, javaVersi
 		FlagWithArg("-source ", javaVersion.String()).
 		FlagWithRspFileInputList("@", srcs).
 		FlagWithInput("@", srcJarList)
+
+	if javaHome := ctx.Config().Getenv("ANDROID_JAVA_HOME"); javaHome != "" {
+		cmd.Implicit(android.PathForSource(ctx, javaHome))
+	}
+
+	if sandbox {
+		cmd.FlagWithOutput("--strict-input-files ", android.PathForModuleOut(ctx, ctx.ModuleName()+"-"+"violations.txt"))
+	} else {
+		cmd.FlagWithOutput("--strict-input-files:warn ", android.PathForModuleOut(ctx, ctx.ModuleName()+"-"+"violations.txt"))
+	}
+
+	if implicitsRsp != nil {
+		cmd.FlagWithArg("--strict-input-files-exempt ", "@"+implicitsRsp.String())
+	}
 
 	if len(bootclasspath) > 0 {
 		cmd.FlagWithInputList("-bootclasspath ", bootclasspath.Paths(), ":")
@@ -1481,8 +1525,12 @@ func (d *Droidstubs) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 
 	srcJarList := zipSyncCmd(ctx, rule, srcJarDir, d.Javadoc.srcJars)
 
+	implicitsRsp := android.PathForModuleOut(ctx, ctx.ModuleName()+"-"+"implicits.rsp")
+
 	cmd := metalavaCmd(ctx, rule, javaVersion, d.Javadoc.srcFiles, srcJarList,
-		deps.bootClasspath, deps.classpath, d.Javadoc.sourcepaths)
+		deps.bootClasspath, deps.classpath, d.Javadoc.sourcepaths, implicitsRsp,
+		Bool(d.Javadoc.properties.Sandbox))
+	cmd.Implicits(d.Javadoc.implicits)
 
 	d.stubsFlags(ctx, cmd, stubsDir)
 
@@ -1600,6 +1648,16 @@ func (d *Droidstubs) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 
 		cmd.FlagWithArg("--error-message:compatibility:released ", msg)
 	}
+
+	impRule := android.NewRuleBuilder()
+	impCmd := impRule.Command()
+	// A dummy action that copies the ninja generated rsp file to a new location. This allows us to
+	// add a large number of inputs to a file without exceeding bash command length limits (which
+	// would happen if we use the WriteFile rule). The cp is needed because RuleBuilder sets the
+	// rsp file to be ${output}.rsp.
+	impCmd.Text("cp").FlagWithRspFileInputList("", cmd.GetImplicits()).Output(implicitsRsp)
+	impRule.Build(pctx, ctx, "implicitsGen", "implicits generation")
+	cmd.Implicit(implicitsRsp)
 
 	if generateStubs {
 		rule.Command().
@@ -1783,13 +1841,19 @@ func (d *Droidstubs) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 			Flag("-XDignore.symbol.file").
 			FlagWithArg("-doclet ", "jdiff.JDiff").
 			FlagWithInput("-docletpath ", jdiff).
-			Flag("-quiet").
-			FlagWithArg("-newapi ", strings.TrimSuffix(d.apiXmlFile.Base(), d.apiXmlFile.Ext())).
-			FlagWithArg("-newapidir ", filepath.Dir(d.apiXmlFile.String())).
-			Implicit(d.apiXmlFile).
-			FlagWithArg("-oldapi ", strings.TrimSuffix(d.lastReleasedApiXmlFile.Base(), d.lastReleasedApiXmlFile.Ext())).
-			FlagWithArg("-oldapidir ", filepath.Dir(d.lastReleasedApiXmlFile.String())).
-			Implicit(d.lastReleasedApiXmlFile)
+			Flag("-quiet")
+
+		if d.apiXmlFile != nil {
+			cmd.FlagWithArg("-newapi ", strings.TrimSuffix(d.apiXmlFile.Base(), d.apiXmlFile.Ext())).
+				FlagWithArg("-newapidir ", filepath.Dir(d.apiXmlFile.String())).
+				Implicit(d.apiXmlFile)
+		}
+
+		if d.lastReleasedApiXmlFile != nil {
+			cmd.FlagWithArg("-oldapi ", strings.TrimSuffix(d.lastReleasedApiXmlFile.Base(), d.lastReleasedApiXmlFile.Ext())).
+				FlagWithArg("-oldapidir ", filepath.Dir(d.lastReleasedApiXmlFile.String())).
+				Implicit(d.lastReleasedApiXmlFile)
+		}
 
 		rule.Command().
 			BuiltTool(ctx, "soong_zip").

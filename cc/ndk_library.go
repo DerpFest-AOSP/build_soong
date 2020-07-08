@@ -25,8 +25,12 @@ import (
 	"android/soong/android"
 )
 
+func init() {
+	pctx.HostBinToolVariable("ndk_api_coverage_parser", "ndk_api_coverage_parser")
+}
+
 var (
-	toolPath = pctx.SourcePathVariable("toolPath", "build/soong/cc/gen_stub_libs.py")
+	toolPath = pctx.SourcePathVariable("toolPath", "build/soong/cc/scriptlib/gen_stub_libs.py")
 
 	genStubSrc = pctx.AndroidStaticRule("genStubSrc",
 		blueprint.RuleParams{
@@ -35,39 +39,18 @@ var (
 			CommandDeps: []string{"$toolPath"},
 		}, "arch", "apiLevel", "apiMap", "flags")
 
+	parseNdkApiRule = pctx.AndroidStaticRule("parseNdkApiRule",
+		blueprint.RuleParams{
+			Command:     "$ndk_api_coverage_parser $in $out --api-map $apiMap",
+			CommandDeps: []string{"$ndk_api_coverage_parser"},
+		}, "apiMap")
+
 	ndkLibrarySuffix = ".ndk"
 
-	ndkPrebuiltSharedLibs = []string{
-		"aaudio",
-		"amidi",
-		"android",
-		"binder_ndk",
-		"c",
-		"camera2ndk",
-		"dl",
-		"EGL",
-		"GLESv1_CM",
-		"GLESv2",
-		"GLESv3",
-		"jnigraphics",
-		"log",
-		"mediandk",
-		"nativewindow",
-		"m",
-		"neuralnetworks",
-		"OpenMAXAL",
-		"OpenSLES",
-		"stdc++",
-		"sync",
-		"vulkan",
-		"z",
-	}
-	ndkPrebuiltSharedLibraries = addPrefix(append([]string(nil), ndkPrebuiltSharedLibs...), "lib")
-
-	// These libraries have migrated over to the new ndk_library, which is added
-	// as a variation dependency via depsMutator.
-	ndkMigratedLibs     = []string{}
-	ndkMigratedLibsLock sync.Mutex // protects ndkMigratedLibs writes during parallel BeginMutator
+	// Added as a variation dependency via depsMutator.
+	ndkKnownLibs = []string{}
+	// protects ndkKnownLibs writes during parallel BeginMutator.
+	ndkKnownLibsLock sync.Mutex
 )
 
 // Creates a stub shared library based on the provided version file.
@@ -111,8 +94,9 @@ type stubDecorator struct {
 
 	properties libraryProperties
 
-	versionScriptPath android.ModuleGenPath
-	installPath       android.Path
+	versionScriptPath     android.ModuleGenPath
+	parsedCoverageXmlPath android.ModuleOutPath
+	installPath           android.Path
 }
 
 // OMG GO
@@ -246,14 +230,14 @@ func (c *stubDecorator) compilerInit(ctx BaseModuleContext) {
 		ctx.PropertyErrorf("name", "Do not append %q manually, just use the base name", ndkLibrarySuffix)
 	}
 
-	ndkMigratedLibsLock.Lock()
-	defer ndkMigratedLibsLock.Unlock()
-	for _, lib := range ndkMigratedLibs {
+	ndkKnownLibsLock.Lock()
+	defer ndkKnownLibsLock.Unlock()
+	for _, lib := range ndkKnownLibs {
 		if lib == name {
 			return
 		}
 	}
-	ndkMigratedLibs = append(ndkMigratedLibs, name)
+	ndkKnownLibs = append(ndkKnownLibs, name)
 }
 
 func addStubLibraryCompilerFlags(flags Flags) Flags {
@@ -308,14 +292,36 @@ func compileStubLibrary(ctx ModuleContext, flags Flags, symbolFile, apiLevel, ge
 	return compileObjs(ctx, flagsToBuilderFlags(flags), subdir, srcs, nil, nil), versionScriptPath
 }
 
+func parseSymbolFileForCoverage(ctx ModuleContext, symbolFile string) android.ModuleOutPath {
+	apiLevelsJson := android.GetApiLevelsJson(ctx)
+	symbolFilePath := android.PathForModuleSrc(ctx, symbolFile)
+	outputFileName := strings.Split(symbolFilePath.Base(), ".")[0]
+	parsedApiCoveragePath := android.PathForModuleOut(ctx, outputFileName+".xml")
+	ctx.Build(pctx, android.BuildParams{
+		Rule:        parseNdkApiRule,
+		Description: "parse ndk api symbol file for api coverage: " + symbolFilePath.Rel(),
+		Outputs:     []android.WritablePath{parsedApiCoveragePath},
+		Input:       symbolFilePath,
+		Implicits:   []android.Path{apiLevelsJson},
+		Args: map[string]string{
+			"apiMap": apiLevelsJson.String(),
+		},
+	})
+	return parsedApiCoveragePath
+}
+
 func (c *stubDecorator) compile(ctx ModuleContext, flags Flags, deps PathDeps) Objects {
 	if !strings.HasSuffix(String(c.properties.Symbol_file), ".map.txt") {
 		ctx.PropertyErrorf("symbol_file", "must end with .map.txt")
 	}
 
-	objs, versionScript := compileStubLibrary(ctx, flags, String(c.properties.Symbol_file),
+	symbolFile := String(c.properties.Symbol_file)
+	objs, versionScript := compileStubLibrary(ctx, flags, symbolFile,
 		c.properties.ApiLevel, "")
 	c.versionScriptPath = versionScript
+	if c.properties.ApiLevel == "current" && ctx.PrimaryArch() {
+		c.parsedCoverageXmlPath = parseSymbolFileForCoverage(ctx, symbolFile)
+	}
 	return objs
 }
 

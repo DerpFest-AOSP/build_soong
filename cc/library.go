@@ -369,7 +369,7 @@ type libraryDecorator struct {
 	unstrippedOutputFile android.Path
 
 	// Location of the file that should be copied to dist dir when requested
-	distFile android.OptionalPath
+	distFile android.Path
 
 	versionScriptPath android.ModuleGenPath
 
@@ -405,6 +405,31 @@ func (l *libraryDecorator) collectHeadersForSnapshot(ctx android.ModuleContext) 
 		dir := path.String()
 		// Skip if dir is for generated headers
 		if strings.HasPrefix(dir, android.PathForOutput(ctx).String()) {
+			continue
+		}
+		// libeigen wrongly exports the root directory "external/eigen". But only two
+		// subdirectories "Eigen" and "unsupported" contain exported header files. Even worse
+		// some of them have no extension. So we need special treatment for libeigen in order
+		// to glob correctly.
+		if dir == "external/eigen" {
+			// Only these two directories contains exported headers.
+			for _, subdir := range []string{"Eigen", "unsupported/Eigen"} {
+				glob, err := ctx.GlobWithDeps("external/eigen/"+subdir+"/**/*", nil)
+				if err != nil {
+					ctx.ModuleErrorf("glob failed: %#v", err)
+					return
+				}
+				for _, header := range glob {
+					if strings.HasSuffix(header, "/") {
+						continue
+					}
+					ext := filepath.Ext(header)
+					if ext != "" && ext != ".h" {
+						continue
+					}
+					ret = append(ret, android.PathForSource(ctx, header))
+				}
+			}
 			continue
 		}
 		exts := headerExts
@@ -869,7 +894,7 @@ func (library *libraryDecorator) linkStatic(ctx ModuleContext,
 			library.injectVersionSymbol(ctx, outputFile, versionedOutputFile)
 		} else {
 			versionedOutputFile := android.PathForModuleOut(ctx, "versioned", fileName)
-			library.distFile = android.OptionalPathForPath(versionedOutputFile)
+			library.distFile = versionedOutputFile
 			library.injectVersionSymbol(ctx, outputFile, versionedOutputFile)
 		}
 	}
@@ -963,11 +988,11 @@ func (library *libraryDecorator) linkShared(ctx ModuleContext,
 			library.injectVersionSymbol(ctx, outputFile, versionedOutputFile)
 		} else {
 			versionedOutputFile := android.PathForModuleOut(ctx, "versioned", fileName)
-			library.distFile = android.OptionalPathForPath(versionedOutputFile)
+			library.distFile = versionedOutputFile
 
 			if library.stripper.needsStrip(ctx) {
 				out := android.PathForModuleOut(ctx, "versioned-stripped", fileName)
-				library.distFile = android.OptionalPathForPath(out)
+				library.distFile = out
 				library.stripper.stripExecutableOrSharedLib(ctx, versionedOutputFile, out, builderFlags)
 			}
 
@@ -1052,9 +1077,14 @@ func getRefAbiDumpFile(ctx ModuleContext, vndkVersion, fileName string) android.
 
 func (library *libraryDecorator) linkSAbiDumpFiles(ctx ModuleContext, objs Objects, fileName string, soFile android.Path) {
 	if library.shouldCreateSourceAbiDump(ctx) {
-		vndkVersion := ctx.DeviceConfig().PlatformVndkVersion()
-		if ver := ctx.DeviceConfig().VndkVersion(); ver != "" && ver != "current" {
-			vndkVersion = ver
+		var vndkVersion string
+
+		if ctx.useVndk() {
+			// For modules linking against vndk, follow its vndk version
+			vndkVersion = ctx.Module().(*Module).VndkVersion()
+		} else {
+			// Regard the other modules as PLATFORM_VNDK_VERSION
+			vndkVersion = ctx.DeviceConfig().PlatformVndkVersion()
 		}
 
 		exportIncludeDirs := library.flagExporter.exportedIncludes(ctx)
@@ -1550,7 +1580,8 @@ func VersionVariantAvailable(module interface {
 // (which is unnamed) and zero or more stubs variants.
 func VersionMutator(mctx android.BottomUpMutatorContext) {
 	if library, ok := mctx.Module().(LinkableInterface); ok && VersionVariantAvailable(library) {
-		if library.CcLibrary() && library.BuildSharedVariant() && len(library.StubsVersions()) > 0 {
+		if library.CcLibrary() && library.BuildSharedVariant() && len(library.StubsVersions()) > 0 &&
+			!library.IsSdkVariant() {
 			versions := library.StubsVersions()
 			normalizeVersions(mctx, versions)
 			if mctx.Failed() {

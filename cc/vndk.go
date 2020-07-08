@@ -25,6 +25,7 @@ import (
 
 	"android/soong/android"
 	"android/soong/cc/config"
+	"android/soong/etc"
 )
 
 const (
@@ -339,16 +340,24 @@ func processVndkLibrary(mctx android.BottomUpMutatorContext, m *Module) {
 	}
 }
 
-func IsForVndkApex(mctx android.BottomUpMutatorContext, m *Module) bool {
+// Sanity check for modules that mustn't be VNDK
+func shouldSkipVndkMutator(m *Module) bool {
 	if !m.Enabled() {
-		return false
+		return true
 	}
-
-	if !mctx.Device() {
-		return false
+	if !m.Device() {
+		// Skip non-device modules
+		return true
 	}
-
 	if m.Target().NativeBridge == android.NativeBridgeEnabled {
+		// Skip native_bridge modules
+		return true
+	}
+	return false
+}
+
+func IsForVndkApex(mctx android.BottomUpMutatorContext, m *Module) bool {
+	if shouldSkipVndkMutator(m) {
 		return false
 	}
 
@@ -382,11 +391,8 @@ func VndkMutator(mctx android.BottomUpMutatorContext) {
 	if !ok {
 		return
 	}
-	if !m.Enabled() {
-		return
-	}
-	if m.Target().NativeBridge == android.NativeBridgeEnabled {
-		// Skip native_bridge modules
+
+	if shouldSkipVndkMutator(m) {
 		return
 	}
 
@@ -416,7 +422,7 @@ type vndkLibrariesTxt struct {
 	outputFile android.OutputPath
 }
 
-var _ android.PrebuiltEtcModule = &vndkLibrariesTxt{}
+var _ etc.PrebuiltEtcModule = &vndkLibrariesTxt{}
 var _ android.OutputFileProducer = &vndkLibrariesTxt{}
 
 // vndk_libraries_txt is a special kind of module type in that it name is one of

@@ -179,15 +179,7 @@ func RegisterDexpreoptBootJarsComponents(ctx android.RegistrationContext) {
 }
 
 func skipDexpreoptBootJars(ctx android.PathContext) bool {
-	if dexpreopt.GetGlobalConfig(ctx).DisablePreopt {
-		return true
-	}
-
-	if ctx.Config().UnbundledBuild() {
-		return true
-	}
-
-	return false
+	return dexpreopt.GetGlobalConfig(ctx).DisablePreopt
 }
 
 type dexpreoptBootJars struct {
@@ -255,7 +247,7 @@ func getBootImageJar(ctx android.SingletonContext, image *bootImageConfig, modul
 		return -1, nil
 	}
 
-	jar, hasJar := module.(interface{ DexJar() android.Path })
+	jar, hasJar := module.(interface{ DexJarBuildPath() android.Path })
 	if !hasJar {
 		return -1, nil
 	}
@@ -296,7 +288,7 @@ func getBootImageJar(ctx android.SingletonContext, image *bootImageConfig, modul
 		panic("unknown boot image: " + image.name)
 	}
 
-	return index, jar.DexJar()
+	return index, jar.DexJarBuildPath()
 }
 
 // buildBootImage takes a bootImageConfig, creates rules to build it, and returns the image.
@@ -340,10 +332,12 @@ func buildBootImage(ctx android.SingletonContext, image *bootImageConfig) *bootI
 	bootFrameworkProfileRule(ctx, image, missingDeps)
 	updatableBcpPackagesRule(ctx, image, missingDeps)
 
-	var allFiles android.Paths
+	var zipFiles android.Paths
 	for _, variant := range image.variants {
 		files := buildBootImageVariant(ctx, variant, profile, missingDeps)
-		allFiles = append(allFiles, files.Paths()...)
+		if variant.target.Os == android.Android {
+			zipFiles = append(zipFiles, files.Paths()...)
+		}
 	}
 
 	if image.zip != nil {
@@ -351,8 +345,8 @@ func buildBootImage(ctx android.SingletonContext, image *bootImageConfig) *bootI
 		rule.Command().
 			BuiltTool(ctx, "soong_zip").
 			FlagWithOutput("-o ", image.zip).
-			FlagWithArg("-C ", image.dir.String()).
-			FlagWithInputList("-f ", allFiles, " -f ")
+			FlagWithArg("-C ", image.dir.Join(ctx, android.Android.String()).String()).
+			FlagWithInputList("-f ", zipFiles, " -f ")
 
 		rule.Build(pctx, ctx, "zip_"+image.name, "zip "+image.name+" image")
 	}
@@ -619,10 +613,10 @@ func updatableBcpPackagesRule(ctx android.SingletonContext, image *bootImageConf
 		// Collect `permitted_packages` for updatable boot jars.
 		var updatablePackages []string
 		ctx.VisitAllModules(func(module android.Module) {
-			if j, ok := module.(*Library); ok {
+			if j, ok := module.(PermittedPackagesForUpdatableBootJars); ok {
 				name := ctx.ModuleName(module)
 				if i := android.IndexList(name, updatableModules); i != -1 {
-					pp := j.properties.Permitted_packages
+					pp := j.PermittedPackagesForUpdatableBootJars()
 					if len(pp) > 0 {
 						updatablePackages = append(updatablePackages, pp...)
 					} else {

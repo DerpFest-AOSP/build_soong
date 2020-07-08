@@ -147,15 +147,18 @@ func TestAndroidAppSet(t *testing.T) {
 			name: "foo",
 			set: "prebuilts/apks/app.apks",
 			prerelease: true,
-        }`)
+		}`)
 	module := ctx.ModuleForTests("foo", "android_common")
-	const packedSplitApks = "extracted.zip"
+	const packedSplitApks = "foo.zip"
 	params := module.Output(packedSplitApks)
 	if params.Rule == nil {
 		t.Errorf("expected output %s is missing", packedSplitApks)
 	}
 	if s := params.Args["allow-prereleased"]; s != "true" {
 		t.Errorf("wrong allow-prereleased value: '%s', expected 'true'", s)
+	}
+	if s := params.Args["partition"]; s != "system" {
+		t.Errorf("wrong partition value: '%s', expected 'system'", s)
 	}
 	mkEntries := android.AndroidMkEntriesForTest(t, config, "", module.Module())[0]
 	actualMaster := mkEntries.EntryMap["LOCAL_APK_SET_MASTER_FILE"]
@@ -218,7 +221,7 @@ func TestAndroidAppSet_Variants(t *testing.T) {
 		ctx := testContext()
 		run(t, ctx, config)
 		module := ctx.ModuleForTests("foo", "android_common")
-		const packedSplitApks = "extracted.zip"
+		const packedSplitApks = "foo.zip"
 		params := module.Output(packedSplitApks)
 		for k, v := range test.expected {
 			if actual := params.Args[k]; actual != v {
@@ -471,6 +474,24 @@ func TestUpdatableApps(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestUpdatableApps_TransitiveDepsShouldSetMinSdkVersion(t *testing.T) {
+	testJavaError(t, `module "bar".*: should support min_sdk_version\(29\)`, cc.GatherRequiredDepsForTest(android.Android)+`
+		android_app {
+			name: "foo",
+			srcs: ["a.java"],
+			updatable: true,
+			sdk_version: "current",
+			min_sdk_version: "29",
+			static_libs: ["bar"],
+		}
+
+		java_library {
+			name: "bar",
+			sdk_version: "current",
+		}
+	`)
 }
 
 func TestUpdatableApps_JniLibsShouldShouldSupportMinSdkVersion(t *testing.T) {
@@ -2569,13 +2590,13 @@ func TestUsesLibraries(t *testing.T) {
 	// Test that only present libraries are preopted
 	cmd = app.Rule("dexpreopt").RuleParams.Command
 
-	if w := `dex_preopt_target_libraries="/system/framework/foo.jar /system/framework/bar.jar"`; !strings.Contains(cmd, w) {
+	if w := `--target-classpath-for-sdk any /system/framework/foo.jar:/system/framework/bar.jar`; !strings.Contains(cmd, w) {
 		t.Errorf("wanted %q in %q", w, cmd)
 	}
 
 	cmd = prebuilt.Rule("dexpreopt").RuleParams.Command
 
-	if w := `dex_preopt_target_libraries="/system/framework/foo.jar /system/framework/bar.jar"`; !strings.Contains(cmd, w) {
+	if w := `--target-classpath-for-sdk any /system/framework/foo.jar:/system/framework/bar.jar`; !strings.Contains(cmd, w) {
 		t.Errorf("wanted %q in %q", w, cmd)
 	}
 }
@@ -2657,7 +2678,7 @@ func TestCodelessApp(t *testing.T) {
 }
 
 func TestEmbedNotice(t *testing.T) {
-	ctx, _ := testJava(t, cc.GatherRequiredDepsForTest(android.Android)+`
+	ctx, _ := testJavaWithFS(t, cc.GatherRequiredDepsForTest(android.Android)+`
 		android_app {
 			name: "foo",
 			srcs: ["a.java"],
@@ -2713,7 +2734,12 @@ func TestEmbedNotice(t *testing.T) {
 			srcs: ["b.java"],
 			notice: "TOOL_NOTICE",
 		}
-	`)
+	`, map[string][]byte{
+		"APP_NOTICE":     nil,
+		"GENRULE_NOTICE": nil,
+		"LIB_NOTICE":     nil,
+		"TOOL_NOTICE":    nil,
+	})
 
 	// foo has NOTICE files to process, and embed_notices is true.
 	foo := ctx.ModuleForTests("foo", "android_common")
@@ -2895,6 +2921,7 @@ func TestRuntimeResourceOverlay(t *testing.T) {
 		runtime_resource_overlay {
 			name: "foo",
 			certificate: "platform",
+			lineage: "lineage.bin",
 			product_specific: true,
 			static_libs: ["bar"],
 			resource_libs: ["baz"],
@@ -2949,6 +2976,11 @@ func TestRuntimeResourceOverlay(t *testing.T) {
 
 	// Check cert signing flag.
 	signedApk := m.Output("signed/foo.apk")
+	lineageFlag := signedApk.Args["flags"]
+	expectedLineageFlag := "--lineage lineage.bin"
+	if expectedLineageFlag != lineageFlag {
+		t.Errorf("Incorrect signing lineage flags, expected: %q, got: %q", expectedLineageFlag, lineageFlag)
+	}
 	signingFlag := signedApk.Args["certificates"]
 	expected := "build/make/target/product/security/platform.x509.pem build/make/target/product/security/platform.pk8"
 	if expected != signingFlag {

@@ -12,12 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package android
+package sh
 
 import (
 	"fmt"
 	"path/filepath"
 	"strings"
+
+	"github.com/google/blueprint/proptools"
+
+	"android/soong/android"
+	"android/soong/tradefed"
 )
 
 // sh_binary is for shell scripts (and batch files) that are installed as
@@ -26,11 +31,15 @@ import (
 // Do not use them for prebuilt C/C++/etc files.  Use cc_prebuilt_binary
 // instead.
 
+var pctx = android.NewPackageContext("android/soong/sh")
+
 func init() {
-	RegisterModuleType("sh_binary", ShBinaryFactory)
-	RegisterModuleType("sh_binary_host", ShBinaryHostFactory)
-	RegisterModuleType("sh_test", ShTestFactory)
-	RegisterModuleType("sh_test_host", ShTestHostFactory)
+	pctx.Import("android/soong/android")
+
+	android.RegisterModuleType("sh_binary", ShBinaryFactory)
+	android.RegisterModuleType("sh_binary_host", ShBinaryHostFactory)
+	android.RegisterModuleType("sh_test", ShTestFactory)
+	android.RegisterModuleType("sh_test_host", ShTestHostFactory)
 }
 
 type shBinaryProperties struct {
@@ -61,63 +70,79 @@ type TestProperties struct {
 
 	// the name of the test configuration (for example "AndroidTest.xml") that should be
 	// installed with the module.
-	Test_config *string `android:"arch_variant"`
+	Test_config *string `android:"path,arch_variant"`
 
 	// list of files or filegroup modules that provide data that should be installed alongside
 	// the test.
 	Data []string `android:"path,arch_variant"`
+
+	// Add RootTargetPreparer to auto generated test config. This guarantees the test to run
+	// with root permission.
+	Require_root *bool
+
+	// the name of the test configuration template (for example "AndroidTestTemplate.xml") that
+	// should be installed with the module.
+	Test_config_template *string `android:"path,arch_variant"`
+
+	// Flag to indicate whether or not to create test config automatically. If AndroidTest.xml
+	// doesn't exist next to the Android.bp, this attribute doesn't need to be set to true
+	// explicitly.
+	Auto_gen_config *bool
 }
 
 type ShBinary struct {
-	ModuleBase
+	android.ModuleBase
 
 	properties shBinaryProperties
 
-	sourceFilePath Path
-	outputFilePath OutputPath
-	installedFile  InstallPath
+	sourceFilePath android.Path
+	outputFilePath android.OutputPath
+	installedFile  android.InstallPath
 }
 
-var _ HostToolProvider = (*ShBinary)(nil)
+var _ android.HostToolProvider = (*ShBinary)(nil)
 
 type ShTest struct {
 	ShBinary
 
 	testProperties TestProperties
 
-	data Paths
+	installDir android.InstallPath
+
+	data       android.Paths
+	testConfig android.Path
 }
 
-func (s *ShBinary) HostToolPath() OptionalPath {
-	return OptionalPathForPath(s.installedFile)
+func (s *ShBinary) HostToolPath() android.OptionalPath {
+	return android.OptionalPathForPath(s.installedFile)
 }
 
-func (s *ShBinary) DepsMutator(ctx BottomUpMutatorContext) {
+func (s *ShBinary) DepsMutator(ctx android.BottomUpMutatorContext) {
 	if s.properties.Src == nil {
 		ctx.PropertyErrorf("src", "missing prebuilt source file")
 	}
 }
 
-func (s *ShBinary) OutputFile() OutputPath {
+func (s *ShBinary) OutputFile() android.OutputPath {
 	return s.outputFilePath
 }
 
 func (s *ShBinary) SubDir() string {
-	return String(s.properties.Sub_dir)
+	return proptools.String(s.properties.Sub_dir)
 }
 
 func (s *ShBinary) Installable() bool {
-	return s.properties.Installable == nil || Bool(s.properties.Installable)
+	return s.properties.Installable == nil || proptools.Bool(s.properties.Installable)
 }
 
 func (s *ShBinary) Symlinks() []string {
 	return s.properties.Symlinks
 }
 
-func (s *ShBinary) generateAndroidBuildActions(ctx ModuleContext) {
-	s.sourceFilePath = PathForModuleSrc(ctx, String(s.properties.Src))
-	filename := String(s.properties.Filename)
-	filename_from_src := Bool(s.properties.Filename_from_src)
+func (s *ShBinary) generateAndroidBuildActions(ctx android.ModuleContext) {
+	s.sourceFilePath = android.PathForModuleSrc(ctx, proptools.String(s.properties.Src))
+	filename := proptools.String(s.properties.Filename)
+	filename_from_src := proptools.Bool(s.properties.Filename_from_src)
 	if filename == "" {
 		if filename_from_src {
 			filename = s.sourceFilePath.Base()
@@ -128,38 +153,38 @@ func (s *ShBinary) generateAndroidBuildActions(ctx ModuleContext) {
 		ctx.PropertyErrorf("filename_from_src", "filename is set. filename_from_src can't be true")
 		return
 	}
-	s.outputFilePath = PathForModuleOut(ctx, filename).OutputPath
+	s.outputFilePath = android.PathForModuleOut(ctx, filename).OutputPath
 
 	// This ensures that outputFilePath has the correct name for others to
 	// use, as the source file may have a different name.
-	ctx.Build(pctx, BuildParams{
-		Rule:   CpExecutable,
+	ctx.Build(pctx, android.BuildParams{
+		Rule:   android.CpExecutable,
 		Output: s.outputFilePath,
 		Input:  s.sourceFilePath,
 	})
 }
 
-func (s *ShBinary) GenerateAndroidBuildActions(ctx ModuleContext) {
+func (s *ShBinary) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 	s.generateAndroidBuildActions(ctx)
-	installDir := PathForModuleInstall(ctx, "bin", String(s.properties.Sub_dir))
+	installDir := android.PathForModuleInstall(ctx, "bin", proptools.String(s.properties.Sub_dir))
 	s.installedFile = ctx.InstallExecutable(installDir, s.outputFilePath.Base(), s.outputFilePath)
 }
 
-func (s *ShBinary) AndroidMkEntries() []AndroidMkEntries {
-	return []AndroidMkEntries{AndroidMkEntries{
+func (s *ShBinary) AndroidMkEntries() []android.AndroidMkEntries {
+	return []android.AndroidMkEntries{android.AndroidMkEntries{
 		Class:      "EXECUTABLES",
-		OutputFile: OptionalPathForPath(s.outputFilePath),
+		OutputFile: android.OptionalPathForPath(s.outputFilePath),
 		Include:    "$(BUILD_SYSTEM)/soong_cc_prebuilt.mk",
-		ExtraEntries: []AndroidMkExtraEntriesFunc{
-			func(entries *AndroidMkEntries) {
+		ExtraEntries: []android.AndroidMkExtraEntriesFunc{
+			func(entries *android.AndroidMkEntries) {
 				s.customAndroidMkEntries(entries)
+				entries.SetString("LOCAL_MODULE_RELATIVE_PATH", proptools.String(s.properties.Sub_dir))
 			},
 		},
 	}}
 }
 
-func (s *ShBinary) customAndroidMkEntries(entries *AndroidMkEntries) {
-	entries.SetString("LOCAL_MODULE_RELATIVE_PATH", String(s.properties.Sub_dir))
+func (s *ShBinary) customAndroidMkEntries(entries *android.AndroidMkEntries) {
 	entries.SetString("LOCAL_MODULE_SUFFIX", "")
 	entries.SetString("LOCAL_MODULE_STEM", s.outputFilePath.Rel())
 	if len(s.properties.Symlinks) > 0 {
@@ -167,38 +192,56 @@ func (s *ShBinary) customAndroidMkEntries(entries *AndroidMkEntries) {
 	}
 }
 
-func (s *ShTest) GenerateAndroidBuildActions(ctx ModuleContext) {
+func (s *ShTest) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 	s.ShBinary.generateAndroidBuildActions(ctx)
 	testDir := "nativetest"
 	if ctx.Target().Arch.ArchType.Multilib == "lib64" {
 		testDir = "nativetest64"
 	}
-	if ctx.Target().NativeBridge == NativeBridgeEnabled {
+	if ctx.Target().NativeBridge == android.NativeBridgeEnabled {
 		testDir = filepath.Join(testDir, ctx.Target().NativeBridgeRelativePath)
 	} else if !ctx.Host() && ctx.Config().HasMultilibConflict(ctx.Arch().ArchType) {
 		testDir = filepath.Join(testDir, ctx.Arch().ArchType.String())
 	}
-	installDir := PathForModuleInstall(ctx, testDir, String(s.properties.Sub_dir))
-	s.installedFile = ctx.InstallExecutable(installDir, s.outputFilePath.Base(), s.outputFilePath)
+	if s.SubDir() != "" {
+		// Don't add the module name to the installation path if sub_dir is specified for backward
+		// compatibility.
+		s.installDir = android.PathForModuleInstall(ctx, testDir, s.SubDir())
+	} else {
+		s.installDir = android.PathForModuleInstall(ctx, testDir, s.Name())
+	}
+	s.installedFile = ctx.InstallExecutable(s.installDir, s.outputFilePath.Base(), s.outputFilePath)
 
-	s.data = PathsForModuleSrc(ctx, s.testProperties.Data)
+	s.data = android.PathsForModuleSrc(ctx, s.testProperties.Data)
+
+	var configs []tradefed.Config
+	if Bool(s.testProperties.Require_root) {
+		configs = append(configs, tradefed.Object{"target_preparer", "com.android.tradefed.targetprep.RootTargetPreparer", nil})
+	} else {
+		options := []tradefed.Option{{Name: "force-root", Value: "false"}}
+		configs = append(configs, tradefed.Object{"target_preparer", "com.android.tradefed.targetprep.RootTargetPreparer", options})
+	}
+	s.testConfig = tradefed.AutoGenShellTestConfig(ctx, s.testProperties.Test_config,
+		s.testProperties.Test_config_template, s.testProperties.Test_suites, configs, s.testProperties.Auto_gen_config, s.outputFilePath.Base())
 }
 
 func (s *ShTest) InstallInData() bool {
 	return true
 }
 
-func (s *ShTest) AndroidMkEntries() []AndroidMkEntries {
-	return []AndroidMkEntries{AndroidMkEntries{
+func (s *ShTest) AndroidMkEntries() []android.AndroidMkEntries {
+	return []android.AndroidMkEntries{android.AndroidMkEntries{
 		Class:      "NATIVE_TESTS",
-		OutputFile: OptionalPathForPath(s.outputFilePath),
+		OutputFile: android.OptionalPathForPath(s.outputFilePath),
 		Include:    "$(BUILD_SYSTEM)/soong_cc_prebuilt.mk",
-		ExtraEntries: []AndroidMkExtraEntriesFunc{
-			func(entries *AndroidMkEntries) {
+		ExtraEntries: []android.AndroidMkExtraEntriesFunc{
+			func(entries *android.AndroidMkEntries) {
 				s.customAndroidMkEntries(entries)
-
+				entries.SetPath("LOCAL_MODULE_PATH", s.installDir.ToMakePath())
 				entries.AddStrings("LOCAL_COMPATIBILITY_SUITE", s.testProperties.Test_suites...)
-				entries.SetString("LOCAL_TEST_CONFIG", String(s.testProperties.Test_config))
+				if s.testConfig != nil {
+					entries.SetPath("LOCAL_FULL_TEST_CONFIG", s.testConfig)
+				}
 				for _, d := range s.data {
 					rel := d.Rel()
 					path := d.String()
@@ -219,41 +262,40 @@ func InitShBinaryModule(s *ShBinary) {
 
 // sh_binary is for a shell script or batch file to be installed as an
 // executable binary to <partition>/bin.
-func ShBinaryFactory() Module {
+func ShBinaryFactory() android.Module {
 	module := &ShBinary{}
-	module.Prefer32(func(ctx BaseModuleContext, base *ModuleBase, class OsClass) bool {
-		return class == Device && ctx.Config().DevicePrefer32BitExecutables()
-	})
 	InitShBinaryModule(module)
-	InitAndroidArchModule(module, HostAndDeviceSupported, MultilibFirst)
+	android.InitAndroidArchModule(module, android.HostAndDeviceSupported, android.MultilibFirst)
 	return module
 }
 
 // sh_binary_host is for a shell script to be installed as an executable binary
 // to $(HOST_OUT)/bin.
-func ShBinaryHostFactory() Module {
+func ShBinaryHostFactory() android.Module {
 	module := &ShBinary{}
 	InitShBinaryModule(module)
-	InitAndroidArchModule(module, HostSupported, MultilibFirst)
+	android.InitAndroidArchModule(module, android.HostSupported, android.MultilibFirst)
 	return module
 }
 
 // sh_test defines a shell script based test module.
-func ShTestFactory() Module {
+func ShTestFactory() android.Module {
 	module := &ShTest{}
 	InitShBinaryModule(&module.ShBinary)
 	module.AddProperties(&module.testProperties)
 
-	InitAndroidArchModule(module, HostAndDeviceSupported, MultilibFirst)
+	android.InitAndroidArchModule(module, android.HostAndDeviceSupported, android.MultilibFirst)
 	return module
 }
 
 // sh_test_host defines a shell script based test module that runs on a host.
-func ShTestHostFactory() Module {
+func ShTestHostFactory() android.Module {
 	module := &ShTest{}
 	InitShBinaryModule(&module.ShBinary)
 	module.AddProperties(&module.testProperties)
 
-	InitAndroidArchModule(module, HostSupported, MultilibFirst)
+	android.InitAndroidArchModule(module, android.HostSupported, android.MultilibFirst)
 	return module
 }
+
+var Bool = proptools.Bool

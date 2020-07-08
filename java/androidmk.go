@@ -69,10 +69,29 @@ func (library *Library) AndroidMkEntries() []android.AndroidMkEntries {
 	if !library.ApexModuleBase.AvailableFor(android.AvailableToPlatform) {
 		hideFromMake = true
 	}
-	if !hideFromMake {
+	if hideFromMake {
+		// May still need to add some additional dependencies. This will be called
+		// once for the platform variant (even if it is not being used) and once each
+		// for the APEX specific variants. In order to avoid adding the dependency
+		// multiple times only add it for the platform variant.
+		checkedModulePaths := library.additionalCheckedModules
+		if library.IsForPlatform() && len(checkedModulePaths) != 0 {
+			mainEntries = android.AndroidMkEntries{
+				Class: "FAKE",
+				// Need at least one output file in order for this to take effect.
+				OutputFile: android.OptionalPathForPath(checkedModulePaths[0]),
+				Include:    "$(BUILD_PHONY_PACKAGE)",
+				ExtraEntries: []android.AndroidMkExtraEntriesFunc{
+					func(entries *android.AndroidMkEntries) {
+						entries.AddStrings("LOCAL_ADDITIONAL_CHECKED_MODULE", checkedModulePaths.Strings()...)
+					},
+				},
+			}
+		}
+	} else {
 		mainEntries = android.AndroidMkEntries{
 			Class:      "JAVA_LIBRARIES",
-			DistFile:   android.OptionalPathForPath(library.distFile),
+			DistFiles:  library.distFiles,
 			OutputFile: android.OptionalPathForPath(library.outputFile),
 			Include:    "$(BUILD_SYSTEM)/soong_java_prebuilt.mk",
 			ExtraEntries: []android.AndroidMkExtraEntriesFunc{
@@ -531,14 +550,14 @@ func (dstubs *Droidstubs) AndroidMkEntries() []android.AndroidMkEntries {
 	// needed because an invalid output file would prevent the make entries from
 	// being written.
 	// TODO(b/146727827): Revert when we do not need to generate stubs and API separately.
-	distFile := android.OptionalPathForPath(dstubs.apiFile)
+	distFile := dstubs.apiFile
 	outputFile := android.OptionalPathForPath(dstubs.stubsSrcJar)
 	if !outputFile.Valid() {
-		outputFile = distFile
+		outputFile = android.OptionalPathForPath(distFile)
 	}
 	return []android.AndroidMkEntries{android.AndroidMkEntries{
 		Class:      "JAVA_LIBRARIES",
-		DistFile:   distFile,
+		DistFiles:  android.MakeDefaultDistFiles(distFile),
 		OutputFile: outputFile,
 		Include:    "$(BUILD_SYSTEM)/soong_droiddoc_prebuilt.mk",
 		ExtraEntries: []android.AndroidMkExtraEntriesFunc{
@@ -700,6 +719,7 @@ func (apkSet *AndroidAppSet) AndroidMkEntries() []android.AndroidMkEntries {
 				func(entries *android.AndroidMkEntries) {
 					entries.SetBoolIfTrue("LOCAL_PRIVILEGED_MODULE", apkSet.Privileged())
 					entries.SetString("LOCAL_APK_SET_MASTER_FILE", apkSet.masterFile)
+					entries.SetPath("LOCAL_APKCERTS_FILE", apkSet.apkcertsFile)
 					entries.AddStrings("LOCAL_OVERRIDES_PACKAGES", apkSet.properties.Overrides...)
 				},
 			},

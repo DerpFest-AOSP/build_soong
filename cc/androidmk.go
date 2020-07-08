@@ -249,7 +249,10 @@ func (library *libraryDecorator) AndroidMkEntries(ctx AndroidMkContext, entries 
 		entries.Class = "HEADER_LIBRARIES"
 	}
 
-	entries.DistFile = library.distFile
+	if library.distFile != nil {
+		entries.DistFiles = android.MakeDefaultDistFiles(library.distFile)
+	}
+
 	entries.ExtraEntries = append(entries.ExtraEntries, func(entries *android.AndroidMkEntries) {
 		library.androidMkWriteExportedFlags(entries)
 		library.androidMkEntriesWriteAdditionalDependenciesForSourceAbiDiff(entries)
@@ -318,7 +321,7 @@ func (binary *binaryDecorator) AndroidMkEntries(ctx AndroidMkContext, entries *a
 	ctx.subAndroidMk(entries, binary.baseInstaller)
 
 	entries.Class = "EXECUTABLES"
-	entries.DistFile = binary.distFile
+	entries.DistFiles = binary.distFiles
 	entries.ExtraEntries = append(entries.ExtraEntries, func(entries *android.AndroidMkEntries) {
 		entries.SetString("LOCAL_SOONG_UNSTRIPPED_BINARY", binary.unstrippedOutputFile.String())
 		if len(binary.symlinks) > 0 {
@@ -457,6 +460,9 @@ func (c *stubDecorator) AndroidMkEntries(ctx AndroidMkContext, entries *android.
 		entries.SetString("LOCAL_MODULE_PATH", path)
 		entries.SetString("LOCAL_MODULE_STEM", stem)
 		entries.SetBool("LOCAL_NO_NOTICE_FILE", true)
+		if c.parsedCoverageXmlPath.String() != "" {
+			entries.SetString("SOONG_NDK_API_XML", "$(SOONG_NDK_API_XML) "+c.parsedCoverageXmlPath.String())
+		}
 	})
 }
 
@@ -546,6 +552,25 @@ func (c *vendorSnapshotBinaryDecorator) AndroidMkEntries(ctx AndroidMkContext, e
 	entries.ExtraEntries = append(entries.ExtraEntries, func(entries *android.AndroidMkEntries) {
 		entries.AddStrings("LOCAL_MODULE_SYMLINKS", c.Properties.Symlinks...)
 	})
+}
+
+func (c *vendorSnapshotObjectLinker) AndroidMkEntries(ctx AndroidMkContext, entries *android.AndroidMkEntries) {
+	entries.Class = "STATIC_LIBRARIES"
+
+	if c.androidMkVendorSuffix {
+		entries.SubName = vendorSuffix
+	} else {
+		entries.SubName = ""
+	}
+
+	entries.ExtraFooters = append(entries.ExtraFooters,
+		func(w io.Writer, name, prefix, moduleDir string, entries *android.AndroidMkEntries) {
+			out := entries.OutputFile.Path()
+			varname := fmt.Sprintf("SOONG_%sOBJECT_%s%s", prefix, name, entries.SubName)
+
+			fmt.Fprintf(w, "\n%s := %s\n", varname, out.String())
+			fmt.Fprintln(w, ".KATI_READONLY: "+varname)
+		})
 }
 
 func (c *ndkPrebuiltStlLinker) AndroidMkEntries(ctx AndroidMkContext, entries *android.AndroidMkEntries) {

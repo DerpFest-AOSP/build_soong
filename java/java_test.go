@@ -25,6 +25,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/blueprint"
 	"github.com/google/blueprint/proptools"
 
 	"android/soong/android"
@@ -142,9 +143,14 @@ func testJavaErrorWithConfig(t *testing.T, pattern string, config android.Config
 	return ctx, config
 }
 
+func testJavaWithFS(t *testing.T, bp string, fs map[string][]byte) (*android.TestContext, android.Config) {
+	t.Helper()
+	return testJavaWithConfig(t, testConfig(nil, bp, fs))
+}
+
 func testJava(t *testing.T, bp string) (*android.TestContext, android.Config) {
 	t.Helper()
-	return testJavaWithConfig(t, testConfig(nil, bp, nil))
+	return testJavaWithFS(t, bp, nil)
 }
 
 func testJavaWithConfig(t *testing.T, config android.Config) (*android.TestContext, android.Config) {
@@ -163,6 +169,20 @@ func moduleToPath(name string) string {
 		return name
 	default:
 		return filepath.Join(buildDir, ".intermediates", name, "android_common", "turbine-combined", name+".jar")
+	}
+}
+
+func checkModuleDependencies(t *testing.T, ctx *android.TestContext, name, variant string, expected []string) {
+	t.Helper()
+	module := ctx.ModuleForTests(name, variant).Module()
+	deps := []string{}
+	ctx.VisitDirectDeps(module, func(m blueprint.Module) {
+		deps = append(deps, m.Name())
+	})
+	sort.Strings(deps)
+
+	if actual := deps; !reflect.DeepEqual(expected, actual) {
+		t.Errorf("expected %#q, found %#q", expected, actual)
 	}
 }
 
@@ -461,7 +481,41 @@ func TestBinary(t *testing.T) {
 		t.Errorf("expected binary wrapper implicits [%q], got %v",
 			barJar, barWrapperDeps)
 	}
+}
 
+func TestHostBinaryNoJavaDebugInfoOverride(t *testing.T) {
+	bp := `
+		java_library {
+			name: "target_library",
+			srcs: ["a.java"],
+		}
+
+		java_binary_host {
+			name: "host_binary",
+			srcs: ["b.java"],
+		}
+	`
+	config := testConfig(nil, bp, nil)
+	config.TestProductVariables.MinimizeJavaDebugInfo = proptools.BoolPtr(true)
+
+	ctx, _ := testJavaWithConfig(t, config)
+
+	// first, sanity check that the -g flag is added to target modules
+	targetLibrary := ctx.ModuleForTests("target_library", "android_common")
+	targetJavaFlags := targetLibrary.Module().VariablesForTests()["javacFlags"]
+	if !strings.Contains(targetJavaFlags, "-g:source,lines") {
+		t.Errorf("target library javac flags %v should contain "+
+			"-g:source,lines override with MinimizeJavaDebugInfo", targetJavaFlags)
+	}
+
+	// check that -g is not overridden for host modules
+	buildOS := android.BuildOs.String()
+	hostBinary := ctx.ModuleForTests("host_binary", buildOS+"_common")
+	hostJavaFlags := hostBinary.Module().VariablesForTests()["javacFlags"]
+	if strings.Contains(hostJavaFlags, "-g:source,lines") {
+		t.Errorf("java_binary_host javac flags %v should not have "+
+			"-g:source,lines override with MinimizeJavaDebugInfo", hostJavaFlags)
+	}
 }
 
 func TestPrebuilts(t *testing.T) {
@@ -591,6 +645,90 @@ func TestJavaSdkLibraryImport(t *testing.T) {
 			t.Errorf("foo classpath %v does not contain %q", javac.Args["classpath"], sdklibStubsJar.String())
 		}
 	}
+
+	checkModuleDependencies(t, ctx, "sdklib", "android_common", []string{
+		`prebuilt_sdklib.stubs`,
+		`prebuilt_sdklib.stubs.source.test`,
+		`prebuilt_sdklib.stubs.system`,
+		`prebuilt_sdklib.stubs.test`,
+	})
+}
+
+func TestJavaSdkLibraryImport_WithSource(t *testing.T) {
+	ctx, _ := testJava(t, `
+		java_sdk_library {
+			name: "sdklib",
+			srcs: ["a.java"],
+			sdk_version: "none",
+			system_modules: "none",
+			public: {
+				enabled: true,
+			},
+		}
+
+		java_sdk_library_import {
+			name: "sdklib",
+			public: {
+				jars: ["a.jar"],
+			},
+		}
+		`)
+
+	checkModuleDependencies(t, ctx, "sdklib", "android_common", []string{
+		`dex2oatd`,
+		`prebuilt_sdklib`,
+		`sdklib.impl`,
+		`sdklib.stubs`,
+		`sdklib.stubs.source`,
+		`sdklib.xml`,
+	})
+
+	checkModuleDependencies(t, ctx, "prebuilt_sdklib", "android_common", []string{
+		`sdklib.impl`,
+		// This should be prebuilt_sdklib.stubs but is set to sdklib.stubs because the
+		// dependency is added after prebuilts may have been renamed and so has to use
+		// the renamed name.
+		`sdklib.stubs`,
+		`sdklib.xml`,
+	})
+}
+
+func TestJavaSdkLibraryImport_Preferred(t *testing.T) {
+	ctx, _ := testJava(t, `
+		java_sdk_library {
+			name: "sdklib",
+			srcs: ["a.java"],
+			sdk_version: "none",
+			system_modules: "none",
+			public: {
+				enabled: true,
+			},
+		}
+
+		java_sdk_library_import {
+			name: "sdklib",
+			prefer: true,
+			public: {
+				jars: ["a.jar"],
+			},
+		}
+		`)
+
+	checkModuleDependencies(t, ctx, "sdklib", "android_common", []string{
+		`dex2oatd`,
+		`prebuilt_sdklib`,
+		// This should be sdklib.stubs but is switched to the prebuilt because it is preferred.
+		`prebuilt_sdklib.stubs`,
+		`sdklib.impl`,
+		`sdklib.stubs.source`,
+		`sdklib.xml`,
+	})
+
+	checkModuleDependencies(t, ctx, "prebuilt_sdklib", "android_common", []string{
+		`prebuilt_sdklib.stubs`,
+		`sdklib.impl`,
+		`sdklib.xml`,
+	})
 }
 
 func TestDefaults(t *testing.T) {
@@ -740,7 +878,7 @@ func TestResources(t *testing.T) {
 
 	for _, test := range table {
 		t.Run(test.name, func(t *testing.T) {
-			ctx, _ := testJava(t, `
+			ctx, _ := testJavaWithFS(t, `
 				java_library {
 					name: "foo",
 					srcs: [
@@ -750,7 +888,13 @@ func TestResources(t *testing.T) {
 					],
 					`+test.prop+`,
 				}
-			`+test.extra)
+			`+test.extra,
+				map[string][]byte{
+					"java-res/a/a": nil,
+					"java-res/b/b": nil,
+					"java-res2/a":  nil,
+				},
+			)
 
 			foo := ctx.ModuleForTests("foo", "android_common").Output("withres/foo.jar")
 			fooRes := ctx.ModuleForTests("foo", "android_common").Output("res/foo.jar")
@@ -769,7 +913,7 @@ func TestResources(t *testing.T) {
 }
 
 func TestIncludeSrcs(t *testing.T) {
-	ctx, _ := testJava(t, `
+	ctx, _ := testJavaWithFS(t, `
 		java_library {
 			name: "foo",
 			srcs: [
@@ -790,7 +934,11 @@ func TestIncludeSrcs(t *testing.T) {
 			java_resource_dirs: ["java-res"],
 			include_srcs: true,
 		}
-	`)
+	`, map[string][]byte{
+		"java-res/a/a": nil,
+		"java-res/b/b": nil,
+		"java-res2/a":  nil,
+	})
 
 	// Test a library with include_srcs: true
 	foo := ctx.ModuleForTests("foo", "android_common").Output("withres/foo.jar")
@@ -832,7 +980,7 @@ func TestIncludeSrcs(t *testing.T) {
 }
 
 func TestGeneratedSources(t *testing.T) {
-	ctx, _ := testJava(t, `
+	ctx, _ := testJavaWithFS(t, `
 		java_library {
 			name: "foo",
 			srcs: [
@@ -847,7 +995,10 @@ func TestGeneratedSources(t *testing.T) {
 			tool_files: ["java-res/a"],
 			out: ["gen.java"],
 		}
-	`)
+	`, map[string][]byte{
+		"a.java": nil,
+		"b.java": nil,
+	})
 
 	javac := ctx.ModuleForTests("foo", "android_common").Rule("javac")
 	genrule := ctx.ModuleForTests("gen", "").Rule("generator")
@@ -932,7 +1083,7 @@ func TestSharding(t *testing.T) {
 }
 
 func TestDroiddoc(t *testing.T) {
-	ctx, _ := testJava(t, `
+	ctx, _ := testJavaWithFS(t, `
 		droiddoc_exported_dir {
 		    name: "droiddoc-templates-sdk",
 		    path: ".",
@@ -945,7 +1096,7 @@ func TestDroiddoc(t *testing.T) {
 		droiddoc {
 		    name: "bar-doc",
 		    srcs: [
-		        "bar-doc/*.java",
+		        "bar-doc/a.java",
 		        "bar-doc/IFoo.aidl",
 		        ":bar-doc-aidl-srcs",
 		    ],
@@ -963,7 +1114,11 @@ func TestDroiddoc(t *testing.T) {
 		    todo_file: "libcore-docs-todo.html",
 		    args: "-offlinemode -title \"libcore\"",
 		}
-		`)
+		`,
+		map[string][]byte{
+			"bar-doc/a.java": nil,
+			"bar-doc/b.java": nil,
+		})
 
 	barDoc := ctx.ModuleForTests("bar-doc", "android_common").Rule("javadoc")
 	var javaSrcs []string
@@ -989,7 +1144,7 @@ func TestDroidstubsWithSystemModules(t *testing.T) {
 		droidstubs {
 		    name: "stubs-source-system-modules",
 		    srcs: [
-		        "bar-doc/*.java",
+		        "bar-doc/a.java",
 		    ],
 				sdk_version: "none",
 				system_modules: "source-system-modules",
@@ -1010,7 +1165,7 @@ func TestDroidstubsWithSystemModules(t *testing.T) {
 		droidstubs {
 		    name: "stubs-prebuilt-system-modules",
 		    srcs: [
-		        "bar-doc/*.java",
+		        "bar-doc/a.java",
 		    ],
 				sdk_version: "none",
 				system_modules: "prebuilt-system-modules",
@@ -1038,7 +1193,7 @@ func checkSystemModulesUseByDroidstubs(t *testing.T, ctx *android.TestContext, m
 	for _, i := range metalavaRule.Implicits {
 		systemJars = append(systemJars, i.Base())
 	}
-	if len(systemJars) != 1 || systemJars[0] != systemJar {
+	if len(systemJars) < 1 || systemJars[0] != systemJar {
 		t.Errorf("inputs of %q must be []string{%q}, but was %#v.", moduleName, systemJar, systemJars)
 	}
 }
@@ -1323,6 +1478,28 @@ func TestJavaSdkLibrary_AccessOutputFiles_MissingScope(t *testing.T) {
 		`)
 }
 
+func TestJavaSdkLibrary_Deps(t *testing.T) {
+	ctx, _ := testJava(t, `
+		java_sdk_library {
+			name: "sdklib",
+			srcs: ["a.java"],
+			sdk_version: "none",
+			system_modules: "none",
+			public: {
+				enabled: true,
+			},
+		}
+		`)
+
+	checkModuleDependencies(t, ctx, "sdklib", "android_common", []string{
+		`dex2oatd`,
+		`sdklib.impl`,
+		`sdklib.stubs`,
+		`sdklib.stubs.source`,
+		`sdklib.xml`,
+	})
+}
+
 func TestJavaSdkLibraryImport_AccessOutputFiles(t *testing.T) {
 	testJava(t, `
 		java_sdk_library_import {
@@ -1426,6 +1603,38 @@ func TestJavaSdkLibrary_SdkVersion_ForScope(t *testing.T) {
 		`)
 }
 
+func TestJavaSdkLibrary_ModuleLib(t *testing.T) {
+	testJava(t, `
+		java_sdk_library {
+			name: "foo",
+			srcs: ["a.java", "b.java"],
+			api_packages: ["foo"],
+			system: {
+				enabled: true,
+			},
+			module_lib: {
+				enabled: true,
+			},
+		}
+		`)
+}
+
+func TestJavaSdkLibrary_SystemServer(t *testing.T) {
+	testJava(t, `
+		java_sdk_library {
+			name: "foo",
+			srcs: ["a.java", "b.java"],
+			api_packages: ["foo"],
+			system: {
+				enabled: true,
+			},
+			system_server: {
+				enabled: true,
+			},
+		}
+		`)
+}
+
 func TestJavaSdkLibrary_MissingScope(t *testing.T) {
 	testJavaError(t, `requires api scope module-lib from foo but it only has \[\] available`, `
 		java_sdk_library {
@@ -1463,6 +1672,33 @@ func TestJavaSdkLibrary_FallbackScope(t *testing.T) {
 			sdk_version: "module_current",
 		}
 		`)
+}
+
+func TestJavaSdkLibrary_DefaultToStubs(t *testing.T) {
+	ctx, _ := testJava(t, `
+		java_sdk_library {
+			name: "foo",
+			srcs: ["a.java"],
+			system: {
+				enabled: true,
+			},
+			default_to_stubs: true,
+		}
+
+		java_library {
+			name: "baz",
+			srcs: ["a.java"],
+			libs: ["foo"],
+			// does not have sdk_version set, should fallback to module,
+			// which will then fallback to system because the module scope
+			// is not enabled.
+		}
+		`)
+	// The baz library should depend on the system stubs jar.
+	bazLibrary := ctx.ModuleForTests("baz", "android_common").Rule("javac")
+	if expected, actual := `^-classpath .*:/[^:]*/turbine-combined/foo\.stubs.system\.jar$`, bazLibrary.Args["classpath"]; !regexp.MustCompile(expected).MatchString(actual) {
+		t.Errorf("expected %q, found %#q", expected, actual)
+	}
 }
 
 var compilerFlagsTestCases = []struct {
