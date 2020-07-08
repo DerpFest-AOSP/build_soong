@@ -140,9 +140,14 @@ func (j *Module) checkPlatformAPI(ctx android.ModuleContext) {
 // Findbugs
 
 type CompilerProperties struct {
-	// list of source files used to compile the Java module.  May be .java, .logtags, .proto,
+	// list of source files used to compile the Java module.  May be .java, .kt, .logtags, .proto,
 	// or .aidl files.
 	Srcs []string `android:"path,arch_variant"`
+
+	// list Kotlin of source files containing Kotlin code that should be treated as common code in
+	// a codebase that supports Kotlin multiplatform.  See
+	// https://kotlinlang.org/docs/reference/multiplatform.html.  May be only be .kt files.
+	Common_srcs []string `android:"path,arch_variant"`
 
 	// list of source files that should not be used to build the Java module.
 	// This is most useful in the arch/multilib variants to remove non-common files
@@ -342,6 +347,12 @@ type CompilerDeviceProperties struct {
 	// otherwise provides defaults libraries to add to the bootclasspath.
 	System_modules *string
 
+	// The name of the module as used in build configuration.
+	//
+	// Allows a library to separate its actual name from the name used in
+	// build configuration, e.g.ctx.Config().BootJars().
+	ConfigurationName *string `blueprint:"mutated"`
+
 	// set the name of the output
 	Stem *string
 
@@ -479,7 +490,7 @@ type Module struct {
 	// list of the xref extraction files
 	kytheFiles android.Paths
 
-	distFile android.Path
+	distFiles android.TaggedDistFiles
 
 	// Collect the module directory for IDE info in java/jdeps.go.
 	modulePaths []string
@@ -591,7 +602,7 @@ func IsStaticLibDepTag(depTag blueprint.DependencyTag) bool {
 }
 
 type sdkDep struct {
-	useModule, useFiles, useDefaultLibs, invalidVersion bool
+	useModule, useFiles, invalidVersion bool
 
 	// The modules that will be added to the bootclasspath when targeting 1.8 or lower
 	bootclasspath []string
@@ -600,7 +611,11 @@ type sdkDep struct {
 	// modules are to be used.
 	systemModules string
 
+	// The modules that will be added to the classpath regardless of the Java language level targeted
+	classpath []string
+
 	// The modules that will be added ot the classpath when targeting 1.9 or higher
+	// (normally these will be on the bootclasspath when targeting 1.8 or lower)
 	java9Classpath []string
 
 	frameworkResModule string
@@ -694,18 +709,15 @@ func (j *Module) deps(ctx android.BottomUpMutatorContext) {
 		j.linter.deps(ctx)
 
 		sdkDep := decodeSdkDep(ctx, sdkContext(j))
-		if sdkDep.useDefaultLibs {
-			ctx.AddVariationDependencies(nil, bootClasspathTag, config.DefaultBootclasspathLibraries...)
-			ctx.AddVariationDependencies(nil, systemModulesTag, config.DefaultSystemModules)
-			if sdkDep.hasFrameworkLibs() {
-				ctx.AddVariationDependencies(nil, libTag, config.DefaultLibraries...)
-			}
-		} else if sdkDep.useModule {
+		if sdkDep.useModule {
 			ctx.AddVariationDependencies(nil, bootClasspathTag, sdkDep.bootclasspath...)
 			ctx.AddVariationDependencies(nil, java9LibTag, sdkDep.java9Classpath...)
+			ctx.AddVariationDependencies(nil, libTag, sdkDep.classpath...)
 			if j.deviceProperties.EffectiveOptimizeEnabled() && sdkDep.hasStandardLibs() {
-				ctx.AddVariationDependencies(nil, proguardRaiseTag, config.DefaultBootclasspathLibraries...)
-				ctx.AddVariationDependencies(nil, proguardRaiseTag, config.DefaultLibraries...)
+				ctx.AddVariationDependencies(nil, proguardRaiseTag, config.LegacyCorePlatformBootclasspathLibraries...)
+			}
+			if j.deviceProperties.EffectiveOptimizeEnabled() && sdkDep.hasFrameworkLibs() {
+				ctx.AddVariationDependencies(nil, proguardRaiseTag, config.FrameworkLibraries...)
 			}
 		}
 		if sdkDep.systemModules != "" {
@@ -1293,6 +1305,11 @@ func (j *Module) compile(ctx android.ModuleContext, aaptSrcJar android.Path) {
 		flags = protoFlags(ctx, &j.properties, &j.protoProperties, flags)
 	}
 
+	kotlinCommonSrcFiles := android.PathsForModuleSrcExcludes(ctx, j.properties.Common_srcs, nil)
+	if len(kotlinCommonSrcFiles.FilterOutByExt(".kt")) > 0 {
+		ctx.PropertyErrorf("common_srcs", "common_srcs must be .kt files")
+	}
+
 	srcFiles = j.genSources(ctx, srcFiles, flags)
 
 	srcJars := srcFiles.FilterByExt(".srcjar")
@@ -1346,6 +1363,7 @@ func (j *Module) compile(ctx android.ModuleContext, aaptSrcJar android.Path) {
 
 		// Collect .kt files for AIDEGen
 		j.expandIDEInfoCompiledSrcs = append(j.expandIDEInfoCompiledSrcs, srcFiles.FilterByExt(".kt").Strings()...)
+		j.expandIDEInfoCompiledSrcs = append(j.expandIDEInfoCompiledSrcs, kotlinCommonSrcFiles.Strings()...)
 
 		flags.classpath = append(flags.classpath, deps.kotlinStdlib...)
 		flags.classpath = append(flags.classpath, deps.kotlinAnnotations...)
@@ -1357,7 +1375,7 @@ func (j *Module) compile(ctx android.ModuleContext, aaptSrcJar android.Path) {
 			// Use kapt for annotation processing
 			kaptSrcJar := android.PathForModuleOut(ctx, "kapt", "kapt-sources.jar")
 			kaptResJar := android.PathForModuleOut(ctx, "kapt", "kapt-res.jar")
-			kotlinKapt(ctx, kaptSrcJar, kaptResJar, kotlinSrcFiles, srcJars, flags)
+			kotlinKapt(ctx, kaptSrcJar, kaptResJar, kotlinSrcFiles, kotlinCommonSrcFiles, srcJars, flags)
 			srcJars = append(srcJars, kaptSrcJar)
 			kotlinJars = append(kotlinJars, kaptResJar)
 			// Disable annotation processing in javac, it's already been handled by kapt
@@ -1366,7 +1384,7 @@ func (j *Module) compile(ctx android.ModuleContext, aaptSrcJar android.Path) {
 		}
 
 		kotlinJar := android.PathForModuleOut(ctx, "kotlin", jarName)
-		kotlinCompile(ctx, kotlinJar, kotlinSrcFiles, srcJars, flags)
+		kotlinCompile(ctx, kotlinJar, kotlinSrcFiles, kotlinCommonSrcFiles, srcJars, flags)
 		if ctx.Failed() {
 			return
 		}
@@ -1631,8 +1649,11 @@ func (j *Module) compile(ctx android.ModuleContext, aaptSrcJar android.Path) {
 			return
 		}
 
+		configurationName := j.ConfigurationName()
+		primary := configurationName == ctx.ModuleName()
+
 		// Hidden API CSV generation and dex encoding
-		dexOutputFile = j.hiddenAPI.hiddenAPI(ctx, dexOutputFile, j.implementationJarFile,
+		dexOutputFile = j.hiddenAPI.hiddenAPI(ctx, configurationName, primary, dexOutputFile, j.implementationJarFile,
 			proptools.Bool(j.deviceProperties.Uncompress_dex))
 
 		// merge dex jar with resources if necessary
@@ -1909,6 +1930,10 @@ func (j *Module) Stem() string {
 	return proptools.StringDefault(j.deviceProperties.Stem, j.Name())
 }
 
+func (j *Module) ConfigurationName() string {
+	return proptools.StringDefault(j.deviceProperties.ConfigurationName, j.BaseModuleName())
+}
+
 func (j *Module) JacocoReportClassesFile() android.Path {
 	return j.jacocoReportClassesFile
 }
@@ -1921,17 +1946,8 @@ func (j *Module) IsInstallable() bool {
 // Java libraries (.jar file)
 //
 
-type LibraryProperties struct {
-	Dist struct {
-		// The tag of the output of this module that should be output.
-		Tag *string `android:"arch_variant"`
-	} `android:"arch_variant"`
-}
-
 type Library struct {
 	Module
-
-	libraryProperties LibraryProperties
 
 	InstallMixin func(ctx android.ModuleContext, installPath android.Path) (extraInstallDeps android.Paths)
 }
@@ -1994,14 +2010,7 @@ func (j *Library) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 			j.Stem()+".jar", j.outputFile, extraInstallDeps...)
 	}
 
-	// Verify Dist.Tag is set to a supported output
-	if j.libraryProperties.Dist.Tag != nil {
-		distFiles, err := j.OutputFiles(*j.libraryProperties.Dist.Tag)
-		if err != nil {
-			ctx.PropertyErrorf("dist.tag", "%s", err.Error())
-		}
-		j.distFile = distFiles[0]
-	}
+	j.distFiles = j.GenerateTaggedDistFiles(ctx)
 }
 
 func (j *Library) DepsMutator(ctx android.BottomUpMutatorContext) {
@@ -2119,7 +2128,6 @@ func LibraryFactory() android.Module {
 	module := &Library{}
 
 	module.addHostAndDeviceProperties()
-	module.AddProperties(&module.libraryProperties)
 
 	module.initModuleAndImport(&module.ModuleBase)
 
@@ -2920,6 +2928,7 @@ func DefaultsFactory() android.Module {
 		&appProperties{},
 		&appTestProperties{},
 		&overridableAppProperties{},
+		&testProperties{},
 		&ImportProperties{},
 		&AARImportProperties{},
 		&sdkLibraryProperties{},

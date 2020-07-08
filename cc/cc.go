@@ -96,6 +96,9 @@ type Deps struct {
 	HeaderLibs                                  []string
 	RuntimeLibs                                 []string
 
+	// Used for data dependencies adjacent to tests
+	DataLibs []string
+
 	StaticUnwinderIfLegacy bool
 
 	ReexportSharedLibHeaders, ReexportStaticLibHeaders, ReexportHeaderLibHeaders []string
@@ -136,7 +139,6 @@ type PathDeps struct {
 
 	// Paths to generated source files
 	GeneratedSources android.Paths
-	GeneratedHeaders android.Paths
 	GeneratedDeps    android.Paths
 
 	Flags                      []string
@@ -424,6 +426,7 @@ type xref interface {
 }
 
 var (
+	dataLibDepTag         = DependencyTag{Name: "data_lib", Library: true, Shared: true}
 	sharedExportDepTag    = DependencyTag{Name: "shared", Library: true, Shared: true, ReexportFlags: true}
 	earlySharedDepTag     = DependencyTag{Name: "early_shared", Library: true, Shared: true}
 	lateSharedDepTag      = DependencyTag{Name: "late shared", Library: true, Shared: true}
@@ -873,7 +876,7 @@ func (c *Module) isCoverageVariant() bool {
 }
 
 func (c *Module) IsNdk() bool {
-	return inList(c.Name(), ndkMigratedLibs)
+	return inList(c.Name(), ndkKnownLibs)
 }
 
 func (c *Module) isLlndk(config android.Config) bool {
@@ -1759,8 +1762,6 @@ func (c *Module) DepsMutator(actx android.BottomUpMutatorContext) {
 	variantNdkLibs := []string{}
 	variantLateNdkLibs := []string{}
 	if ctx.Os() == android.Android {
-		version := ctx.sdkVersion()
-
 		// rewriteLibs takes a list of names of shared libraries and scans it for three types
 		// of names:
 		//
@@ -1802,12 +1803,8 @@ func (c *Module) DepsMutator(actx android.BottomUpMutatorContext) {
 			for _, entry := range list {
 				// strip #version suffix out
 				name, _ := StubsLibNameAndVersion(entry)
-				if ctx.useSdk() && inList(name, ndkPrebuiltSharedLibraries) {
-					if !inList(name, ndkMigratedLibs) {
-						nonvariantLibs = append(nonvariantLibs, name+".ndk."+version)
-					} else {
-						variantLibs = append(variantLibs, name+ndkLibrarySuffix)
-					}
+				if ctx.useSdk() && inList(name, ndkKnownLibs) {
+					variantLibs = append(variantLibs, name+ndkLibrarySuffix)
 				} else if ctx.useVndk() {
 					nonvariantLibs = append(nonvariantLibs, rewriteVendorLibs(entry))
 				} else if (ctx.Platform() || ctx.ProductSpecific()) && inList(name, *vendorPublicLibraries) {
@@ -1986,6 +1983,10 @@ func (c *Module) DepsMutator(actx android.BottomUpMutatorContext) {
 		}
 		addSharedLibDependencies(lateSharedDepTag, lib, "")
 	}
+
+	actx.AddVariationDependencies([]blueprint.Variation{
+		{Mutator: "link", Variation: "shared"},
+	}, dataLibDepTag, deps.DataLibs...)
 
 	actx.AddVariationDependencies([]blueprint.Variation{
 		{Mutator: "link", Variation: "shared"},
@@ -2234,8 +2235,6 @@ func (c *Module) depsToPaths(ctx android.ModuleContext) PathDeps {
 				fallthrough
 			case genHeaderDepTag, genHeaderExportDepTag:
 				if genRule, ok := dep.(genrule.SourceFileGenerator); ok {
-					depPaths.GeneratedHeaders = append(depPaths.GeneratedHeaders,
-						genRule.GeneratedSourceFiles()...)
 					depPaths.GeneratedDeps = append(depPaths.GeneratedDeps,
 						genRule.GeneratedDeps()...)
 					dirs := genRule.GeneratedHeaderDirs()
@@ -2423,7 +2422,6 @@ func (c *Module) depsToPaths(ctx android.ModuleContext) PathDeps {
 			if _, ok := ccDep.(*Module); ok {
 				if i, ok := ccDep.(*Module).linker.(exportedFlagsProducer); ok {
 					depPaths.SystemIncludeDirs = append(depPaths.SystemIncludeDirs, i.exportedSystemDirs()...)
-					depPaths.GeneratedHeaders = append(depPaths.GeneratedHeaders, i.exportedGeneratedHeaders()...)
 					depPaths.GeneratedDeps = append(depPaths.GeneratedDeps, i.exportedDeps()...)
 					depPaths.Flags = append(depPaths.Flags, i.exportedFlags()...)
 
@@ -2653,7 +2651,6 @@ func (c *Module) depsToPaths(ctx android.ModuleContext) PathDeps {
 	depPaths.Flags = android.FirstUniqueStrings(depPaths.Flags)
 	depPaths.IncludeDirs = android.FirstUniquePaths(depPaths.IncludeDirs)
 	depPaths.SystemIncludeDirs = android.FirstUniquePaths(depPaths.SystemIncludeDirs)
-	depPaths.GeneratedHeaders = android.FirstUniquePaths(depPaths.GeneratedHeaders)
 	depPaths.GeneratedDeps = android.FirstUniquePaths(depPaths.GeneratedDeps)
 	depPaths.ReexportedDirs = android.FirstUniquePaths(depPaths.ReexportedDirs)
 	depPaths.ReexportedSystemDirs = android.FirstUniquePaths(depPaths.ReexportedSystemDirs)
@@ -2988,6 +2985,7 @@ func DefaultsFactory(props ...interface{}) android.Module {
 		&BinaryLinkerProperties{},
 		&TestProperties{},
 		&TestBinaryProperties{},
+		&BenchmarkProperties{},
 		&FuzzProperties{},
 		&StlProperties{},
 		&SanitizeProperties{},
@@ -3014,6 +3012,9 @@ func squashVendorSrcs(m *Module) {
 
 		lib.baseCompiler.Properties.Exclude_srcs = append(lib.baseCompiler.Properties.Exclude_srcs,
 			lib.baseCompiler.Properties.Target.Vendor.Exclude_srcs...)
+
+		lib.baseCompiler.Properties.Exclude_generated_sources = append(lib.baseCompiler.Properties.Exclude_generated_sources,
+			lib.baseCompiler.Properties.Target.Vendor.Exclude_generated_sources...)
 	}
 }
 
@@ -3024,6 +3025,9 @@ func squashRecoverySrcs(m *Module) {
 
 		lib.baseCompiler.Properties.Exclude_srcs = append(lib.baseCompiler.Properties.Exclude_srcs,
 			lib.baseCompiler.Properties.Target.Recovery.Exclude_srcs...)
+
+		lib.baseCompiler.Properties.Exclude_generated_sources = append(lib.baseCompiler.Properties.Exclude_generated_sources,
+			lib.baseCompiler.Properties.Target.Recovery.Exclude_generated_sources...)
 	}
 }
 

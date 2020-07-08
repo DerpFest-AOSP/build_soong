@@ -28,14 +28,14 @@ import (
 var (
 	pctx = android.NewPackageContext("android/soong/java/config")
 
-	// TODO(b/157640067): Don't depend on the legacy API by default in the long term.
-	DefaultBootclasspathLibraries = []string{"legacy.core.platform.api.stubs", "core-lambda-stubs"}
-	DefaultSystemModules          = "legacy-core-platform-api-stubs-system-modules"
-	DefaultLibraries              = []string{"ext", "framework"}
-	DefaultLambdaStubsLibrary     = "core-lambda-stubs"
-	SdkLambdaStubsPath            = "prebuilts/sdk/tools/core-lambda-stubs.jar"
+	LegacyCorePlatformBootclasspathLibraries = []string{"legacy.core.platform.api.stubs", "core-lambda-stubs"}
+	LegacyCorePlatformSystemModules          = "legacy-core-platform-api-stubs-system-modules"
+	FrameworkLibraries                       = []string{"ext", "framework"}
+	DefaultLambdaStubsLibrary                = "core-lambda-stubs"
+	SdkLambdaStubsPath                       = "prebuilts/sdk/tools/core-lambda-stubs.jar"
 
-	DefaultJacocoExcludeFilter = []string{"org.junit.*", "org.jacoco.*", "org.mockito.*"}
+	DefaultMakeJacocoExcludeFilter = []string{"org.junit.*", "org.jacoco.*", "org.mockito.*"}
+	DefaultJacocoExcludeFilter     = []string{"org.junit.**", "org.jacoco.**", "org.mockito.**"}
 
 	InstrumentFrameworkModules = []string{
 		"framework",
@@ -110,7 +110,7 @@ func init() {
 	pctx.SourcePathVariable("JavaKytheExtractorJar", "prebuilts/build-tools/common/framework/javac_extractor.jar")
 	pctx.SourcePathVariable("Ziptime", "prebuilts/build-tools/${hostPrebuiltTag}/bin/ziptime")
 
-	pctx.SourcePathVariable("GenKotlinBuildFileCmd", "build/soong/scripts/gen-kotlin-build-file.sh")
+	pctx.HostBinToolVariable("GenKotlinBuildFileCmd", "gen-kotlin-build-file.py")
 
 	pctx.SourcePathVariable("JarArgsCmd", "build/soong/scripts/jar-args.sh")
 	pctx.SourcePathVariable("PackageCheckCmd", "build/soong/scripts/package-check.sh")

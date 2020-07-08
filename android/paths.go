@@ -220,6 +220,15 @@ func (p OptionalPath) String() string {
 // Paths is a slice of Path objects, with helpers to operate on the collection.
 type Paths []Path
 
+func (paths Paths) containsPath(path Path) bool {
+	for _, p := range paths {
+		if p == path {
+			return true
+		}
+	}
+	return false
+}
+
 // PathsForSource returns Paths rooted from SrcDir
 func PathsForSource(ctx PathContext, paths []string) Paths {
 	ret := make(Paths, len(paths))
@@ -371,6 +380,18 @@ func (e missingDependencyError) Error() string {
 }
 
 func expandOneSrcPath(ctx ModuleContext, s string, expandedExcludes []string) (Paths, error) {
+	excludePaths := func(paths Paths) Paths {
+		if len(expandedExcludes) == 0 {
+			return paths
+		}
+		remainder := make(Paths, 0, len(paths))
+		for _, p := range paths {
+			if !InList(p.String(), expandedExcludes) {
+				remainder = append(remainder, p)
+			}
+		}
+		return remainder
+	}
 	if m, t := SrcIsModuleWithTag(s); m != "" {
 		module := ctx.GetDirectDepWithTag(m, sourceOrOutputDepTag(t))
 		if module == nil {
@@ -381,20 +402,11 @@ func expandOneSrcPath(ctx ModuleContext, s string, expandedExcludes []string) (P
 			if err != nil {
 				return nil, fmt.Errorf("path dependency %q: %s", s, err)
 			}
-			return outputFiles, nil
+			return excludePaths(outputFiles), nil
 		} else if t != "" {
 			return nil, fmt.Errorf("path dependency %q is not an output file producing module", s)
 		} else if srcProducer, ok := module.(SourceFileProducer); ok {
-			moduleSrcs := srcProducer.Srcs()
-			for _, e := range expandedExcludes {
-				for j := 0; j < len(moduleSrcs); j++ {
-					if moduleSrcs[j].String() == e {
-						moduleSrcs = append(moduleSrcs[:j], moduleSrcs[j+1:]...)
-						j--
-					}
-				}
-			}
-			return moduleSrcs, nil
+			return excludePaths(srcProducer.Srcs()), nil
 		} else {
 			return nil, fmt.Errorf("path dependency %q is not a source file producing module", s)
 		}
@@ -409,8 +421,7 @@ func expandOneSrcPath(ctx ModuleContext, s string, expandedExcludes []string) (P
 			reportPathErrorf(ctx, "module source path %q does not exist", p)
 		}
 
-		j := findStringInSlice(p.String(), expandedExcludes)
-		if j >= 0 {
+		if InList(p.String(), expandedExcludes) {
 			return nil, nil
 		}
 		return Paths{p}, nil
@@ -903,6 +914,22 @@ func (p OutputPath) buildDir() string {
 
 var _ Path = OutputPath{}
 var _ WritablePath = OutputPath{}
+
+// toolDepPath is a Path representing a dependency of the build tool.
+type toolDepPath struct {
+	basePath
+}
+
+var _ Path = toolDepPath{}
+
+// pathForBuildToolDep returns a toolDepPath representing the given path string.
+// There is no validation for the path, as it is "trusted": It may fail
+// normal validation checks. For example, it may be an absolute path.
+// Only use this function to construct paths for dependencies of the build
+// tool invocation.
+func pathForBuildToolDep(ctx PathContext, path string) toolDepPath {
+	return toolDepPath{basePath{path, ctx.Config(), ""}}
+}
 
 // PathForOutput joins the provided paths and returns an OutputPath that is
 // validated to not escape the build dir.

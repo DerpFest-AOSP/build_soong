@@ -94,9 +94,9 @@ func (k sdkKind) String() string {
 	case sdkCorePlatform:
 		return "core_platform"
 	case sdkModule:
-		return "module"
+		return "module-lib"
 	case sdkSystemServer:
-		return "system_server"
+		return "system-server"
 	default:
 		return "invalid"
 	}
@@ -412,7 +412,10 @@ func decodeSdkDep(ctx android.EarlyModuleContext, sdkContext sdkContext) sdkDep 
 	switch sdkVersion.kind {
 	case sdkPrivate:
 		return sdkDep{
-			useDefaultLibs:     true,
+			useModule:          true,
+			systemModules:      config.LegacyCorePlatformSystemModules,
+			bootclasspath:      config.LegacyCorePlatformBootclasspathLibraries,
+			classpath:          config.FrameworkLibraries,
 			frameworkResModule: "framework-res",
 		}
 	case sdkNone:
@@ -434,9 +437,10 @@ func decodeSdkDep(ctx android.EarlyModuleContext, sdkContext sdkContext) sdkDep 
 		}
 	case sdkCorePlatform:
 		return sdkDep{
-			useDefaultLibs:     true,
-			frameworkResModule: "framework-res",
-			noFrameworksLibs:   true,
+			useModule:        true,
+			systemModules:    config.LegacyCorePlatformSystemModules,
+			bootclasspath:    config.LegacyCorePlatformBootclasspathLibraries,
+			noFrameworksLibs: true,
 		}
 	case sdkPublic:
 		return toModule([]string{"android_stubs_current"}, "framework-res", sdkFrameworkAidlPath(ctx))
@@ -445,7 +449,12 @@ func decodeSdkDep(ctx android.EarlyModuleContext, sdkContext sdkContext) sdkDep 
 	case sdkTest:
 		return toModule([]string{"android_test_stubs_current"}, "framework-res", sdkFrameworkAidlPath(ctx))
 	case sdkCore:
-		return toModule([]string{"core.current.stubs"}, "", nil)
+		return sdkDep{
+			useModule:        true,
+			bootclasspath:    []string{"core.current.stubs", config.DefaultLambdaStubsLibrary},
+			systemModules:    "core-current-stubs-system-modules",
+			noFrameworksLibs: true,
+		}
 	case sdkModule:
 		// TODO(146757305): provide .apk and .aidl that have more APIs for modules
 		return toModule([]string{"android_module_lib_stubs_current"}, "framework-res", nonUpdatableFrameworkAidlPath(ctx))

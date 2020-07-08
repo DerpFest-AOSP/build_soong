@@ -93,7 +93,6 @@ func testRustContext(t *testing.T, bp string, coverage bool) *android.TestContex
 		config.TestProductVariables.NativeCoveragePaths = []string{"*"}
 	}
 
-	t.Helper()
 	ctx := CreateTestContext()
 	ctx.Register(config)
 
@@ -165,12 +164,12 @@ func TestLinkPathFromFilePath(t *testing.T) {
 // Test to make sure dependencies are being picked up correctly.
 func TestDepsTracking(t *testing.T) {
 	ctx := testRust(t, `
-		rust_library_host_static {
+		rust_ffi_host_static {
 			name: "libstatic",
 			srcs: ["foo.rs"],
 			crate_name: "static",
 		}
-		rust_library_host_shared {
+		rust_ffi_host_shared {
 			name: "libshared",
 			srcs: ["foo.rs"],
 			crate_name: "shared",

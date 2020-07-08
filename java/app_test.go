@@ -147,7 +147,7 @@ func TestAndroidAppSet(t *testing.T) {
 			name: "foo",
 			set: "prebuilts/apks/app.apks",
 			prerelease: true,
-        }`)
+		}`)
 	module := ctx.ModuleForTests("foo", "android_common")
 	const packedSplitApks = "foo.zip"
 	params := module.Output(packedSplitApks)
@@ -156,6 +156,9 @@ func TestAndroidAppSet(t *testing.T) {
 	}
 	if s := params.Args["allow-prereleased"]; s != "true" {
 		t.Errorf("wrong allow-prereleased value: '%s', expected 'true'", s)
+	}
+	if s := params.Args["partition"]; s != "system" {
+		t.Errorf("wrong partition value: '%s', expected 'system'", s)
 	}
 	mkEntries := android.AndroidMkEntriesForTest(t, config, "", module.Module())[0]
 	actualMaster := mkEntries.EntryMap["LOCAL_APK_SET_MASTER_FILE"]
@@ -2587,13 +2590,13 @@ func TestUsesLibraries(t *testing.T) {
 	// Test that only present libraries are preopted
 	cmd = app.Rule("dexpreopt").RuleParams.Command
 
-	if w := `dex_preopt_target_libraries="/system/framework/foo.jar /system/framework/bar.jar"`; !strings.Contains(cmd, w) {
+	if w := `--target-classpath-for-sdk any /system/framework/foo.jar:/system/framework/bar.jar`; !strings.Contains(cmd, w) {
 		t.Errorf("wanted %q in %q", w, cmd)
 	}
 
 	cmd = prebuilt.Rule("dexpreopt").RuleParams.Command
 
-	if w := `dex_preopt_target_libraries="/system/framework/foo.jar /system/framework/bar.jar"`; !strings.Contains(cmd, w) {
+	if w := `--target-classpath-for-sdk any /system/framework/foo.jar:/system/framework/bar.jar`; !strings.Contains(cmd, w) {
 		t.Errorf("wanted %q in %q", w, cmd)
 	}
 }

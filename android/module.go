@@ -228,6 +228,16 @@ type Module interface {
 	// For more information, see Module.GenerateBuildActions within Blueprint's module_ctx.go
 	GenerateAndroidBuildActions(ModuleContext)
 
+	// Add dependencies to the components of a module, i.e. modules that are created
+	// by the module and which are considered to be part of the creating module.
+	//
+	// This is called before prebuilts are renamed so as to allow a dependency to be
+	// added directly to a prebuilt child module instead of depending on a source module
+	// and relying on prebuilt processing to switch to the prebuilt module if preferred.
+	//
+	// A dependency on a prebuilt must include the "prebuilt_" prefix.
+	ComponentDepsMutator(ctx BottomUpMutatorContext)
+
 	DepsMutator(BottomUpMutatorContext)
 
 	base() *ModuleBase
@@ -313,6 +323,28 @@ func (q qualifiedModuleName) getContainingPackageId() qualifiedModuleName {
 func newPackageId(pkg string) qualifiedModuleName {
 	// A qualified id for a package module has no name.
 	return qualifiedModuleName{pkg: pkg, name: ""}
+}
+
+type Dist struct {
+	// Copy the output of this module to the $DIST_DIR when `dist` is specified on the
+	// command line and any of these targets are also on the command line, or otherwise
+	// built
+	Targets []string `android:"arch_variant"`
+
+	// The name of the output artifact. This defaults to the basename of the output of
+	// the module.
+	Dest *string `android:"arch_variant"`
+
+	// The directory within the dist directory to store the artifact. Defaults to the
+	// top level directory ("").
+	Dir *string `android:"arch_variant"`
+
+	// A suffix to add to the artifact file name (before any extension).
+	Suffix *string `android:"arch_variant"`
+
+	// A string tag to select the OutputFiles associated with the tag. Defaults to the
+	// the empty "" string.
+	Tag *string `android:"arch_variant"`
 }
 
 type nameProperties struct {
@@ -454,23 +486,13 @@ type commonProperties struct {
 	// relative path to a file to include in the list of notices for the device
 	Notice *string `android:"path"`
 
-	Dist struct {
-		// copy the output of this module to the $DIST_DIR when `dist` is specified on the
-		// command line and  any of these targets are also on the command line, or otherwise
-		// built
-		Targets []string `android:"arch_variant"`
+	// configuration to distribute output files from this module to the distribution
+	// directory (default: $OUT/dist, configurable with $DIST_DIR)
+	Dist Dist `android:"arch_variant"`
 
-		// The name of the output artifact. This defaults to the basename of the output of
-		// the module.
-		Dest *string `android:"arch_variant"`
-
-		// The directory within the dist directory to store the artifact. Defaults to the
-		// top level directory ("").
-		Dir *string `android:"arch_variant"`
-
-		// A suffix to add to the artifact file name (before any extension).
-		Suffix *string `android:"arch_variant"`
-	} `android:"arch_variant"`
+	// a list of configurations to distribute output files from this module to the
+	// distribution directory (default: $OUT/dist, configurable with $DIST_DIR)
+	Dists []Dist `android:"arch_variant"`
 
 	// The OsType of artifacts that this module variant is responsible for creating.
 	//
@@ -535,6 +557,14 @@ type commonProperties struct {
 
 	// set by ImageMutator
 	ImageVariation string `blueprint:"mutated"`
+}
+
+// A map of OutputFile tag keys to Paths, for disting purposes.
+type TaggedDistFiles map[string]Paths
+
+func MakeDefaultDistFiles(paths ...Path) TaggedDistFiles {
+	// The default OutputFile tag is the empty "" string.
+	return TaggedDistFiles{"": paths}
 }
 
 type hostAndDeviceProperties struct {
@@ -749,6 +779,8 @@ type ModuleBase struct {
 	prefer32 func(ctx BaseModuleContext, base *ModuleBase, class OsClass) bool
 }
 
+func (m *ModuleBase) ComponentDepsMutator(BottomUpMutatorContext) {}
+
 func (m *ModuleBase) DepsMutator(BottomUpMutatorContext) {}
 
 func (m *ModuleBase) AddProperties(props ...interface{}) {
@@ -813,6 +845,41 @@ func (m *ModuleBase) qualifiedModuleId(ctx BaseModuleContext) qualifiedModuleNam
 
 func (m *ModuleBase) visibilityProperties() []visibilityProperty {
 	return m.visibilityPropertyInfo
+}
+
+func (m *ModuleBase) Dists() []Dist {
+	if len(m.commonProperties.Dist.Targets) > 0 {
+		// Make a copy of the underlying Dists slice to protect against
+		// backing array modifications with repeated calls to this method.
+		distsCopy := append([]Dist(nil), m.commonProperties.Dists...)
+		return append(distsCopy, m.commonProperties.Dist)
+	} else {
+		return m.commonProperties.Dists
+	}
+}
+
+func (m *ModuleBase) GenerateTaggedDistFiles(ctx BaseModuleContext) TaggedDistFiles {
+	distFiles := make(TaggedDistFiles)
+	for _, dist := range m.Dists() {
+		var tag string
+		var distFilesForTag Paths
+		if dist.Tag == nil {
+			tag = ""
+		} else {
+			tag = *dist.Tag
+		}
+		distFilesForTag, err := m.base().module.(OutputFileProducer).OutputFiles(tag)
+		if err != nil {
+			ctx.PropertyErrorf("dist.tag", "%s", err.Error())
+		}
+		for _, distFile := range distFilesForTag {
+			if distFile != nil && !distFiles[tag].containsPath(distFile) {
+				distFiles[tag] = append(distFiles[tag], distFile)
+			}
+		}
+	}
+
+	return distFiles
 }
 
 func (m *ModuleBase) Target() Target {
@@ -2042,15 +2109,6 @@ func (m *moduleContext) InstallAbsoluteSymlink(installPath InstallPath, name str
 
 func (m *moduleContext) CheckbuildFile(srcPath Path) {
 	m.checkbuildFiles = append(m.checkbuildFiles, srcPath)
-}
-
-func findStringInSlice(str string, slice []string) int {
-	for i, s := range slice {
-		if s == str {
-			return i
-		}
-	}
-	return -1
 }
 
 // SrcIsModule decodes module references in the format ":name" into the module name, or empty string if the input
