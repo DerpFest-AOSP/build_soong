@@ -44,14 +44,15 @@ func testSdkContext(bp string, fs map[string][]byte) (*android.TestContext, andr
 	` + cc.GatherRequiredDepsForTest(android.Android, android.Windows)
 
 	mockFS := map[string][]byte{
-		"build/make/target/product/security":         nil,
-		"apex_manifest.json":                         nil,
-		"system/sepolicy/apex/myapex-file_contexts":  nil,
-		"system/sepolicy/apex/myapex2-file_contexts": nil,
-		"myapex.avbpubkey":                           nil,
-		"myapex.pem":                                 nil,
-		"myapex.x509.pem":                            nil,
-		"myapex.pk8":                                 nil,
+		"build/make/target/product/security":           nil,
+		"apex_manifest.json":                           nil,
+		"system/sepolicy/apex/myapex-file_contexts":    nil,
+		"system/sepolicy/apex/myapex2-file_contexts":   nil,
+		"system/sepolicy/apex/mysdkapex-file_contexts": nil,
+		"myapex.avbpubkey":                             nil,
+		"myapex.pem":                                   nil,
+		"myapex.x509.pem":                              nil,
+		"myapex.pk8":                                   nil,
 	}
 
 	cc.GatherRequiredFilesForTest(mockFS)
@@ -84,6 +85,7 @@ func testSdkContext(bp string, fs map[string][]byte) (*android.TestContext, andr
 	android.RegisterPackageBuildComponents(ctx)
 	ctx.PreArchMutators(android.RegisterVisibilityRuleChecker)
 	ctx.PreArchMutators(android.RegisterDefaultsPreArchMutators)
+	ctx.PreArchMutators(android.RegisterComponentsMutator)
 	ctx.PreArchMutators(android.RegisterVisibilityRuleGatherer)
 	ctx.PostDepsMutators(android.RegisterVisibilityRuleEnforcer)
 
@@ -419,11 +421,4 @@ func runTestWithBuildDir(m *testing.M) {
 	}
 
 	os.Exit(run())
-}
-
-func SkipIfNotLinux(t *testing.T) {
-	t.Helper()
-	if android.BuildOs != android.Linux {
-		t.Skipf("Skipping as sdk snapshot generation is only supported on %s not %s", android.Linux, android.BuildOs)
-	}
 }

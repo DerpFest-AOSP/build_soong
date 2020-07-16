@@ -256,9 +256,6 @@ func NewConfig(ctx Context, args ...string) Config {
 		ret.buildDateTime = strconv.FormatInt(time.Now().Unix(), 10)
 	}
 
-	if ctx.Metrics != nil {
-		ctx.Metrics.SetBuildDateTime(ret.buildDateTime)
-	}
 	ret.environ.Set("BUILD_DATETIME_FILE", buildDateTimeFile)
 
 	return Config{ret}
@@ -802,6 +799,15 @@ func (c *configImpl) StartRBE() bool {
 		}
 	}
 	return true
+}
+
+func (c *configImpl) RBEStatsOutputDir() string {
+	for _, f := range []string{"RBE_output_dir", "FLAG_output_dir"} {
+		if v, ok := c.environ.Get(f); ok {
+			return v
+		}
+	}
+	return ""
 }
 
 func (c *configImpl) UseRemoteBuild() bool {

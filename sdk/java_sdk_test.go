@@ -16,6 +16,8 @@ package sdk
 
 import (
 	"testing"
+
+	"android/soong/java"
 )
 
 func testSdkWithJava(t *testing.T, bp string) *testSdkResult {
@@ -25,6 +27,9 @@ func testSdkWithJava(t *testing.T, bp string) *testSdkResult {
 		"Test.java":              nil,
 		"resource.test":          nil,
 		"aidl/foo/bar/Test.aidl": nil,
+
+		// For java_import
+		"prebuilt.jar": nil,
 
 		// For java_sdk_library
 		"api/current.txt":                                   nil,
@@ -84,6 +89,52 @@ java_import {
 }
 
 // Contains tests for SDK members provided by the java package.
+
+func TestSdkDependsOnSourceEvenWhenPrebuiltPreferred(t *testing.T) {
+	result := testSdkWithJava(t, `
+		sdk {
+			name: "mysdk",
+			java_header_libs: ["sdkmember"],
+		}
+
+		java_library {
+			name: "sdkmember",
+			srcs: ["Test.java"],
+			system_modules: "none",
+			sdk_version: "none",
+		}
+
+		java_import {
+			name: "sdkmember",
+			prefer: true,
+			jars: ["prebuilt.jar"],
+		}
+	`)
+
+	// Make sure that the mysdk module depends on "sdkmember" and not "prebuilt_sdkmember".
+	java.CheckModuleDependencies(t, result.ctx, "mysdk", "android_common", []string{"sdkmember"})
+
+	result.CheckSnapshot("mysdk", "",
+		checkAndroidBpContents(`// This is auto-generated. DO NOT EDIT.
+
+java_import {
+    name: "mysdk_sdkmember@current",
+    sdk_member_name: "sdkmember",
+    jars: ["java/sdkmember.jar"],
+}
+
+java_import {
+    name: "sdkmember",
+    prefer: false,
+    jars: ["java/sdkmember.jar"],
+}
+
+sdk_snapshot {
+    name: "mysdk@current",
+    java_header_libs: ["mysdk_sdkmember@current"],
+}
+`))
+}
 
 func TestBasicSdkWithJavaLibrary(t *testing.T) {
 	result := testSdkWithJava(t, `
@@ -214,9 +265,6 @@ aidl/foo/bar/Test.aidl -> aidl/aidl/foo/bar/Test.aidl
 }
 
 func TestHostSnapshotWithJavaHeaderLibrary(t *testing.T) {
-	// b/145598135 - Generating host snapshots for anything other than linux is not supported.
-	SkipIfNotLinux(t)
-
 	result := testSdkWithJava(t, `
 		sdk {
 			name: "mysdk",
@@ -274,9 +322,6 @@ aidl/foo/bar/Test.aidl -> aidl/aidl/foo/bar/Test.aidl
 }
 
 func TestDeviceAndHostSnapshotWithJavaHeaderLibrary(t *testing.T) {
-	// b/145598135 - Generating host snapshots for anything other than linux is not supported.
-	SkipIfNotLinux(t)
-
 	result := testSdkWithJava(t, `
 		sdk {
 			name: "mysdk",
@@ -390,9 +435,6 @@ aidl/foo/bar/Test.aidl -> aidl/aidl/foo/bar/Test.aidl
 }
 
 func TestHostSnapshotWithJavaImplLibrary(t *testing.T) {
-	// b/145598135 - Generating host snapshots for anything other than linux is not supported.
-	SkipIfNotLinux(t)
-
 	result := testSdkWithJava(t, `
 		module_exports {
 			name: "myexports",
@@ -497,9 +539,6 @@ module_exports_snapshot {
 }
 
 func TestHostSnapshotWithJavaTest(t *testing.T) {
-	// b/145598135 - Generating host snapshots for anything other than linux is not supported.
-	SkipIfNotLinux(t)
-
 	result := testSdkWithJava(t, `
 		module_exports {
 			name: "myexports",
@@ -641,9 +680,6 @@ module_exports_snapshot {
 }
 
 func TestHostSnapshotWithDroidstubs(t *testing.T) {
-	// b/145598135 - Generating host snapshots for anything other than linux is not supported.
-	SkipIfNotLinux(t)
-
 	result := testSdkWithDroidstubs(t, `
 		module_exports {
 			name: "myexports",
@@ -784,9 +820,6 @@ sdk_snapshot {
 }
 
 func TestHostSnapshotWithJavaSystemModules(t *testing.T) {
-	// b/145598135 - Generating host snapshots for anything other than linux is not supported.
-	SkipIfNotLinux(t)
-
 	result := testSdkWithJava(t, `
 		sdk {
 			name: "mysdk",
@@ -862,9 +895,6 @@ sdk_snapshot {
 }
 
 func TestDeviceAndHostSnapshotWithOsSpecificMembers(t *testing.T) {
-	// b/145598135 - Generating host snapshots for anything other than linux is not supported.
-	SkipIfNotLinux(t)
-
 	result := testSdkWithJava(t, `
 		module_exports {
 			name: "myexports",

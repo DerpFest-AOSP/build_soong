@@ -69,6 +69,28 @@ func TestSdkIsCompileMultilibBoth(t *testing.T) {
 	ensureListContains(t, inputs, arm64Output.String())
 }
 
+func TestSdkCompileMultilibOverride(t *testing.T) {
+	result := testSdkWithCc(t, `
+		sdk {
+			name: "mysdk",
+			native_shared_libs: ["sdkmember"],
+			compile_multilib: "64",
+		}
+
+		cc_library_shared {
+			name: "sdkmember",
+			srcs: ["Test.cpp"],
+			stl: "none",
+			compile_multilib: "64",
+		}
+	`)
+
+	result.CheckSnapshot("mysdk", "",
+		checkAllCopyRules(`
+.intermediates/sdkmember/android_arm64_armv8-a_shared/sdkmember.so -> arm64/lib/sdkmember.so
+`))
+}
+
 func TestBasicSdkWithCc(t *testing.T) {
 	result := testSdkWithCc(t, `
 		sdk {
@@ -79,6 +101,8 @@ func TestBasicSdkWithCc(t *testing.T) {
 		cc_library_shared {
 			name: "sdkmember",
 			system_shared_libs: [],
+			stl: "none",
+			apex_available: ["mysdkapex"],
 		}
 
 		sdk_snapshot {
@@ -149,6 +173,13 @@ func TestBasicSdkWithCc(t *testing.T) {
 			name: "myapex2",
 			native_shared_libs: ["mycpplib"],
 			uses_sdks: ["mysdk@2"],
+			key: "myapex.key",
+			certificate: ":myapex.cert",
+		}
+
+		apex {
+			name: "mysdkapex",
+			native_shared_libs: ["sdkmember"],
 			key: "myapex.key",
 			certificate: ":myapex.cert",
 		}
@@ -450,9 +481,6 @@ module_exports_snapshot {
 }
 
 func TestMultipleHostOsTypesSnapshotWithCcBinary(t *testing.T) {
-	// b/145598135 - Generating host snapshots for anything other than linux is not supported.
-	SkipIfNotLinux(t)
-
 	result := testSdkWithCc(t, `
 		module_exports {
 			name: "myexports",
@@ -561,9 +589,6 @@ module_exports_snapshot {
 // Test that we support the necessary flags for the linker binary, which is
 // special in several ways.
 func TestSnapshotWithCcStaticNocrtBinary(t *testing.T) {
-	// b/145598135 - Generating host snapshots for anything other than linux is not supported.
-	SkipIfNotLinux(t)
-
 	result := testSdkWithCc(t, `
 		module_exports {
 			name: "mymodule_exports",
@@ -912,9 +937,6 @@ sdk_snapshot {
 }
 
 func TestHostSnapshotWithCcSharedLibrary(t *testing.T) {
-	// b/145598135 - Generating host snapshots for anything other than linux is not supported.
-	SkipIfNotLinux(t)
-
 	result := testSdkWithCc(t, `
 		sdk {
 			name: "mysdk",
@@ -1007,9 +1029,6 @@ include/Test.h -> include/include/Test.h
 }
 
 func TestMultipleHostOsTypesSnapshotWithCcSharedLibrary(t *testing.T) {
-	// b/145598135 - Generating host snapshots for anything other than linux is not supported.
-	SkipIfNotLinux(t)
-
 	result := testSdkWithCc(t, `
 		sdk {
 			name: "mysdk",
@@ -1182,9 +1201,6 @@ include/Test.h -> include/include/Test.h
 }
 
 func TestHostSnapshotWithCcStaticLibrary(t *testing.T) {
-	// b/145598135 - Generating host snapshots for anything other than linux is not supported.
-	SkipIfNotLinux(t)
-
 	result := testSdkWithCc(t, `
 		module_exports {
 			name: "myexports",
@@ -1360,9 +1376,6 @@ include/Test.h -> include/include/Test.h
 }
 
 func TestHostSnapshotWithMultiLib64(t *testing.T) {
-	// b/145598135 - Generating host snapshots for anything other than linux is not supported.
-	SkipIfNotLinux(t)
-
 	result := testSdkWithCc(t, `
 		module_exports {
 			name: "myexports",
@@ -1492,9 +1505,6 @@ include/Test.h -> include/include/Test.h
 }
 
 func TestHostSnapshotWithCcHeadersLibrary(t *testing.T) {
-	// b/145598135 - Generating host snapshots for anything other than linux is not supported.
-	SkipIfNotLinux(t)
-
 	result := testSdkWithCc(t, `
 		sdk {
 			name: "mysdk",
@@ -1548,9 +1558,6 @@ include/Test.h -> include/include/Test.h
 }
 
 func TestDeviceAndHostSnapshotWithCcHeadersLibrary(t *testing.T) {
-	// b/145598135 - Generating host snapshots for anything other than linux is not supported.
-	SkipIfNotLinux(t)
-
 	result := testSdkWithCc(t, `
 		sdk {
 			name: "mysdk",
@@ -1583,13 +1590,13 @@ cc_prebuilt_library_headers {
     sdk_member_name: "mynativeheaders",
     host_supported: true,
     stl: "none",
-    export_system_include_dirs: ["include/include"],
+    export_system_include_dirs: ["common_os/include/include"],
     target: {
         android: {
-            export_include_dirs: ["include/include-android"],
+            export_include_dirs: ["android/include/include-android"],
         },
         linux_glibc: {
-            export_include_dirs: ["include/include-host"],
+            export_include_dirs: ["linux_glibc/include/include-host"],
         },
     },
 }
@@ -1599,13 +1606,13 @@ cc_prebuilt_library_headers {
     prefer: false,
     host_supported: true,
     stl: "none",
-    export_system_include_dirs: ["include/include"],
+    export_system_include_dirs: ["common_os/include/include"],
     target: {
         android: {
-            export_include_dirs: ["include/include-android"],
+            export_include_dirs: ["android/include/include-android"],
         },
         linux_glibc: {
-            export_include_dirs: ["include/include-host"],
+            export_include_dirs: ["linux_glibc/include/include-host"],
         },
     },
 }
@@ -1617,17 +1624,14 @@ sdk_snapshot {
 }
 `),
 		checkAllCopyRules(`
-include/Test.h -> include/include/Test.h
-include-android/AndroidTest.h -> include/include-android/AndroidTest.h
-include-host/HostTest.h -> include/include-host/HostTest.h
+include/Test.h -> common_os/include/include/Test.h
+include-android/AndroidTest.h -> android/include/include-android/AndroidTest.h
+include-host/HostTest.h -> linux_glibc/include/include-host/HostTest.h
 `),
 	)
 }
 
 func TestSystemSharedLibPropagation(t *testing.T) {
-	// b/145598135 - Generating host snapshots for anything other than linux is not supported.
-	SkipIfNotLinux(t)
-
 	result := testSdkWithCc(t, `
 		sdk {
 			name: "mysdk",
@@ -1892,9 +1896,6 @@ sdk_snapshot {
 }
 
 func TestDeviceAndHostSnapshotWithStubsLibrary(t *testing.T) {
-	// b/145598135 - Generating host snapshots for anything other than linux is not supported.
-	SkipIfNotLinux(t)
-
 	result := testSdkWithCc(t, `
 		sdk {
 			name: "mysdk",
@@ -1978,9 +1979,6 @@ sdk_snapshot {
 }
 
 func TestUniqueHostSoname(t *testing.T) {
-	// b/145598135 - Generating host snapshots for anything other than linux is not supported.
-	SkipIfNotLinux(t)
-
 	result := testSdkWithCc(t, `
 		sdk {
 			name: "mysdk",

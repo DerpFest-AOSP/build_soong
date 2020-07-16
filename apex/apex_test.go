@@ -233,6 +233,7 @@ func testApexContext(_ *testing.T, bp string, handlers ...testCustomizer) (*andr
 	ctx.RegisterModuleType("apex_set", apexSetFactory)
 
 	ctx.PreArchMutators(android.RegisterDefaultsPreArchMutators)
+	ctx.PreArchMutators(android.RegisterComponentsMutator)
 	ctx.PostDepsMutators(android.RegisterOverridePostDepsMutators)
 
 	cc.RegisterRequiredBuildComponentsForTest(ctx)
@@ -5788,6 +5789,41 @@ func TestAllowedFiles(t *testing.T) {
 	if expected, actual := "sub/allowed.txt", rule2.Args["allowed_files_file"]; expected != actual {
 		t.Errorf("allowed_files_file: expected %q but got %q", expected, actual)
 	}
+}
+
+func TestNonPreferredPrebuiltDependency(t *testing.T) {
+	_, _ = testApex(t, `
+		apex {
+			name: "myapex",
+			key: "myapex.key",
+			native_shared_libs: ["mylib"],
+		}
+
+		apex_key {
+			name: "myapex.key",
+			public_key: "testkey.avbpubkey",
+			private_key: "testkey.pem",
+		}
+
+		cc_library {
+			name: "mylib",
+			srcs: ["mylib.cpp"],
+			stubs: {
+				versions: ["10000"],
+			},
+			apex_available: ["myapex"],
+		}
+
+		cc_prebuilt_library_shared {
+			name: "mylib",
+			prefer: false,
+			srcs: ["prebuilt.so"],
+			stubs: {
+				versions: ["10000"],
+			},
+			apex_available: ["myapex"],
+		}
+	`)
 }
 
 func TestMain(m *testing.M) {
