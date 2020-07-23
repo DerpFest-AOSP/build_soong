@@ -46,6 +46,8 @@ type installLocation int
 const (
 	InstallInSystem installLocation = 0
 	InstallInData                   = iota
+
+	incorrectSourcesError = "srcs can only contain one path for a rust file and source providers prefixed by \":\""
 )
 
 type BaseCompilerProperties struct {
@@ -253,10 +255,25 @@ func (compiler *baseCompiler) relativeInstallPath() string {
 	return String(compiler.Properties.Relative_install_path)
 }
 
-func srcPathFromModuleSrcs(ctx ModuleContext, srcs []string) android.Path {
-	srcPaths := android.PathsForModuleSrc(ctx, srcs)
-	if len(srcPaths) != 1 {
-		ctx.PropertyErrorf("srcs", "srcs can only contain one path for rust modules")
+// Returns the Path for the main source file along with Paths for generated source files from modules listed in srcs.
+func srcPathFromModuleSrcs(ctx ModuleContext, srcs []string) (android.Path, android.Paths) {
+	// The srcs can contain strings with prefix ":".
+	// They are dependent modules of this module, with android.SourceDepTag.
+	// They are not the main source file compiled by rustc.
+	numSrcs := 0
+	srcIndex := 0
+	for i, s := range srcs {
+		if android.SrcIsModule(s) == "" {
+			numSrcs++
+			srcIndex = i
+		}
 	}
-	return srcPaths[0]
+	if numSrcs != 1 {
+		ctx.PropertyErrorf("srcs", incorrectSourcesError)
+	}
+	if srcIndex != 0 {
+		ctx.PropertyErrorf("srcs", "main source file must be the first in srcs")
+	}
+	paths := android.PathsForModuleSrc(ctx, srcs)
+	return paths[srcIndex], paths[1:]
 }

@@ -61,6 +61,7 @@ func testConfig(bp string) android.Config {
 		"foo.rs":     nil,
 		"foo.c":      nil,
 		"src/bar.rs": nil,
+		"src/any.h":  nil,
 		"liby.so":    nil,
 		"libz.so":    nil,
 	}
@@ -220,6 +221,73 @@ func TestDepsTracking(t *testing.T) {
 
 	if !android.InList("libstatic", module.Properties.AndroidMkStaticLibs) {
 		t.Errorf("Static library dependency not detected (dependency missing from AndroidMkStaticLibs)")
+	}
+}
+
+func TestSourceProviderDeps(t *testing.T) {
+	ctx := testRust(t, `
+		rust_binary {
+			name: "fizz-buzz-dep",
+			srcs: [
+				"foo.rs",
+				":my_generator",
+				":libbindings",
+			],
+		}
+		rust_proc_macro {
+			name: "libprocmacro",
+			srcs: [
+				"foo.rs",
+				":my_generator",
+				":libbindings",
+			],
+			crate_name: "procmacro",
+		}
+		rust_library {
+			name: "libfoo",
+			srcs: [
+				"foo.rs",
+				":my_generator",
+				":libbindings"],
+			crate_name: "foo",
+		}
+		genrule {
+			name: "my_generator",
+			tools: ["any_rust_binary"],
+			cmd: "$(location) -o $(out) $(in)",
+			srcs: ["src/any.h"],
+			out: ["src/any.rs"],
+		}
+		rust_bindgen {
+			name: "libbindings",
+			stem: "bindings",
+			host_supported: true,
+			wrapper_src: "src/any.h",
+        }
+	`)
+
+	libfoo := ctx.ModuleForTests("libfoo", "android_arm64_armv8-a_rlib").Rule("rustc")
+	if !android.SuffixInList(libfoo.Implicits.Strings(), "/out/bindings.rs") {
+		t.Errorf("rust_bindgen generated source not included as implicit input for libfoo; Implicits %#v", libfoo.Implicits.Strings())
+	}
+	if !android.SuffixInList(libfoo.Implicits.Strings(), "/out/any.rs") {
+		t.Errorf("genrule generated source not included as implicit input for libfoo; Implicits %#v", libfoo.Implicits.Strings())
+	}
+
+	fizzBuzz := ctx.ModuleForTests("fizz-buzz-dep", "android_arm64_armv8-a").Rule("rustc")
+	if !android.SuffixInList(fizzBuzz.Implicits.Strings(), "/out/bindings.rs") {
+		t.Errorf("rust_bindgen generated source not included as implicit input for fizz-buzz-dep; Implicits %#v", libfoo.Implicits.Strings())
+	}
+	if !android.SuffixInList(fizzBuzz.Implicits.Strings(), "/out/any.rs") {
+		t.Errorf("genrule generated source not included as implicit input for fizz-buzz-dep; Implicits %#v", libfoo.Implicits.Strings())
+	}
+
+	libprocmacro := ctx.ModuleForTests("libprocmacro", "linux_glibc_x86_64").Rule("rustc")
+	if !android.SuffixInList(libprocmacro.Implicits.Strings(), "/out/bindings.rs") {
+		t.Errorf("rust_bindgen generated source not included as implicit input for libprocmacro; Implicits %#v", libfoo.Implicits.Strings())
+	}
+	if !android.SuffixInList(libprocmacro.Implicits.Strings(), "/out/any.rs") {
+		t.Errorf("genrule generated source not included as implicit input for libprocmacro; Implicits %#v", libfoo.Implicits.Strings())
 	}
 }
 

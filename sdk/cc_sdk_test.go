@@ -21,20 +21,20 @@ import (
 	"android/soong/cc"
 )
 
+var ccTestFs = map[string][]byte{
+	"Test.cpp":                      nil,
+	"include/Test.h":                nil,
+	"include-android/AndroidTest.h": nil,
+	"include-host/HostTest.h":       nil,
+	"arm64/include/Arm64Test.h":     nil,
+	"libfoo.so":                     nil,
+	"aidl/foo/bar/Test.aidl":        nil,
+	"some/where/stubslib.map.txt":   nil,
+}
+
 func testSdkWithCc(t *testing.T, bp string) *testSdkResult {
 	t.Helper()
-
-	fs := map[string][]byte{
-		"Test.cpp":                      nil,
-		"include/Test.h":                nil,
-		"include-android/AndroidTest.h": nil,
-		"include-host/HostTest.h":       nil,
-		"arm64/include/Arm64Test.h":     nil,
-		"libfoo.so":                     nil,
-		"aidl/foo/bar/Test.aidl":        nil,
-		"some/where/stubslib.map.txt":   nil,
-	}
-	return testSdkWithFs(t, bp, fs)
+	return testSdkWithFs(t, bp, ccTestFs)
 }
 
 // Contains tests for SDK members provided by the cc package.
@@ -73,12 +73,16 @@ func TestSdkCompileMultilibOverride(t *testing.T) {
 	result := testSdkWithCc(t, `
 		sdk {
 			name: "mysdk",
+			device_supported: false,
+			host_supported: true,
 			native_shared_libs: ["sdkmember"],
 			compile_multilib: "64",
 		}
 
 		cc_library_shared {
 			name: "sdkmember",
+			device_supported: false,
+			host_supported: true,
 			srcs: ["Test.cpp"],
 			stl: "none",
 			compile_multilib: "64",
@@ -86,8 +90,52 @@ func TestSdkCompileMultilibOverride(t *testing.T) {
 	`)
 
 	result.CheckSnapshot("mysdk", "",
+		checkAndroidBpContents(`
+// This is auto-generated. DO NOT EDIT.
+
+cc_prebuilt_library_shared {
+    name: "mysdk_sdkmember@current",
+    sdk_member_name: "sdkmember",
+    device_supported: false,
+    host_supported: true,
+    installable: false,
+    stl: "none",
+    compile_multilib: "64",
+    arch: {
+        x86_64: {
+            srcs: ["x86_64/lib/sdkmember.so"],
+        },
+    },
+}
+
+cc_prebuilt_library_shared {
+    name: "sdkmember",
+    prefer: false,
+    device_supported: false,
+    host_supported: true,
+    stl: "none",
+    compile_multilib: "64",
+    arch: {
+        x86_64: {
+            srcs: ["x86_64/lib/sdkmember.so"],
+        },
+    },
+}
+
+sdk_snapshot {
+    name: "mysdk@current",
+    device_supported: false,
+    host_supported: true,
+    native_shared_libs: ["mysdk_sdkmember@current"],
+    target: {
+        linux_glibc: {
+            compile_multilib: "64",
+        },
+    },
+}
+`),
 		checkAllCopyRules(`
-.intermediates/sdkmember/android_arm64_armv8-a_shared/sdkmember.so -> arm64/lib/sdkmember.so
+.intermediates/sdkmember/linux_glibc_x86_64_shared/sdkmember.so -> x86_64/lib/sdkmember.so
 `))
 }
 
@@ -271,6 +319,7 @@ cc_prebuilt_object {
     name: "mysdk_crtobj@current",
     sdk_member_name: "crtobj",
     stl: "none",
+    compile_multilib: "both",
     arch: {
         arm64: {
             srcs: ["arm64/lib/crtobj.o"],
@@ -285,6 +334,7 @@ cc_prebuilt_object {
     name: "crtobj",
     prefer: false,
     stl: "none",
+    compile_multilib: "both",
     arch: {
         arm64: {
             srcs: ["arm64/lib/crtobj.o"],
@@ -378,6 +428,7 @@ cc_prebuilt_library_shared {
     sdk_member_name: "mynativelib",
     installable: false,
     stl: "none",
+    compile_multilib: "both",
     export_include_dirs: ["include/include"],
     arch: {
         arm64: {
@@ -394,6 +445,7 @@ cc_prebuilt_library_shared {
     name: "mynativelib",
     prefer: false,
     stl: "none",
+    compile_multilib: "both",
     export_include_dirs: ["include/include"],
     arch: {
         arm64: {
@@ -481,9 +533,6 @@ module_exports_snapshot {
 }
 
 func TestMultipleHostOsTypesSnapshotWithCcBinary(t *testing.T) {
-	// b/145598135 - Generating host snapshots for anything other than linux is not supported.
-	SkipIfNotLinux(t)
-
 	result := testSdkWithCc(t, `
 		module_exports {
 			name: "myexports",
@@ -592,9 +641,6 @@ module_exports_snapshot {
 // Test that we support the necessary flags for the linker binary, which is
 // special in several ways.
 func TestSnapshotWithCcStaticNocrtBinary(t *testing.T) {
-	// b/145598135 - Generating host snapshots for anything other than linux is not supported.
-	SkipIfNotLinux(t)
-
 	result := testSdkWithCc(t, `
 		module_exports {
 			name: "mymodule_exports",
@@ -627,9 +673,9 @@ cc_prebuilt_binary {
     host_supported: true,
     installable: false,
     stl: "none",
+    compile_multilib: "both",
     static_executable: true,
     nocrt: true,
-    compile_multilib: "both",
     arch: {
         x86_64: {
             srcs: ["x86_64/bin/linker"],
@@ -646,9 +692,9 @@ cc_prebuilt_binary {
     device_supported: false,
     host_supported: true,
     stl: "none",
+    compile_multilib: "both",
     static_executable: true,
     nocrt: true,
-    compile_multilib: "both",
     arch: {
         x86_64: {
             srcs: ["x86_64/bin/linker"],
@@ -708,6 +754,7 @@ cc_prebuilt_library_shared {
     ],
     installable: false,
     stl: "none",
+    compile_multilib: "both",
     export_include_dirs: ["include/include"],
     arch: {
         arm64: {
@@ -729,6 +776,7 @@ cc_prebuilt_library_shared {
         "apex2",
     ],
     stl: "none",
+    compile_multilib: "both",
     export_include_dirs: ["include/include"],
     arch: {
         arm64: {
@@ -830,6 +878,7 @@ cc_prebuilt_library_shared {
     sdk_member_name: "mynativelib",
     installable: false,
     stl: "none",
+    compile_multilib: "both",
     shared_libs: [
         "mysdk_myothernativelib@current",
         "libc",
@@ -848,6 +897,7 @@ cc_prebuilt_library_shared {
     name: "mynativelib",
     prefer: false,
     stl: "none",
+    compile_multilib: "both",
     shared_libs: [
         "myothernativelib",
         "libc",
@@ -867,6 +917,7 @@ cc_prebuilt_library_shared {
     sdk_member_name: "myothernativelib",
     installable: false,
     stl: "none",
+    compile_multilib: "both",
     system_shared_libs: ["libm"],
     arch: {
         arm64: {
@@ -882,6 +933,7 @@ cc_prebuilt_library_shared {
     name: "myothernativelib",
     prefer: false,
     stl: "none",
+    compile_multilib: "both",
     system_shared_libs: ["libm"],
     arch: {
         arm64: {
@@ -898,6 +950,7 @@ cc_prebuilt_library_shared {
     sdk_member_name: "mysystemnativelib",
     installable: false,
     stl: "none",
+    compile_multilib: "both",
     arch: {
         arm64: {
             srcs: ["arm64/lib/mysystemnativelib.so"],
@@ -912,6 +965,7 @@ cc_prebuilt_library_shared {
     name: "mysystemnativelib",
     prefer: false,
     stl: "none",
+    compile_multilib: "both",
     arch: {
         arm64: {
             srcs: ["arm64/lib/mysystemnativelib.so"],
@@ -943,9 +997,6 @@ sdk_snapshot {
 }
 
 func TestHostSnapshotWithCcSharedLibrary(t *testing.T) {
-	// b/145598135 - Generating host snapshots for anything other than linux is not supported.
-	SkipIfNotLinux(t)
-
 	result := testSdkWithCc(t, `
 		sdk {
 			name: "mysdk",
@@ -983,6 +1034,7 @@ cc_prebuilt_library_shared {
     installable: false,
     sdk_version: "minimum",
     stl: "none",
+    compile_multilib: "both",
     export_include_dirs: ["include/include"],
     arch: {
         x86_64: {
@@ -1003,6 +1055,7 @@ cc_prebuilt_library_shared {
     host_supported: true,
     sdk_version: "minimum",
     stl: "none",
+    compile_multilib: "both",
     export_include_dirs: ["include/include"],
     arch: {
         x86_64: {
@@ -1038,9 +1091,6 @@ include/Test.h -> include/include/Test.h
 }
 
 func TestMultipleHostOsTypesSnapshotWithCcSharedLibrary(t *testing.T) {
-	// b/145598135 - Generating host snapshots for anything other than linux is not supported.
-	SkipIfNotLinux(t)
-
 	result := testSdkWithCc(t, `
 		sdk {
 			name: "mysdk",
@@ -1082,11 +1132,17 @@ cc_prebuilt_library_shared {
     installable: false,
     stl: "none",
     target: {
+        linux_glibc: {
+            compile_multilib: "both",
+        },
         linux_glibc_x86_64: {
             srcs: ["linux_glibc/x86_64/lib/mynativelib.so"],
         },
         linux_glibc_x86: {
             srcs: ["linux_glibc/x86/lib/mynativelib.so"],
+        },
+        windows: {
+            compile_multilib: "64",
         },
         windows_x86_64: {
             srcs: ["windows/x86_64/lib/mynativelib.dll"],
@@ -1101,11 +1157,17 @@ cc_prebuilt_library_shared {
     host_supported: true,
     stl: "none",
     target: {
+        linux_glibc: {
+            compile_multilib: "both",
+        },
         linux_glibc_x86_64: {
             srcs: ["linux_glibc/x86_64/lib/mynativelib.so"],
         },
         linux_glibc_x86: {
             srcs: ["linux_glibc/x86/lib/mynativelib.so"],
+        },
+        windows: {
+            compile_multilib: "64",
         },
         windows_x86_64: {
             srcs: ["windows/x86_64/lib/mynativelib.dll"],
@@ -1163,6 +1225,7 @@ cc_prebuilt_library_static {
     sdk_member_name: "mynativelib",
     installable: false,
     stl: "none",
+    compile_multilib: "both",
     export_include_dirs: ["include/include"],
     arch: {
         arm64: {
@@ -1180,6 +1243,7 @@ cc_prebuilt_library_static {
     name: "mynativelib",
     prefer: false,
     stl: "none",
+    compile_multilib: "both",
     export_include_dirs: ["include/include"],
     arch: {
         arm64: {
@@ -1213,9 +1277,6 @@ include/Test.h -> include/include/Test.h
 }
 
 func TestHostSnapshotWithCcStaticLibrary(t *testing.T) {
-	// b/145598135 - Generating host snapshots for anything other than linux is not supported.
-	SkipIfNotLinux(t)
-
 	result := testSdkWithCc(t, `
 		module_exports {
 			name: "myexports",
@@ -1251,6 +1312,7 @@ cc_prebuilt_library_static {
     host_supported: true,
     installable: false,
     stl: "none",
+    compile_multilib: "both",
     export_include_dirs: ["include/include"],
     arch: {
         x86_64: {
@@ -1270,6 +1332,7 @@ cc_prebuilt_library_static {
     device_supported: false,
     host_supported: true,
     stl: "none",
+    compile_multilib: "both",
     export_include_dirs: ["include/include"],
     arch: {
         x86_64: {
@@ -1330,6 +1393,7 @@ cc_prebuilt_library {
     sdk_member_name: "mynativelib",
     installable: false,
     stl: "none",
+    compile_multilib: "both",
     export_include_dirs: ["include/include"],
     arch: {
         arm64: {
@@ -1355,6 +1419,7 @@ cc_prebuilt_library {
     name: "mynativelib",
     prefer: false,
     stl: "none",
+    compile_multilib: "both",
     export_include_dirs: ["include/include"],
     arch: {
         arm64: {
@@ -1391,9 +1456,6 @@ include/Test.h -> include/include/Test.h
 }
 
 func TestHostSnapshotWithMultiLib64(t *testing.T) {
-	// b/145598135 - Generating host snapshots for anything other than linux is not supported.
-	SkipIfNotLinux(t)
-
 	result := testSdkWithCc(t, `
 		module_exports {
 			name: "myexports",
@@ -1434,6 +1496,7 @@ cc_prebuilt_library_static {
     host_supported: true,
     installable: false,
     stl: "none",
+    compile_multilib: "64",
     export_include_dirs: ["include/include"],
     arch: {
         x86_64: {
@@ -1449,6 +1512,7 @@ cc_prebuilt_library_static {
     device_supported: false,
     host_supported: true,
     stl: "none",
+    compile_multilib: "64",
     export_include_dirs: ["include/include"],
     arch: {
         x86_64: {
@@ -1501,6 +1565,7 @@ cc_prebuilt_library_headers {
     name: "mysdk_mynativeheaders@current",
     sdk_member_name: "mynativeheaders",
     stl: "none",
+    compile_multilib: "both",
     export_include_dirs: ["include/include"],
 }
 
@@ -1508,6 +1573,7 @@ cc_prebuilt_library_headers {
     name: "mynativeheaders",
     prefer: false,
     stl: "none",
+    compile_multilib: "both",
     export_include_dirs: ["include/include"],
 }
 
@@ -1523,9 +1589,6 @@ include/Test.h -> include/include/Test.h
 }
 
 func TestHostSnapshotWithCcHeadersLibrary(t *testing.T) {
-	// b/145598135 - Generating host snapshots for anything other than linux is not supported.
-	SkipIfNotLinux(t)
-
 	result := testSdkWithCc(t, `
 		sdk {
 			name: "mysdk",
@@ -1553,6 +1616,7 @@ cc_prebuilt_library_headers {
     device_supported: false,
     host_supported: true,
     stl: "none",
+    compile_multilib: "both",
     export_include_dirs: ["include/include"],
 }
 
@@ -1562,6 +1626,7 @@ cc_prebuilt_library_headers {
     device_supported: false,
     host_supported: true,
     stl: "none",
+    compile_multilib: "both",
     export_include_dirs: ["include/include"],
 }
 
@@ -1579,9 +1644,6 @@ include/Test.h -> include/include/Test.h
 }
 
 func TestDeviceAndHostSnapshotWithCcHeadersLibrary(t *testing.T) {
-	// b/145598135 - Generating host snapshots for anything other than linux is not supported.
-	SkipIfNotLinux(t)
-
 	result := testSdkWithCc(t, `
 		sdk {
 			name: "mysdk",
@@ -1614,13 +1676,14 @@ cc_prebuilt_library_headers {
     sdk_member_name: "mynativeheaders",
     host_supported: true,
     stl: "none",
-    export_system_include_dirs: ["include/include"],
+    compile_multilib: "both",
+    export_system_include_dirs: ["common_os/include/include"],
     target: {
         android: {
-            export_include_dirs: ["include/include-android"],
+            export_include_dirs: ["android/include/include-android"],
         },
         linux_glibc: {
-            export_include_dirs: ["include/include-host"],
+            export_include_dirs: ["linux_glibc/include/include-host"],
         },
     },
 }
@@ -1630,13 +1693,14 @@ cc_prebuilt_library_headers {
     prefer: false,
     host_supported: true,
     stl: "none",
-    export_system_include_dirs: ["include/include"],
+    compile_multilib: "both",
+    export_system_include_dirs: ["common_os/include/include"],
     target: {
         android: {
-            export_include_dirs: ["include/include-android"],
+            export_include_dirs: ["android/include/include-android"],
         },
         linux_glibc: {
-            export_include_dirs: ["include/include-host"],
+            export_include_dirs: ["linux_glibc/include/include-host"],
         },
     },
 }
@@ -1648,17 +1712,14 @@ sdk_snapshot {
 }
 `),
 		checkAllCopyRules(`
-include/Test.h -> include/include/Test.h
-include-android/AndroidTest.h -> include/include-android/AndroidTest.h
-include-host/HostTest.h -> include/include-host/HostTest.h
+include/Test.h -> common_os/include/include/Test.h
+include-android/AndroidTest.h -> android/include/include-android/AndroidTest.h
+include-host/HostTest.h -> linux_glibc/include/include-host/HostTest.h
 `),
 	)
 }
 
 func TestSystemSharedLibPropagation(t *testing.T) {
-	// b/145598135 - Generating host snapshots for anything other than linux is not supported.
-	SkipIfNotLinux(t)
-
 	result := testSdkWithCc(t, `
 		sdk {
 			name: "mysdk",
@@ -1689,6 +1750,7 @@ cc_prebuilt_library_shared {
     name: "mysdk_sslnil@current",
     sdk_member_name: "sslnil",
     installable: false,
+    compile_multilib: "both",
     arch: {
         arm64: {
             srcs: ["arm64/lib/sslnil.so"],
@@ -1702,6 +1764,7 @@ cc_prebuilt_library_shared {
 cc_prebuilt_library_shared {
     name: "sslnil",
     prefer: false,
+    compile_multilib: "both",
     arch: {
         arm64: {
             srcs: ["arm64/lib/sslnil.so"],
@@ -1716,6 +1779,7 @@ cc_prebuilt_library_shared {
     name: "mysdk_sslempty@current",
     sdk_member_name: "sslempty",
     installable: false,
+    compile_multilib: "both",
     system_shared_libs: [],
     arch: {
         arm64: {
@@ -1730,6 +1794,7 @@ cc_prebuilt_library_shared {
 cc_prebuilt_library_shared {
     name: "sslempty",
     prefer: false,
+    compile_multilib: "both",
     system_shared_libs: [],
     arch: {
         arm64: {
@@ -1745,6 +1810,7 @@ cc_prebuilt_library_shared {
     name: "mysdk_sslnonempty@current",
     sdk_member_name: "sslnonempty",
     installable: false,
+    compile_multilib: "both",
     system_shared_libs: ["mysdk_sslnil@current"],
     arch: {
         arm64: {
@@ -1759,6 +1825,7 @@ cc_prebuilt_library_shared {
 cc_prebuilt_library_shared {
     name: "sslnonempty",
     prefer: false,
+    compile_multilib: "both",
     system_shared_libs: ["sslnil"],
     arch: {
         arm64: {
@@ -1807,6 +1874,7 @@ cc_prebuilt_library_shared {
     sdk_member_name: "sslvariants",
     host_supported: true,
     installable: false,
+    compile_multilib: "both",
     target: {
         android: {
             system_shared_libs: [],
@@ -1830,6 +1898,7 @@ cc_prebuilt_library_shared {
     name: "sslvariants",
     prefer: false,
     host_supported: true,
+    compile_multilib: "both",
     target: {
         android: {
             system_shared_libs: [],
@@ -1886,6 +1955,7 @@ cc_prebuilt_library_shared {
     name: "mysdk_stubslib@current",
     sdk_member_name: "stubslib",
     installable: false,
+    compile_multilib: "both",
     stubs: {
         versions: ["3"],
     },
@@ -1902,6 +1972,7 @@ cc_prebuilt_library_shared {
 cc_prebuilt_library_shared {
     name: "stubslib",
     prefer: false,
+    compile_multilib: "both",
     stubs: {
         versions: ["3"],
     },
@@ -1923,9 +1994,6 @@ sdk_snapshot {
 }
 
 func TestDeviceAndHostSnapshotWithStubsLibrary(t *testing.T) {
-	// b/145598135 - Generating host snapshots for anything other than linux is not supported.
-	SkipIfNotLinux(t)
-
 	result := testSdkWithCc(t, `
 		sdk {
 			name: "mysdk",
@@ -1958,6 +2026,7 @@ cc_prebuilt_library_shared {
     sdk_member_name: "stubslib",
     host_supported: true,
     installable: false,
+    compile_multilib: "both",
     stubs: {
         versions: ["3"],
     },
@@ -1981,6 +2050,7 @@ cc_prebuilt_library_shared {
     name: "stubslib",
     prefer: false,
     host_supported: true,
+    compile_multilib: "both",
     stubs: {
         versions: ["3"],
     },
@@ -2009,9 +2079,6 @@ sdk_snapshot {
 }
 
 func TestUniqueHostSoname(t *testing.T) {
-	// b/145598135 - Generating host snapshots for anything other than linux is not supported.
-	SkipIfNotLinux(t)
-
 	result := testSdkWithCc(t, `
 		sdk {
 			name: "mysdk",
@@ -2036,6 +2103,7 @@ cc_prebuilt_library_shared {
     host_supported: true,
     installable: false,
     unique_host_soname: true,
+    compile_multilib: "both",
     target: {
         android_arm64: {
             srcs: ["android/arm64/lib/mylib.so"],
@@ -2057,6 +2125,7 @@ cc_prebuilt_library_shared {
     prefer: false,
     host_supported: true,
     unique_host_soname: true,
+    compile_multilib: "both",
     target: {
         android_arm64: {
             srcs: ["android/arm64/lib/mylib.so"],

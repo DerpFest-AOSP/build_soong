@@ -105,9 +105,10 @@ func (a *apexBundle) androidMkForFiles(w io.Writer, apexBundleName, apexName, mo
 		fmt.Fprintln(w, "LOCAL_MODULE :=", moduleName)
 		// /apex/<apex_name>/{lib|framework|...}
 		pathWhenActivated := filepath.Join("$(PRODUCT_OUT)", "apex", apexName, fi.installDir)
+		var modulePath string
 		if apexType == flattenedApex {
 			// /system/apex/<name>/{lib|framework|...}
-			modulePath := filepath.Join(a.installDir.ToMakePath().String(), apexBundleName, fi.installDir)
+			modulePath = filepath.Join(a.installDir.ToMakePath().String(), apexBundleName, fi.installDir)
 			fmt.Fprintln(w, "LOCAL_MODULE_PATH :=", modulePath)
 			if a.primaryApexType && !symbolFilesNotNeeded {
 				fmt.Fprintln(w, "LOCAL_SOONG_SYMBOL_PATH :=", pathWhenActivated)
@@ -115,9 +116,9 @@ func (a *apexBundle) androidMkForFiles(w io.Writer, apexBundleName, apexName, mo
 			if len(fi.symlinks) > 0 {
 				fmt.Fprintln(w, "LOCAL_MODULE_SYMLINKS :=", strings.Join(fi.symlinks, " "))
 			}
-			newDataPaths := []android.Path{}
+			newDataPaths := []android.DataPath{}
 			for _, path := range fi.dataPaths {
-				dataOutPath := modulePath + ":" + path.Rel()
+				dataOutPath := modulePath + ":" + path.SrcPath.Rel()
 				if ok := seenDataOutPaths[dataOutPath]; !ok {
 					newDataPaths = append(newDataPaths, path)
 					seenDataOutPaths[dataOutPath] = true
@@ -131,6 +132,7 @@ func (a *apexBundle) androidMkForFiles(w io.Writer, apexBundleName, apexName, mo
 				fmt.Fprintln(w, "LOCAL_NOTICE_FILE :=", strings.Join(fi.module.NoticeFiles().Strings(), " "))
 			}
 		} else {
+			modulePath = pathWhenActivated
 			fmt.Fprintln(w, "LOCAL_MODULE_PATH :=", pathWhenActivated)
 
 			// For non-flattend APEXes, the merged notice file is attached to the APEX itself.
@@ -193,8 +195,13 @@ func (a *apexBundle) androidMkForFiles(w io.Writer, apexBundleName, apexName, mo
 			// we need to remove the suffix from LOCAL_MODULE_STEM, otherwise
 			// we will have foo.apk.apk
 			fmt.Fprintln(w, "LOCAL_MODULE_STEM :=", strings.TrimSuffix(fi.Stem(), ".apk"))
-			if app, ok := fi.module.(*java.AndroidApp); ok && len(app.JniCoverageOutputs()) > 0 {
-				fmt.Fprintln(w, "LOCAL_PREBUILT_COVERAGE_ARCHIVE :=", strings.Join(app.JniCoverageOutputs().Strings(), " "))
+			if app, ok := fi.module.(*java.AndroidApp); ok {
+				if jniCoverageOutputs := app.JniCoverageOutputs(); len(jniCoverageOutputs) > 0 {
+					fmt.Fprintln(w, "LOCAL_PREBUILT_COVERAGE_ARCHIVE :=", strings.Join(jniCoverageOutputs.Strings(), " "))
+				}
+				if jniLibSymbols := app.JNISymbolsInstalls(modulePath); len(jniLibSymbols) > 0 {
+					fmt.Fprintln(w, "LOCAL_SOONG_JNI_LIBS_SYMBOLS :=", jniLibSymbols.String())
+				}
 			}
 			fmt.Fprintln(w, "include $(BUILD_SYSTEM)/soong_app_prebuilt.mk")
 		case appSet:
@@ -203,6 +210,7 @@ func (a *apexBundle) androidMkForFiles(w io.Writer, apexBundleName, apexName, mo
 				panic(fmt.Sprintf("Expected %s to be AndroidAppSet", fi.module))
 			}
 			fmt.Fprintln(w, "LOCAL_APK_SET_MASTER_FILE :=", as.MasterFile())
+			fmt.Fprintln(w, "LOCAL_APKCERTS_FILE :=", as.APKCertsFile().String())
 			fmt.Fprintln(w, "include $(BUILD_SYSTEM)/soong_android_app_set.mk")
 		case nativeSharedLib, nativeExecutable, nativeTest:
 			fmt.Fprintln(w, "LOCAL_MODULE_STEM :=", fi.Stem())

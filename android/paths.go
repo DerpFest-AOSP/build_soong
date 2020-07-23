@@ -486,6 +486,10 @@ func (p Paths) Strings() []string {
 	return ret
 }
 
+func CopyOfPaths(paths Paths) Paths {
+	return append(Paths(nil), paths...)
+}
+
 // FirstUniquePaths returns all unique elements of a Paths, keeping the first copy of each.  It
 // modifies the Paths slice contents in place, and returns a subslice of the original slice.
 func FirstUniquePaths(list Paths) Paths {
@@ -496,7 +500,8 @@ func FirstUniquePaths(list Paths) Paths {
 	return firstUniquePathsList(list)
 }
 
-// SortedUniquePaths returns what its name says
+// SortedUniquePaths returns all unique elements of a Paths in sorted order.  It modifies the
+// Paths slice contents in place, and returns a subslice of the original slice.
 func SortedUniquePaths(list Paths) Paths {
 	unique := FirstUniquePaths(list)
 	sort.Slice(unique, func(i, j int) bool {
@@ -1549,4 +1554,16 @@ func absolutePath(path string) string {
 		return path
 	}
 	return filepath.Join(absSrcDir, path)
+}
+
+// A DataPath represents the path of a file to be used as data, for example
+// a test library to be installed alongside a test.
+// The data file should be installed (copied from `<SrcPath>`) to
+// `<install_root>/<RelativeInstallPath>/<filename>`, or
+// `<install_root>/<filename>` if RelativeInstallPath is empty.
+type DataPath struct {
+	// The path of the data file that should be copied into the data directory
+	SrcPath Path
+	// The install path of the data file, relative to the install root.
+	RelativeInstallPath string
 }

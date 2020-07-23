@@ -28,7 +28,7 @@ var (
 	_     = pctx.SourcePathVariable("rustcCmd", "${config.RustBin}/rustc")
 	rustc = pctx.AndroidStaticRule("rustc",
 		blueprint.RuleParams{
-			Command: "$rustcCmd " +
+			Command: "$envVars $rustcCmd " +
 				"-C linker=${config.RustLinker} " +
 				"-C link-args=\"${crtBegin} ${config.RustLinkerArgs} ${linkFlags} ${crtEnd}\" " +
 				"--emit link -o $out --emit dep-info=$out.d $in ${libFlags} $rustcFlags",
@@ -37,19 +37,19 @@ var (
 			Deps:    blueprint.DepsGCC,
 			Depfile: "$out.d",
 		},
-		"rustcFlags", "linkFlags", "libFlags", "crtBegin", "crtEnd")
+		"rustcFlags", "linkFlags", "libFlags", "crtBegin", "crtEnd", "envVars")
 
 	_            = pctx.SourcePathVariable("clippyCmd", "${config.RustBin}/clippy-driver")
 	clippyDriver = pctx.AndroidStaticRule("clippy",
 		blueprint.RuleParams{
-			Command: "$clippyCmd " +
+			Command: "$envVars $clippyCmd " +
 				// Because clippy-driver uses rustc as backend, we need to have some output even during the linting.
 				// Use the metadata output as it has the smallest footprint.
 				"--emit metadata -o $out $in ${libFlags} " +
 				"$rustcFlags $clippyFlags",
 			CommandDeps: []string{"$clippyCmd"},
 		},
-		"rustcFlags", "libFlags", "clippyFlags")
+		"rustcFlags", "libFlags", "clippyFlags", "envVars")
 
 	zip = pctx.AndroidStaticRule("zip",
 		blueprint.RuleParams{
@@ -58,6 +58,14 @@ var (
 			Rspfile:        "$out.rsp",
 			RspfileContent: "$in",
 		})
+
+	cp = pctx.AndroidStaticRule("cp",
+		blueprint.RuleParams{
+			Command:        "cp `cat $outDir.rsp` $outDir",
+			Rspfile:        "${outDir}.rsp",
+			RspfileContent: "$in",
+		},
+		"outDir")
 )
 
 type buildOutput struct {
@@ -116,6 +124,7 @@ func transformSrctoCrate(ctx ModuleContext, main android.Path, deps PathDeps, fl
 
 	var inputs android.Paths
 	var implicits android.Paths
+	var envVars []string
 	var output buildOutput
 	var libFlags, rustcFlags, linkFlags []string
 	var implicitOutputs android.WritablePaths
@@ -166,6 +175,7 @@ func transformSrctoCrate(ctx ModuleContext, main android.Path, deps PathDeps, fl
 	implicits = append(implicits, rustLibsToPaths(deps.ProcMacros)...)
 	implicits = append(implicits, deps.StaticLibs...)
 	implicits = append(implicits, deps.SharedLibs...)
+
 	if deps.CrtBegin.Valid() {
 		implicits = append(implicits, deps.CrtBegin.Path(), deps.CrtEnd.Path())
 	}
@@ -189,6 +199,32 @@ func transformSrctoCrate(ctx ModuleContext, main android.Path, deps PathDeps, fl
 		output.coverageFile = gcnoFile
 	}
 
+	if len(deps.SrcDeps) > 0 {
+		genSubDir := "out/"
+		moduleGenDir := android.PathForModuleOut(ctx, genSubDir)
+		var outputs android.WritablePaths
+
+		for _, genSrc := range deps.SrcDeps {
+			if android.SuffixInList(outputs.Strings(), genSubDir+genSrc.Base()) {
+				ctx.PropertyErrorf("srcs",
+					"multiple source providers generate the same filename output: "+genSrc.Base())
+			}
+			outputs = append(outputs, android.PathForModuleOut(ctx, genSubDir+genSrc.Base()))
+		}
+
+		ctx.Build(pctx, android.BuildParams{
+			Rule:        cp,
+			Description: "cp " + moduleGenDir.Rel(),
+			Outputs:     outputs,
+			Inputs:      deps.SrcDeps,
+			Args: map[string]string{
+				"outDir": moduleGenDir.String(),
+			},
+		})
+		implicits = append(implicits, outputs.Paths()...)
+		envVars = append(envVars, "OUT_DIR=$$PWD/"+moduleGenDir.String())
+	}
+
 	if flags.Clippy {
 		clippyFile := android.PathForModuleOut(ctx, outputFile.Base()+".clippy")
 		ctx.Build(pctx, android.BuildParams{
@@ -202,6 +238,7 @@ func transformSrctoCrate(ctx ModuleContext, main android.Path, deps PathDeps, fl
 				"rustcFlags":  strings.Join(rustcFlags, " "),
 				"libFlags":    strings.Join(libFlags, " "),
 				"clippyFlags": strings.Join(flags.ClippyFlags, " "),
+				"envVars":     strings.Join(envVars, " "),
 			},
 		})
 		// Declare the clippy build as an implicit dependency of the original crate.
@@ -221,6 +258,7 @@ func transformSrctoCrate(ctx ModuleContext, main android.Path, deps PathDeps, fl
 			"libFlags":   strings.Join(libFlags, " "),
 			"crtBegin":   deps.CrtBegin.String(),
 			"crtEnd":     deps.CrtEnd.String(),
+			"envVars":    strings.Join(envVars, " "),
 		},
 	})
 

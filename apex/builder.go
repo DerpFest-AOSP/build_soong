@@ -390,7 +390,7 @@ func (a *apexBundle) buildUnflattenedApex(ctx android.ModuleContext) {
 		} else {
 			if fi.class == appSet {
 				copyCommands = append(copyCommands,
-					fmt.Sprintf("unzip -q -d %s %s", destPathDir, fi.builtFile.String()))
+					fmt.Sprintf("unzip -qDD -d %s %s", destPathDir, fi.builtFile.String()))
 			} else {
 				copyCommands = append(copyCommands, "cp -f "+fi.builtFile.String()+" "+destPath)
 			}
@@ -403,16 +403,16 @@ func (a *apexBundle) buildUnflattenedApex(ctx android.ModuleContext) {
 		}
 		for _, d := range fi.dataPaths {
 			// TODO(eakammer): This is now the third repetition of ~this logic for test paths, refactoring should be possible
-			relPath := d.Rel()
-			dataPath := d.String()
+			relPath := d.SrcPath.Rel()
+			dataPath := d.SrcPath.String()
 			if !strings.HasSuffix(dataPath, relPath) {
 				panic(fmt.Errorf("path %q does not end with %q", dataPath, relPath))
 			}
 
-			dataDest := android.PathForModuleOut(ctx, "image"+suffix, fi.apexRelativePath(relPath)).String()
+			dataDest := android.PathForModuleOut(ctx, "image"+suffix, fi.apexRelativePath(relPath), d.RelativeInstallPath).String()
 
-			copyCommands = append(copyCommands, "cp -f "+d.String()+" "+dataDest)
-			implicitInputs = append(implicitInputs, d)
+			copyCommands = append(copyCommands, "cp -f "+d.SrcPath.String()+" "+dataDest)
+			implicitInputs = append(implicitInputs, d.SrcPath)
 		}
 	}
 
@@ -473,7 +473,7 @@ func (a *apexBundle) buildUnflattenedApex(ctx android.ModuleContext) {
 			if f.installDir == "bin" || strings.HasPrefix(f.installDir, "bin/") {
 				executablePaths = append(executablePaths, pathInApex)
 				for _, d := range f.dataPaths {
-					readOnlyPaths = append(readOnlyPaths, filepath.Join(f.installDir, d.Rel()))
+					readOnlyPaths = append(readOnlyPaths, filepath.Join(f.installDir, d.RelativeInstallPath, d.SrcPath.Rel()))
 				}
 				for _, s := range f.symlinks {
 					executablePaths = append(executablePaths, filepath.Join(f.installDir, s))
