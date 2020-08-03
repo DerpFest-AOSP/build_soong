@@ -51,10 +51,10 @@ java_system_modules_import {
 	name: "core-current-stubs-system-modules",
 }
 java_system_modules_import {
-	name: "legacy-core-platform-api-stubs-system-modules",
+	name: "stable-core-platform-api-stubs-system-modules",
 }
 java_import {
-	name: "legacy.core.platform.api.stubs",
+	name: "stable.core.platform.api.stubs",
 }
 java_import {
 	name: "android_stubs_current",
@@ -204,8 +204,8 @@ func TestBasicSdkWithJavaLibrary(t *testing.T) {
 		}
 	`)
 
-	sdkMemberV1 := result.ctx.ModuleForTests("sdkmember_mysdk_1", "android_common_myapex").Rule("combineJar").Output
-	sdkMemberV2 := result.ctx.ModuleForTests("sdkmember_mysdk_2", "android_common_myapex2").Rule("combineJar").Output
+	sdkMemberV1 := result.ctx.ModuleForTests("sdkmember_mysdk_1", "android_common").Rule("combineJar").Output
+	sdkMemberV2 := result.ctx.ModuleForTests("sdkmember_mysdk_2", "android_common").Rule("combineJar").Output
 
 	javalibForMyApex := result.ctx.ModuleForTests("myjavalib", "android_common_myapex")
 	javalibForMyApex2 := result.ctx.ModuleForTests("myjavalib", "android_common_myapex2")

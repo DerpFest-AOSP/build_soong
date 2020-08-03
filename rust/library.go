@@ -340,7 +340,7 @@ func (library *libraryDecorator) compilerDeps(ctx DepsContext, deps Deps) Deps {
 	deps = library.baseCompiler.compilerDeps(ctx, deps)
 
 	if ctx.toolchain().Bionic() && (library.dylib() || library.shared()) {
-		deps = library.baseCompiler.bionicDeps(ctx, deps)
+		deps = bionicDeps(deps)
 		deps.CrtBegin = "crtbegin_so"
 		deps.CrtEnd = "crtend_so"
 	}
@@ -368,8 +368,7 @@ func (library *libraryDecorator) compilerFlags(ctx ModuleContext, flags Flags) F
 func (library *libraryDecorator) compile(ctx ModuleContext, flags Flags, deps PathDeps) android.Path {
 	var outputFile android.WritablePath
 
-	srcPath, paths := srcPathFromModuleSrcs(ctx, library.baseCompiler.Properties.Srcs)
-	deps.SrcDeps = append(deps.SrcDeps, paths...)
+	srcPath, _ := srcPathFromModuleSrcs(ctx, library.baseCompiler.Properties.Srcs)
 
 	flags.RustFlags = append(flags.RustFlags, deps.depFlags...)
 
@@ -455,25 +454,19 @@ func LibraryMutator(mctx android.BottomUpMutatorContext) {
 	if m, ok := mctx.Module().(*Module); ok && m.compiler != nil {
 		switch library := m.compiler.(type) {
 		case libraryInterface:
+			if library.buildRlib() && library.buildDylib() {
+				modules := mctx.CreateLocalVariations("rlib", "dylib")
+				rlib := modules[0].(*Module)
+				dylib := modules[1].(*Module)
 
-			// We only build the rust library variants here. This assumes that
-			// LinkageMutator runs first and there's an empty variant
-			// if rust variants are required.
-			if !library.static() && !library.shared() {
-				if library.buildRlib() && library.buildDylib() {
-					modules := mctx.CreateLocalVariations("rlib", "dylib")
-					rlib := modules[0].(*Module)
-					dylib := modules[1].(*Module)
-
-					rlib.compiler.(libraryInterface).setRlib()
-					dylib.compiler.(libraryInterface).setDylib()
-				} else if library.buildRlib() {
-					modules := mctx.CreateLocalVariations("rlib")
-					modules[0].(*Module).compiler.(libraryInterface).setRlib()
-				} else if library.buildDylib() {
-					modules := mctx.CreateLocalVariations("dylib")
-					modules[0].(*Module).compiler.(libraryInterface).setDylib()
-				}
+				rlib.compiler.(libraryInterface).setRlib()
+				dylib.compiler.(libraryInterface).setDylib()
+			} else if library.buildRlib() {
+				modules := mctx.CreateLocalVariations("rlib")
+				modules[0].(*Module).compiler.(libraryInterface).setRlib()
+			} else if library.buildDylib() {
+				modules := mctx.CreateLocalVariations("dylib")
+				modules[0].(*Module).compiler.(libraryInterface).setDylib()
 			}
 		}
 	}

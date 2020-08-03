@@ -86,7 +86,7 @@ func (binary *binaryDecorator) compilerDeps(ctx DepsContext, deps Deps) Deps {
 	deps = binary.baseCompiler.compilerDeps(ctx, deps)
 
 	if ctx.toolchain().Bionic() {
-		deps = binary.baseCompiler.bionicDeps(ctx, deps)
+		deps = bionicDeps(deps)
 		deps.CrtBegin = "crtbegin_dynamic"
 		deps.CrtEnd = "crtend_android"
 	}
@@ -106,8 +106,7 @@ func (binary *binaryDecorator) nativeCoverage() bool {
 func (binary *binaryDecorator) compile(ctx ModuleContext, flags Flags, deps PathDeps) android.Path {
 	fileName := binary.getStem(ctx) + ctx.toolchain().ExecutableSuffix()
 
-	srcPath, paths := srcPathFromModuleSrcs(ctx, binary.baseCompiler.Properties.Srcs)
-	deps.SrcDeps = append(deps.SrcDeps, paths...)
+	srcPath, _ := srcPathFromModuleSrcs(ctx, binary.baseCompiler.Properties.Srcs)
 
 	outputFile := android.PathForModuleOut(ctx, fileName)
 	binary.unstrippedOutputFile = outputFile

@@ -50,6 +50,11 @@ func (a *apexBundle) androidMkForFiles(w io.Writer, apexBundleName, apexName, mo
 		return moduleNames
 	}
 
+	// b/162366062. Prevent GKI APEXes to emit make rules to avoid conflicts.
+	if strings.HasPrefix(apexName, "com.android.gki.") && apexType != flattenedApex {
+		return moduleNames
+	}
+
 	// b/140136207. When there are overriding APEXes for a VNDK APEX, the symbols file for the overridden
 	// APEX and the overriding APEX will have the same installation paths at /apex/com.android.vndk.v<ver>
 	// as their apexName will be the same. To avoid the path conflicts, skip installing the symbol files
@@ -82,9 +87,9 @@ func (a *apexBundle) androidMkForFiles(w io.Writer, apexBundleName, apexName, mo
 
 		var moduleName string
 		if linkToSystemLib {
-			moduleName = fi.moduleName
+			moduleName = fi.androidMkModuleName
 		} else {
-			moduleName = fi.moduleName + "." + apexBundleName + a.suffix
+			moduleName = fi.androidMkModuleName + "." + apexBundleName + a.suffix
 		}
 
 		if !android.InList(moduleName, moduleNames) {
@@ -209,7 +214,7 @@ func (a *apexBundle) androidMkForFiles(w io.Writer, apexBundleName, apexName, mo
 			if !ok {
 				panic(fmt.Sprintf("Expected %s to be AndroidAppSet", fi.module))
 			}
-			fmt.Fprintln(w, "LOCAL_APK_SET_MASTER_FILE :=", as.MasterFile())
+			fmt.Fprintln(w, "LOCAL_APK_SET_INSTALL_FILE :=", as.InstallFile())
 			fmt.Fprintln(w, "LOCAL_APKCERTS_FILE :=", as.APKCertsFile().String())
 			fmt.Fprintln(w, "include $(BUILD_SYSTEM)/soong_android_app_set.mk")
 		case nativeSharedLib, nativeExecutable, nativeTest:
@@ -250,9 +255,9 @@ func (a *apexBundle) androidMkForFiles(w io.Writer, apexBundleName, apexName, mo
 		}
 
 		// m <module_name> will build <module_name>.<apex_name> as well.
-		if fi.moduleName != moduleName && a.primaryApexType {
-			fmt.Fprintln(w, ".PHONY: "+fi.moduleName)
-			fmt.Fprintln(w, fi.moduleName+": "+moduleName)
+		if fi.androidMkModuleName != moduleName && a.primaryApexType {
+			fmt.Fprintf(w, ".PHONY: %s\n", fi.androidMkModuleName)
+			fmt.Fprintf(w, "%s: %s\n", fi.androidMkModuleName, moduleName)
 		}
 	}
 	return moduleNames
@@ -352,6 +357,10 @@ func (a *apexBundle) androidMkForType() android.AndroidMkData {
 
 				if apexType == imageApex {
 					fmt.Fprintln(w, "ALL_MODULES.$(my_register_name).BUNDLE :=", a.bundleModuleFile.String())
+				}
+				if len(a.lintReports) > 0 {
+					fmt.Fprintln(w, "ALL_MODULES.$(my_register_name).LINT_REPORTS :=",
+						strings.Join(a.lintReports.Strings(), " "))
 				}
 
 				if a.installedFilesFile != nil {

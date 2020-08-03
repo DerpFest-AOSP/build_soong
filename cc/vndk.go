@@ -340,7 +340,7 @@ func processVndkLibrary(mctx android.BottomUpMutatorContext, m *Module) {
 	}
 }
 
-// Sanity check for modules that mustn't be VNDK
+// Check for modules that mustn't be VNDK
 func shouldSkipVndkMutator(m *Module) bool {
 	if !m.Enabled() {
 		return true
@@ -556,10 +556,6 @@ func (c *vndkSnapshotSingleton) GenerateBuildActions(ctx android.SingletonContex
 	}
 
 	if ctx.DeviceConfig().PlatformVndkVersion() == "" {
-		return
-	}
-
-	if ctx.DeviceConfig().BoardVndkRuntimeDisable() {
 		return
 	}
 

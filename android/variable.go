@@ -308,8 +308,6 @@ type productVariables struct {
 	BoardPlatPrivateSepolicyDirs []string `json:",omitempty"`
 	BoardSepolicyM4Defs          []string `json:",omitempty"`
 
-	BoardVndkRuntimeDisable *bool `json:",omitempty"`
-
 	VendorVars map[string]map[string]string `json:",omitempty"`
 
 	Ndk_abis               *bool `json:",omitempty"`
@@ -346,6 +344,8 @@ type productVariables struct {
 	InstallExtraFlattenedApexes *bool `json:",omitempty"`
 
 	BoardUsesRecoveryAsBoot *bool `json:",omitempty"`
+
+	BoardKernelBinaries []string `json:",omitempty"`
 }
 
 func boolPtr(v bool) *bool {

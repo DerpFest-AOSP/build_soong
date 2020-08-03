@@ -22,6 +22,8 @@ import (
 
 	"android/soong/android"
 	"android/soong/cc"
+	"android/soong/python"
+
 	"github.com/google/blueprint"
 )
 
@@ -85,6 +87,10 @@ func TestConfig(buildDir string, env map[string]string, bp string, fs map[string
 		"prebuilts/sdk/tools/core-lambda-stubs.jar":                nil,
 		"prebuilts/sdk/Android.bp":                                 []byte(`prebuilt_apis { name: "sdk", api_dirs: ["14", "28", "30", "current"],}`),
 
+		"bin.py": nil,
+		python.StubTemplateHost: []byte(`PYTHON_BINARY = '%interpreter%'
+		MAIN_FILE = '%main%'`),
+
 		// For java_sdk_library
 		"api/module-lib-current.txt":                        nil,
 		"api/module-lib-removed.txt":                        nil,
@@ -136,7 +142,7 @@ func GatherRequiredDepsForTest() string {
 				name: "%s",
 				srcs: ["a.java"],
 				sdk_version: "none",
-				system_modules: "legacy-core-platform-api-stubs-system-modules",
+				system_modules: "stable-core-platform-api-stubs-system-modules",
 			}
 		`, extra)
 	}
@@ -146,7 +152,7 @@ func GatherRequiredDepsForTest() string {
 			name: "framework",
 			srcs: ["a.java"],
 			sdk_version: "none",
-			system_modules: "legacy-core-platform-api-stubs-system-modules",
+			system_modules: "stable-core-platform-api-stubs-system-modules",
 			aidl: {
 				export_include_dirs: ["framework/aidl"],
 			},
@@ -161,7 +167,7 @@ func GatherRequiredDepsForTest() string {
 			name: "android.hidl.base-V1.0-java",
 			srcs: ["a.java"],
 			sdk_version: "none",
-			system_modules: "legacy-core-platform-api-stubs-system-modules",
+			system_modules: "stable-core-platform-api-stubs-system-modules",
 			installable: true,
 		}
 
@@ -169,7 +175,7 @@ func GatherRequiredDepsForTest() string {
 			name: "android.hidl.manager-V1.0-java",
 			srcs: ["a.java"],
 			sdk_version: "none",
-			system_modules: "legacy-core-platform-api-stubs-system-modules",
+			system_modules: "stable-core-platform-api-stubs-system-modules",
 			installable: true,
 		}
 
@@ -177,7 +183,7 @@ func GatherRequiredDepsForTest() string {
 			name: "org.apache.http.legacy",
 			srcs: ["a.java"],
 			sdk_version: "none",
-			system_modules: "legacy-core-platform-api-stubs-system-modules",
+			system_modules: "stable-core-platform-api-stubs-system-modules",
 			installable: true,
 		}
 
@@ -185,7 +191,7 @@ func GatherRequiredDepsForTest() string {
 			name: "android.test.base",
 			srcs: ["a.java"],
 			sdk_version: "none",
-			system_modules: "legacy-core-platform-api-stubs-system-modules",
+			system_modules: "stable-core-platform-api-stubs-system-modules",
 			installable: true,
 		}
   
@@ -193,7 +199,7 @@ func GatherRequiredDepsForTest() string {
 			name: "android.test.mock",
 			srcs: ["a.java"],
 			sdk_version: "none",
-			system_modules: "legacy-core-platform-api-stubs-system-modules",
+			system_modules: "stable-core-platform-api-stubs-system-modules",
 			installable: true,
 		}
 	`

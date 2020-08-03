@@ -669,7 +669,7 @@ func RegisterPreDepsMutators(ctx android.RegisterMutatorsContext) {
 }
 
 func RegisterPostDepsMutators(ctx android.RegisterMutatorsContext) {
-	ctx.TopDown("apex_deps", apexDepsMutator)
+	ctx.TopDown("apex_deps", apexDepsMutator).Parallel()
 	ctx.BottomUp("apex", apexMutator).Parallel()
 	ctx.BottomUp("apex_flattened", apexFlattenedMutator).Parallel()
 	ctx.BottomUp("apex_uses", apexUsesMutator).Parallel()
@@ -682,33 +682,43 @@ func apexDepsMutator(mctx android.TopDownMutatorContext) {
 	if !mctx.Module().Enabled() {
 		return
 	}
-	var apexBundles []android.ApexInfo
-	var directDep bool
-	if a, ok := mctx.Module().(*apexBundle); ok && !a.vndkApex {
-		apexBundles = []android.ApexInfo{{
-			ApexName:      mctx.ModuleName(),
-			MinSdkVersion: a.minSdkVersion(mctx),
-			Updatable:     a.Updatable(),
-		}}
-		directDep = true
-	} else if am, ok := mctx.Module().(android.ApexModule); ok {
-		apexBundles = am.ApexVariations()
-		directDep = false
+	a, ok := mctx.Module().(*apexBundle)
+	if !ok || a.vndkApex {
+		return
+	}
+	apexInfo := android.ApexInfo{
+		ApexName:      mctx.ModuleName(),
+		MinSdkVersion: a.minSdkVersion(mctx),
+		Updatable:     a.Updatable(),
 	}
 
-	if len(apexBundles) == 0 {
+	useVndk := a.SocSpecific() || a.DeviceSpecific() || (a.ProductSpecific() && mctx.Config().EnforceProductPartitionInterface())
+	excludeVndkLibs := useVndk && proptools.Bool(a.properties.Use_vndk_as_stable)
+	if !useVndk && proptools.Bool(a.properties.Use_vndk_as_stable) {
+		mctx.PropertyErrorf("use_vndk_as_stable", "not supported for system/system_ext APEXes")
 		return
 	}
 
-	cur := mctx.Module().(android.DepIsInSameApex)
-
-	mctx.VisitDirectDeps(func(child android.Module) {
-		depName := mctx.OtherModuleName(child)
-		if am, ok := child.(android.ApexModule); ok && am.CanHaveApexVariants() &&
-			(cur.DepIsInSameApex(mctx, child) || inAnySdk(child)) {
-			android.UpdateApexDependency(apexBundles, depName, directDep)
-			am.BuildForApexes(apexBundles)
+	mctx.WalkDeps(func(child, parent android.Module) bool {
+		am, ok := child.(android.ApexModule)
+		if !ok || !am.CanHaveApexVariants() {
+			return false
 		}
+		if !parent.(android.DepIsInSameApex).DepIsInSameApex(mctx, child) {
+			return false
+		}
+		if excludeVndkLibs {
+			if c, ok := child.(*cc.Module); ok && c.IsVndk() {
+				return false
+			}
+		}
+
+		depName := mctx.OtherModuleName(child)
+		// If the parent is apexBundle, this child is directly depended.
+		_, directDep := parent.(*apexBundle)
+		android.UpdateApexDependency(apexInfo, depName, directDep)
+		am.BuildForApex(apexInfo)
+		return true
 	})
 }
 
@@ -1012,6 +1022,11 @@ type apexBundleProperties struct {
 
 	// The minimum SDK version that this apex must be compatibile with.
 	Min_sdk_version *string
+
+	// If set true, VNDK libs are considered as stable libs and are not included in this apex.
+	// Should be only used in non-system apexes (e.g. vendor: true).
+	// Default is false.
+	Use_vndk_as_stable *bool
 }
 
 type apexTargetBundleProperties struct {
@@ -1137,12 +1152,14 @@ func (class apexFileClass) NameInMake() string {
 
 // apexFile represents a file in an APEX bundle
 type apexFile struct {
-	builtFile  android.Path
-	stem       string
-	moduleName string
-	installDir string
-	class      apexFileClass
-	module     android.Module
+	builtFile android.Path
+	stem      string
+	// Module name of `module` in AndroidMk. Note the generated AndroidMk module for
+	// apexFile is named something like <AndroidMk module name>.<apex name>[<apex suffix>]
+	androidMkModuleName string
+	installDir          string
+	class               apexFileClass
+	module              android.Module
 	// list of symlinks that will be created in installDir that point to this apexFile
 	symlinks      []string
 	dataPaths     []android.DataPath
@@ -1154,19 +1171,20 @@ type apexFile struct {
 	hostRequiredModuleNames   []string
 
 	jacocoReportClassesFile android.Path     // only for javalibs and apps
+	lintDepSets             java.LintDepSets // only for javalibs and apps
 	certificate             java.Certificate // only for apps
 	overriddenPackageName   string           // only for apps
 
 	isJniLib bool
 }
 
-func newApexFile(ctx android.BaseModuleContext, builtFile android.Path, moduleName string, installDir string, class apexFileClass, module android.Module) apexFile {
+func newApexFile(ctx android.BaseModuleContext, builtFile android.Path, androidMkModuleName string, installDir string, class apexFileClass, module android.Module) apexFile {
 	ret := apexFile{
-		builtFile:  builtFile,
-		moduleName: moduleName,
-		installDir: installDir,
-		class:      class,
-		module:     module,
+		builtFile:           builtFile,
+		androidMkModuleName: androidMkModuleName,
+		installDir:          installDir,
+		class:               class,
+		module:              module,
 	}
 	if module != nil {
 		ret.moduleDir = ctx.OtherModuleDir(module)
@@ -1278,6 +1296,9 @@ type apexBundle struct {
 
 	// Struct holding the merged notice file paths in different formats
 	mergedNotices android.NoticeOutputs
+
+	// Optional list of lint report zip files for apexes that contain java or app modules
+	lintReports android.Paths
 }
 
 func addDependenciesForNativeModules(ctx android.BottomUpMutatorContext,
@@ -1620,7 +1641,8 @@ func apexFileForNativeLibrary(ctx android.BaseModuleContext, ccMod *cc.Module, h
 	}
 
 	fileToCopy := ccMod.OutputFile().Path()
-	return newApexFile(ctx, fileToCopy, ccMod.Name(), dirInApex, nativeSharedLib, ccMod)
+	androidMkModuleName := ccMod.BaseModuleName() + ccMod.Properties.SubName
+	return newApexFile(ctx, fileToCopy, androidMkModuleName, dirInApex, nativeSharedLib, ccMod)
 }
 
 func apexFileForExecutable(ctx android.BaseModuleContext, cc *cc.Module) apexFile {
@@ -1630,7 +1652,8 @@ func apexFileForExecutable(ctx android.BaseModuleContext, cc *cc.Module) apexFil
 	}
 	dirInApex = filepath.Join(dirInApex, cc.RelativeInstallPath())
 	fileToCopy := cc.OutputFile().Path()
-	af := newApexFile(ctx, fileToCopy, cc.Name(), dirInApex, nativeExecutable, cc)
+	androidMkModuleName := cc.BaseModuleName() + cc.Properties.SubName
+	af := newApexFile(ctx, fileToCopy, androidMkModuleName, dirInApex, nativeExecutable, cc)
 	af.symlinks = cc.Symlinks()
 	af.dataPaths = cc.DataPaths()
 	return af
@@ -1639,7 +1662,7 @@ func apexFileForExecutable(ctx android.BaseModuleContext, cc *cc.Module) apexFil
 func apexFileForPyBinary(ctx android.BaseModuleContext, py *python.Module) apexFile {
 	dirInApex := "bin"
 	fileToCopy := py.HostToolPath().Path()
-	return newApexFile(ctx, fileToCopy, py.Name(), dirInApex, pyBinary, py)
+	return newApexFile(ctx, fileToCopy, py.BaseModuleName(), dirInApex, pyBinary, py)
 }
 func apexFileForGoBinary(ctx android.BaseModuleContext, depName string, gb bootstrap.GoBinaryTool) apexFile {
 	dirInApex := "bin"
@@ -1658,25 +1681,33 @@ func apexFileForGoBinary(ctx android.BaseModuleContext, depName string, gb boots
 func apexFileForShBinary(ctx android.BaseModuleContext, sh *sh.ShBinary) apexFile {
 	dirInApex := filepath.Join("bin", sh.SubDir())
 	fileToCopy := sh.OutputFile()
-	af := newApexFile(ctx, fileToCopy, sh.Name(), dirInApex, shBinary, sh)
+	af := newApexFile(ctx, fileToCopy, sh.BaseModuleName(), dirInApex, shBinary, sh)
 	af.symlinks = sh.Symlinks()
 	return af
 }
 
-type javaDependency interface {
+type javaModule interface {
+	android.Module
+	BaseModuleName() string
 	DexJarBuildPath() android.Path
 	JacocoReportClassesFile() android.Path
+	LintDepSets() java.LintDepSets
+
 	Stem() string
 }
 
-func apexFileForJavaLibrary(ctx android.BaseModuleContext, lib javaDependency, module android.Module) apexFile {
+var _ javaModule = (*java.Library)(nil)
+var _ javaModule = (*java.SdkLibrary)(nil)
+var _ javaModule = (*java.DexImport)(nil)
+var _ javaModule = (*java.SdkLibraryImport)(nil)
+
+func apexFileForJavaLibrary(ctx android.BaseModuleContext, module javaModule) apexFile {
 	dirInApex := "javalib"
-	fileToCopy := lib.DexJarBuildPath()
-	// Remove prebuilt_ if necessary so the source and prebuilt modules have the same name.
-	name := strings.TrimPrefix(module.Name(), "prebuilt_")
-	af := newApexFile(ctx, fileToCopy, name, dirInApex, javaSharedLib, module)
-	af.jacocoReportClassesFile = lib.JacocoReportClassesFile()
-	af.stem = lib.Stem() + ".jar"
+	fileToCopy := module.DexJarBuildPath()
+	af := newApexFile(ctx, fileToCopy, module.BaseModuleName(), dirInApex, javaSharedLib, module)
+	af.jacocoReportClassesFile = module.JacocoReportClassesFile()
+	af.lintDepSets = module.LintDepSets()
+	af.stem = module.Stem() + ".jar"
 	return af
 }
 
@@ -1699,6 +1730,7 @@ func apexFileForAndroidApp(ctx android.BaseModuleContext, aapp interface {
 	OutputFile() android.Path
 	JacocoReportClassesFile() android.Path
 	Certificate() java.Certificate
+	BaseModuleName() string
 }) apexFile {
 	appDir := "app"
 	if aapp.Privileged() {
@@ -1706,7 +1738,7 @@ func apexFileForAndroidApp(ctx android.BaseModuleContext, aapp interface {
 	}
 	dirInApex := filepath.Join(appDir, aapp.InstallApkName())
 	fileToCopy := aapp.OutputFile()
-	af := newApexFile(ctx, fileToCopy, aapp.Name(), dirInApex, app, aapp)
+	af := newApexFile(ctx, fileToCopy, aapp.BaseModuleName(), dirInApex, app, aapp)
 	af.jacocoReportClassesFile = aapp.JacocoReportClassesFile()
 	af.certificate = aapp.Certificate()
 
@@ -1812,7 +1844,8 @@ func (a *apexBundle) checkApexAvailability(ctx android.ModuleContext) {
 
 	// Because APEXes targeting other than system/system_ext partitions
 	// can't set apex_available, we skip checks for these APEXes
-	if ctx.SocSpecific() || ctx.DeviceSpecific() || ctx.ProductSpecific() {
+	if a.SocSpecific() || a.DeviceSpecific() ||
+		(a.ProductSpecific() && ctx.Config().EnforceProductPartitionInterface()) {
 		return
 	}
 
@@ -2031,7 +2064,7 @@ func (a *apexBundle) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 			case javaLibTag:
 				switch child.(type) {
 				case *java.Library, *java.SdkLibrary, *java.DexImport, *java.SdkLibraryImport:
-					af := apexFileForJavaLibrary(ctx, child.(javaDependency), child.(android.Module))
+					af := apexFileForJavaLibrary(ctx, child.(javaModule))
 					if !af.Ok() {
 						ctx.PropertyErrorf("java_libs", "%q is not configured to be compiled into dex", depName)
 						return false
@@ -2054,7 +2087,7 @@ func (a *apexBundle) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 					if ap.Privileged() {
 						appDir = "priv-app"
 					}
-					af := newApexFile(ctx, ap.OutputFile(), ap.Name(),
+					af := newApexFile(ctx, ap.OutputFile(), ap.BaseModuleName(),
 						filepath.Join(appDir, ap.BaseModuleName()), appSet, ap)
 					af.certificate = java.PresignedCertificate
 					filesInfo = append(filesInfo, af)
@@ -2128,6 +2161,10 @@ func (a *apexBundle) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 							// don't include it in this APEX
 							return false
 						}
+						if cc.UseVndk() && proptools.Bool(a.properties.Use_vndk_as_stable) && cc.IsVndk() {
+							requireNativeLibs = append(requireNativeLibs, ":vndk")
+							return false
+						}
 						af := apexFileForNativeLibrary(ctx, cc, handleSpecialLibs)
 						af.transitiveDep = true
 						if !a.Host() && !android.DirectlyInApex(ctx.ModuleName(), depName) && (cc.IsStubs() || cc.HasStubsVariants()) {
@@ -2164,7 +2201,7 @@ func (a *apexBundle) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 						// use the name of the generated test binary (`fileToCopy`) instead of the name
 						// of the original test module (`depName`, shared by all `test_per_src`
 						// variations of that module).
-						af.moduleName = filepath.Base(af.builtFile.String())
+						af.androidMkModuleName = filepath.Base(af.builtFile.String())
 						// these are not considered transitive dep
 						af.transitiveDep = false
 						filesInfo = append(filesInfo, af)
@@ -2245,7 +2282,8 @@ func (a *apexBundle) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 
 	// APEXes targeting other than system/system_ext partitions use vendor/product variants.
 	// So we can't link them to /system/lib libs which are core variants.
-	if a.SocSpecific() || a.DeviceSpecific() || a.ProductSpecific() {
+	if a.SocSpecific() || a.DeviceSpecific() ||
+		(a.ProductSpecific() && ctx.Config().EnforceProductPartitionInterface()) {
 		a.linkToSystemLib = false
 	}
 
@@ -2275,6 +2313,8 @@ func (a *apexBundle) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 	a.compatSymlinks = makeCompatSymlinks(a.BaseModuleName(), ctx)
 
 	a.buildApexDependencyInfo(ctx)
+
+	a.buildLintReports(ctx)
 }
 
 // Enforce that Java deps of the apex are using stable SDKs to compile
