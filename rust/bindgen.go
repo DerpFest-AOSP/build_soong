@@ -18,6 +18,7 @@ import (
 	"strings"
 
 	"github.com/google/blueprint"
+	"github.com/google/blueprint/proptools"
 
 	"android/soong/android"
 	ccConfig "android/soong/cc/config"
@@ -41,12 +42,12 @@ var (
 	bindgen = pctx.AndroidStaticRule("bindgen",
 		blueprint.RuleParams{
 			Command: "CLANG_PATH=$bindgenClang LIBCLANG_PATH=$bindgenLibClang RUSTFMT=${config.RustBin}/rustfmt " +
-				"$bindgenCmd $flags $in -o $out -- -MD -MF $out.d $cflags",
-			CommandDeps: []string{"$bindgenCmd"},
+				"$cmd $flags $in -o $out -- -MD -MF $out.d $cflags",
+			CommandDeps: []string{"$cmd"},
 			Deps:        blueprint.DepsGCC,
 			Depfile:     "$out.d",
 		},
-		"flags", "cflags")
+		"cmd", "flags", "cflags")
 )
 
 func init() {
@@ -61,7 +62,7 @@ type BindgenProperties struct {
 	Wrapper_src *string `android:"path,arch_variant"`
 
 	// list of bindgen-specific flags and options
-	Flags []string `android:"arch_variant"`
+	Bindgen_flags []string `android:"arch_variant"`
 
 	// list of clang flags required to correctly interpret the headers.
 	Cflags []string `android:"arch_variant"`
@@ -76,16 +77,22 @@ type BindgenProperties struct {
 	// list of shared libraries that provide headers for this binding.
 	Shared_libs []string `android:"arch_variant"`
 
+	// module name of a custom binary/script which should be used instead of the 'bindgen' binary. This custom
+	// binary must expect arguments in a similar fashion to bindgen, e.g.
+	//
+	// "my_bindgen [flags] wrapper_header.h -o [output_path] -- [clang flags]"
+	Custom_bindgen string `android:"path"`
+
 	//TODO(b/161141999) Add support for headers from cc_library_header modules.
 }
 
 type bindgenDecorator struct {
-	*baseSourceProvider
+	*BaseSourceProvider
 
 	Properties BindgenProperties
 }
 
-func (b *bindgenDecorator) generateSource(ctx android.ModuleContext, deps PathDeps) android.Path {
+func (b *bindgenDecorator) GenerateSource(ctx android.ModuleContext, deps PathDeps) android.Path {
 	ccToolchain := ccConfig.FindToolchain(ctx.Os(), ctx.Arch())
 
 	var cflags []string
@@ -113,40 +120,53 @@ func (b *bindgenDecorator) generateSource(ctx android.ModuleContext, deps PathDe
 		cflags = append(cflags, "-isystem "+include.String())
 	}
 
+	esc := proptools.NinjaAndShellEscapeList
+
 	// Module defined clang flags and include paths
-	cflags = append(cflags, b.Properties.Cflags...)
+	cflags = append(cflags, esc(b.Properties.Cflags)...)
 	for _, include := range b.Properties.Local_include_dirs {
 		cflags = append(cflags, "-I"+android.PathForModuleSrc(ctx, include).String())
 		implicits = append(implicits, android.PathForModuleSrc(ctx, include))
 	}
 
 	bindgenFlags := defaultBindgenFlags
-	bindgenFlags = append(bindgenFlags, strings.Join(b.Properties.Flags, " "))
+	bindgenFlags = append(bindgenFlags, esc(b.Properties.Bindgen_flags)...)
 
 	wrapperFile := android.OptionalPathForModuleSrc(ctx, b.Properties.Wrapper_src)
 	if !wrapperFile.Valid() {
 		ctx.PropertyErrorf("wrapper_src", "invalid path to wrapper source")
 	}
 
-	outputFile := android.PathForModuleOut(ctx, b.baseSourceProvider.getStem(ctx)+".rs")
+	outputFile := android.PathForModuleOut(ctx, b.BaseSourceProvider.getStem(ctx)+".rs")
+
+	var cmd, cmdDesc string
+	if b.Properties.Custom_bindgen != "" {
+		cmd = ctx.GetDirectDepWithTag(b.Properties.Custom_bindgen, customBindgenDepTag).(*Module).HostToolPath().String()
+		cmdDesc = b.Properties.Custom_bindgen
+	} else {
+		cmd = "$bindgenCmd"
+		cmdDesc = "bindgen"
+	}
 
 	ctx.Build(pctx, android.BuildParams{
 		Rule:        bindgen,
-		Description: "bindgen " + wrapperFile.Path().Rel(),
+		Description: strings.Join([]string{cmdDesc, wrapperFile.Path().Rel()}, " "),
 		Output:      outputFile,
 		Input:       wrapperFile.Path(),
 		Implicits:   implicits,
 		Args: map[string]string{
+			"cmd":    cmd,
 			"flags":  strings.Join(bindgenFlags, " "),
 			"cflags": strings.Join(cflags, " "),
 		},
 	})
-	b.baseSourceProvider.outputFile = outputFile
+
+	b.BaseSourceProvider.OutputFile = outputFile
 	return outputFile
 }
 
-func (b *bindgenDecorator) sourceProviderProps() []interface{} {
-	return append(b.baseSourceProvider.sourceProviderProps(),
+func (b *bindgenDecorator) SourceProviderProps() []interface{} {
+	return append(b.BaseSourceProvider.SourceProviderProps(),
 		&b.Properties)
 }
 
@@ -164,19 +184,18 @@ func RustBindgenHostFactory() android.Module {
 }
 
 func NewRustBindgen(hod android.HostOrDeviceSupported) (*Module, *bindgenDecorator) {
-	module := newModule(hod, android.MultilibBoth)
-
 	bindgen := &bindgenDecorator{
-		baseSourceProvider: NewSourceProvider(),
+		BaseSourceProvider: NewSourceProvider(),
 		Properties:         BindgenProperties{},
 	}
-	module.sourceProvider = bindgen
+
+	module := NewSourceProviderModule(hod, bindgen, false)
 
 	return module, bindgen
 }
 
-func (b *bindgenDecorator) sourceProviderDeps(ctx DepsContext, deps Deps) Deps {
-	deps = b.baseSourceProvider.sourceProviderDeps(ctx, deps)
+func (b *bindgenDecorator) SourceProviderDeps(ctx DepsContext, deps Deps) Deps {
+	deps = b.BaseSourceProvider.SourceProviderDeps(ctx, deps)
 	if ctx.toolchain().Bionic() {
 		deps = bionicDeps(deps)
 	}

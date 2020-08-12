@@ -256,6 +256,7 @@ type Module interface {
 	InstallForceOS() *OsType
 	SkipInstall()
 	IsSkipInstall() bool
+	MakeUninstallable()
 	ExportedToMake() bool
 	InitRc() Paths
 	VintfFragments() Paths
@@ -568,6 +569,12 @@ type commonProperties struct {
 type TaggedDistFiles map[string]Paths
 
 func MakeDefaultDistFiles(paths ...Path) TaggedDistFiles {
+	for _, path := range paths {
+		if path == nil {
+			panic("The path to a dist file cannot be nil.")
+		}
+	}
+
 	// The default OutputFile tag is the empty "" string.
 	return TaggedDistFiles{"": paths}
 }
@@ -1044,6 +1051,15 @@ func (m *ModuleBase) SkipInstall() {
 
 func (m *ModuleBase) IsSkipInstall() bool {
 	return m.commonProperties.SkipInstall == true
+}
+
+// Similar to SkipInstall, but if the AndroidMk entry would set
+// LOCAL_UNINSTALLABLE_MODULE then this variant may still output that entry
+// rather than leaving it out altogether. That happens in cases where it would
+// have other side effects, in particular when it adds a NOTICE file target,
+// which other install targets might depend on.
+func (m *ModuleBase) MakeUninstallable() {
+	m.SkipInstall()
 }
 
 func (m *ModuleBase) ExportedToMake() bool {
@@ -1839,7 +1855,7 @@ func (b *baseModuleContext) GetTagPath() []blueprint.DependencyTag {
 
 // A regexp for removing boilerplate from BaseDependencyTag from the string representation of
 // a dependency tag.
-var tagCleaner = regexp.MustCompile(`\QBaseDependencyTag:blueprint.BaseDependencyTag{}\E(, )?`)
+var tagCleaner = regexp.MustCompile(`\QBaseDependencyTag:{}\E(, )?`)
 
 // PrettyPrintTag returns string representation of the tag, but prefers
 // custom String() method if available.
@@ -1850,7 +1866,7 @@ func PrettyPrintTag(tag blueprint.DependencyTag) string {
 	}
 
 	// Otherwise, get a default string representation of the tag's struct.
-	tagString := fmt.Sprintf("%#v", tag)
+	tagString := fmt.Sprintf("%T: %+v", tag, tag)
 
 	// Remove the boilerplate from BaseDependencyTag as it adds no value.
 	tagString = tagCleaner.ReplaceAllString(tagString, "")

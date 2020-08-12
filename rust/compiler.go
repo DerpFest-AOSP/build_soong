@@ -32,6 +32,10 @@ func (compiler *baseCompiler) setNoStdlibs() {
 	compiler.Properties.No_stdlibs = proptools.BoolPtr(true)
 }
 
+func (compiler *baseCompiler) setNoLint() {
+	compiler.Properties.No_lint = proptools.BoolPtr(true)
+}
+
 func NewBaseCompiler(dir, dir64 string, location installLocation) *baseCompiler {
 	return &baseCompiler{
 		Properties: BaseCompilerProperties{},
@@ -81,7 +85,10 @@ type BaseCompilerProperties struct {
 	// list of C static library dependencies
 	Static_libs []string `android:"arch_variant"`
 
-	// crate name, required for libraries. This must be the expected extern crate name used in source
+	// crate name, required for modules which produce Rust libraries: rust_library, rust_ffi and SourceProvider
+	// modules which create library variants (rust_bindgen). This must be the expected extern crate name used in
+	// source, and is required to conform to an enforced format matching library output files (if the output file is
+	// lib<someName><suffix>, the crate_name property must be <someName>).
 	Crate_name string `android:"arch_variant"`
 
 	// list of features to enable for this crate
@@ -120,6 +127,14 @@ type baseCompiler struct {
 	distFile              android.OptionalPath
 }
 
+func (compiler *baseCompiler) Disabled() bool {
+	return false
+}
+
+func (compiler *baseCompiler) SetDisabled() {
+	panic("baseCompiler does not implement SetDisabled()")
+}
+
 func (compiler *baseCompiler) coverageOutputZipPath() android.OptionalPath {
 	panic("baseCompiler does not implement coverageOutputZipPath()")
 }
@@ -144,7 +159,9 @@ func (compiler *baseCompiler) featuresToFlags(features []string) []string {
 
 func (compiler *baseCompiler) compilerFlags(ctx ModuleContext, flags Flags) Flags {
 
-	if !Bool(compiler.Properties.No_lint) {
+	if Bool(compiler.Properties.No_lint) {
+		flags.RustFlags = append(flags.RustFlags, config.AllowAllLints)
+	} else {
 		flags.RustFlags = append(flags.RustFlags, config.RustcLintsForDir(ctx.ModuleDir()))
 	}
 	flags.RustFlags = append(flags.RustFlags, compiler.Properties.Flags...)

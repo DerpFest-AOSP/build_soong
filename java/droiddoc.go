@@ -294,6 +294,9 @@ type DroidstubsProperties struct {
 	// the dirs which Metalava extracts API levels annotations from.
 	Api_levels_annotations_dirs []string
 
+	// the filename which Metalava extracts API levels annotations from. Defaults to android.jar.
+	Api_levels_jar_filename *string
+
 	// if set to true, collect the values used by the Dev tools and
 	// write them in files packaged with the SDK. Defaults to false.
 	Write_sdk_values *bool
@@ -1078,9 +1081,7 @@ func (d *Droiddoc) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 
 	rule.Build(pctx, ctx, "javadoc", desc)
 
-	if apiCheckEnabled(ctx, d.properties.Check_api.Current, "current") &&
-		!ctx.Config().IsPdkBuild() {
-
+	if apiCheckEnabled(ctx, d.properties.Check_api.Current, "current") {
 		apiFile := android.PathForModuleSrc(ctx, String(d.properties.Check_api.Current.Api_file))
 		removedApiFile := android.PathForModuleSrc(ctx, String(d.properties.Check_api.Current.Removed_api_file))
 
@@ -1147,9 +1148,7 @@ func (d *Droiddoc) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 		rule.Build(pctx, ctx, "doclavaCurrentApiUpdate", "update current API")
 	}
 
-	if apiCheckEnabled(ctx, d.properties.Check_api.Last_released, "last_released") &&
-		!ctx.Config().IsPdkBuild() {
-
+	if apiCheckEnabled(ctx, d.properties.Check_api.Last_released, "last_released") {
 		apiFile := android.PathForModuleSrc(ctx, String(d.properties.Check_api.Last_released.Api_file))
 		removedApiFile := android.PathForModuleSrc(ctx, String(d.properties.Check_api.Last_released.Removed_api_file))
 
@@ -1407,38 +1406,41 @@ func (d *Droidstubs) inclusionAnnotationsFlags(ctx android.ModuleContext, cmd *a
 }
 
 func (d *Droidstubs) apiLevelsAnnotationsFlags(ctx android.ModuleContext, cmd *android.RuleBuilderCommand) {
-	if Bool(d.properties.Api_levels_annotations_enabled) {
-		d.apiVersionsXml = android.PathForModuleOut(ctx, "api-versions.xml")
-
-		if len(d.properties.Api_levels_annotations_dirs) == 0 {
-			ctx.PropertyErrorf("api_levels_annotations_dirs",
-				"has to be non-empty if api levels annotations was enabled!")
-		}
-
-		cmd.FlagWithOutput("--generate-api-levels ", d.apiVersionsXml)
-		cmd.FlagWithInput("--apply-api-levels ", d.apiVersionsXml)
-		cmd.FlagWithArg("--current-version ", ctx.Config().PlatformSdkVersion())
-		cmd.FlagWithArg("--current-codename ", ctx.Config().PlatformSdkCodename())
-
-		ctx.VisitDirectDepsWithTag(metalavaAPILevelsAnnotationsDirTag, func(m android.Module) {
-			if t, ok := m.(*ExportedDroiddocDir); ok {
-				for _, dep := range t.deps {
-					if strings.HasSuffix(dep.String(), "android.jar") {
-						cmd.Implicit(dep)
-					}
-				}
-				cmd.FlagWithArg("--android-jar-pattern ", t.dir.String()+"/%/public/android.jar")
-			} else {
-				ctx.PropertyErrorf("api_levels_annotations_dirs",
-					"module %q is not a metalava api-levels-annotations dir", ctx.OtherModuleName(m))
-			}
-		})
-
+	if !Bool(d.properties.Api_levels_annotations_enabled) {
+		return
 	}
+
+	d.apiVersionsXml = android.PathForModuleOut(ctx, "api-versions.xml")
+
+	if len(d.properties.Api_levels_annotations_dirs) == 0 {
+		ctx.PropertyErrorf("api_levels_annotations_dirs",
+			"has to be non-empty if api levels annotations was enabled!")
+	}
+
+	cmd.FlagWithOutput("--generate-api-levels ", d.apiVersionsXml)
+	cmd.FlagWithInput("--apply-api-levels ", d.apiVersionsXml)
+	cmd.FlagWithArg("--current-version ", ctx.Config().PlatformSdkVersion())
+	cmd.FlagWithArg("--current-codename ", ctx.Config().PlatformSdkCodename())
+
+	filename := proptools.StringDefault(d.properties.Api_levels_jar_filename, "android.jar")
+
+	ctx.VisitDirectDepsWithTag(metalavaAPILevelsAnnotationsDirTag, func(m android.Module) {
+		if t, ok := m.(*ExportedDroiddocDir); ok {
+			for _, dep := range t.deps {
+				if strings.HasSuffix(dep.String(), filename) {
+					cmd.Implicit(dep)
+				}
+			}
+			cmd.FlagWithArg("--android-jar-pattern ", t.dir.String()+"/%/public/"+filename)
+		} else {
+			ctx.PropertyErrorf("api_levels_annotations_dirs",
+				"module %q is not a metalava api-levels-annotations dir", ctx.OtherModuleName(m))
+		}
+	})
 }
 
 func (d *Droidstubs) apiToXmlFlags(ctx android.ModuleContext, cmd *android.RuleBuilderCommand) {
-	if Bool(d.properties.Jdiff_enabled) && !ctx.Config().IsPdkBuild() && d.apiFile != nil {
+	if Bool(d.properties.Jdiff_enabled) && d.apiFile != nil {
 		if d.apiFile.String() == "" {
 			ctx.ModuleErrorf("API signature file has to be specified in Metalava when jdiff is enabled.")
 		}
@@ -1586,7 +1588,7 @@ func (d *Droidstubs) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 
 	// Add API lint options.
 
-	if BoolDefault(d.properties.Check_api.Api_lint.Enabled, false) && !ctx.Config().IsPdkBuild() {
+	if BoolDefault(d.properties.Check_api.Api_lint.Enabled, false) {
 		doApiLint = true
 
 		newSince := android.OptionalPathForModuleSrc(ctx, d.properties.Check_api.Api_lint.New_since)
@@ -1644,8 +1646,7 @@ func (d *Droidstubs) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 
 	// Add "check released" options. (Detect incompatible API changes from the last public release)
 
-	if apiCheckEnabled(ctx, d.properties.Check_api.Last_released, "last_released") &&
-		!ctx.Config().IsPdkBuild() {
+	if apiCheckEnabled(ctx, d.properties.Check_api.Last_released, "last_released") {
 		doCheckReleased = true
 
 		if len(d.Javadoc.properties.Out) > 0 {
@@ -1722,8 +1723,7 @@ func (d *Droidstubs) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 
 	rule.Build(pctx, ctx, "metalava", "metalava merged")
 
-	if apiCheckEnabled(ctx, d.properties.Check_api.Current, "current") &&
-		!ctx.Config().IsPdkBuild() {
+	if apiCheckEnabled(ctx, d.properties.Check_api.Current, "current") {
 
 		if len(d.Javadoc.properties.Out) > 0 {
 			ctx.PropertyErrorf("out", "out property may not be combined with check_api")
@@ -1837,7 +1837,7 @@ func (d *Droidstubs) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 		rule.Build(pctx, ctx, "nullabilityWarningsCheck", "nullability warnings check")
 	}
 
-	if Bool(d.properties.Jdiff_enabled) && !ctx.Config().IsPdkBuild() {
+	if Bool(d.properties.Jdiff_enabled) {
 		if len(d.Javadoc.properties.Out) > 0 {
 			ctx.PropertyErrorf("out", "out property may not be combined with jdiff")
 		}

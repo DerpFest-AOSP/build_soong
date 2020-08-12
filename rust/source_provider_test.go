@@ -14,29 +14,18 @@
 
 package rust
 
-import "testing"
+import (
+	"testing"
+)
 
-func TestSourceProviderCollision(t *testing.T) {
-	testRustError(t, "multiple source providers generate the same filename output: bindings.rs", `
-		rust_binary {
-			name: "source_collider",
-			srcs: [
-				"foo.rs",
-				":libbindings1",
-				":libbindings2",
-			],
-		}
+var stemRequiredError = "source_stem property is undefined but required for rust_bindgen modules"
+
+func TestSourceProviderRequiredFields(t *testing.T) {
+	testRustError(t, stemRequiredError, `
 		rust_bindgen {
-			name: "libbindings1",
-			source_stem: "bindings",
-			crate_name: "bindings1",
+			name: "libbindgen",
 			wrapper_src: "src/any.h",
-		}
-		rust_bindgen {
-			name: "libbindings2",
-			source_stem: "bindings",
-			crate_name: "bindings2",
-			wrapper_src: "src/any.h",
+			crate_name: "bindgen",
 		}
 	`)
 }
