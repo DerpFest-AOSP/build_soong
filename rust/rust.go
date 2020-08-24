@@ -1003,11 +1003,12 @@ func (mod *Module) DepsMutator(actx android.BottomUpMutatorContext) {
 		blueprint.Variation{Mutator: "link", Variation: "static"}),
 		cc.StaticDepTag(), deps.StaticLibs...)
 
+	crtVariations := append(cc.GetCrtVariations(ctx, mod), commonDepVariations...)
 	if deps.CrtBegin != "" {
-		actx.AddVariationDependencies(commonDepVariations, cc.CrtBeginDepTag, deps.CrtBegin)
+		actx.AddVariationDependencies(crtVariations, cc.CrtBeginDepTag, deps.CrtBegin)
 	}
 	if deps.CrtEnd != "" {
-		actx.AddVariationDependencies(commonDepVariations, cc.CrtEndDepTag, deps.CrtEnd)
+		actx.AddVariationDependencies(crtVariations, cc.CrtEndDepTag, deps.CrtEnd)
 	}
 
 	if mod.sourceProvider != nil {
@@ -1045,9 +1046,9 @@ func (mod *Module) Name() string {
 	return name
 }
 
-func (mod *Module) setClippy(clippy bool) {
+func (mod *Module) disableClippy() {
 	if mod.clippy != nil {
-		mod.clippy.Properties.Clippy = proptools.BoolPtr(clippy)
+		mod.clippy.Properties.Clippy_lints = proptools.StringPtr("none")
 	}
 }
 

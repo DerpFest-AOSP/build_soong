@@ -29,6 +29,7 @@ import (
 	"github.com/google/blueprint/proptools"
 
 	"android/soong/android"
+	"android/soong/dexpreopt"
 	"android/soong/java/config"
 	"android/soong/tradefed"
 )
@@ -411,8 +412,8 @@ type Module struct {
 	// manifest file to use instead of properties.Manifest
 	overrideManifest android.OptionalPath
 
-	// list of SDK lib names that this java module is exporting
-	exportedSdkLibs []string
+	// map of SDK libs exported by this java module to their build and install paths
+	exportedSdkLibs dexpreopt.LibraryPaths
 
 	// list of plugins that this java module is exporting
 	exportedPluginJars android.Paths
@@ -488,14 +489,19 @@ type ApexDependency interface {
 	ImplementationAndResourcesJars() android.Paths
 }
 
-type Dependency interface {
-	ApexDependency
-	ImplementationJars() android.Paths
-	ResourceJars() android.Paths
+// Provides build path and install path to DEX jars.
+type UsesLibraryDependency interface {
 	DexJarBuildPath() android.Path
 	DexJarInstallPath() android.Path
+}
+
+type Dependency interface {
+	ApexDependency
+	UsesLibraryDependency
+	ImplementationJars() android.Paths
+	ResourceJars() android.Paths
 	AidlIncludeDirs() android.Paths
-	ExportedSdkLibs() []string
+	ExportedSdkLibs() dexpreopt.LibraryPaths
 	ExportedPlugins() (android.Paths, []string)
 	SrcJarArgs() ([]string, android.Paths)
 	BaseModuleName() string
@@ -552,7 +558,6 @@ var (
 	bootClasspathTag      = dependencyTag{name: "bootclasspath"}
 	systemModulesTag      = dependencyTag{name: "system modules"}
 	frameworkResTag       = dependencyTag{name: "framework-res"}
-	frameworkApkTag       = dependencyTag{name: "framework-apk"}
 	kotlinStdlibTag       = dependencyTag{name: "kotlin-stdlib"}
 	kotlinAnnotationsTag  = dependencyTag{name: "kotlin-annotations"}
 	proguardRaiseTag      = dependencyTag{name: "proguard-raise"}
@@ -692,12 +697,6 @@ func (j *Module) deps(ctx android.BottomUpMutatorContext) {
 		}
 		if sdkDep.systemModules != "" {
 			ctx.AddVariationDependencies(nil, systemModulesTag, sdkDep.systemModules)
-		}
-
-		if ctx.ModuleName() == "android_stubs_current" ||
-			ctx.ModuleName() == "android_system_stubs_current" ||
-			ctx.ModuleName() == "android_test_stubs_current" {
-			ctx.AddVariationDependencies(nil, frameworkApkTag, "framework-res")
 		}
 	}
 
@@ -973,12 +972,6 @@ func (j *Module) collectDeps(ctx android.ModuleContext) deps {
 		}
 	}
 
-	// If this is a component library (stubs, etc.) for a java_sdk_library then
-	// add the name of that java_sdk_library to the exported sdk libs to make sure
-	// that, if necessary, a <uses-library> element for that java_sdk_library is
-	// added to the Android manifest.
-	j.exportedSdkLibs = append(j.exportedSdkLibs, j.OptionalImplicitSdkLibrary()...)
-
 	ctx.VisitDirectDeps(func(module android.Module) {
 		otherName := ctx.OtherModuleName(module)
 		tag := ctx.OtherModuleDependencyTag(module)
@@ -998,7 +991,7 @@ func (j *Module) collectDeps(ctx android.ModuleContext) deps {
 			case libTag:
 				deps.classpath = append(deps.classpath, dep.SdkHeaderJars(ctx, j.sdkVersion())...)
 				// names of sdk libs that are directly depended are exported
-				j.exportedSdkLibs = append(j.exportedSdkLibs, dep.OptionalImplicitSdkLibrary()...)
+				j.exportedSdkLibs.AddLibraryPath(ctx, dep.OptionalImplicitSdkLibrary(), dep.DexJarBuildPath(), dep.DexJarInstallPath())
 			case staticLibTag:
 				ctx.ModuleErrorf("dependency on java_sdk_library %q can only be in libs", otherName)
 			}
@@ -1009,7 +1002,7 @@ func (j *Module) collectDeps(ctx android.ModuleContext) deps {
 			case libTag, instrumentationForTag:
 				deps.classpath = append(deps.classpath, dep.HeaderJars()...)
 				// sdk lib names from dependencies are re-exported
-				j.exportedSdkLibs = append(j.exportedSdkLibs, dep.ExportedSdkLibs()...)
+				j.exportedSdkLibs.AddLibraryPaths(dep.ExportedSdkLibs())
 				deps.aidlIncludeDirs = append(deps.aidlIncludeDirs, dep.AidlIncludeDirs()...)
 				pluginJars, pluginClasses := dep.ExportedPlugins()
 				addPlugins(&deps, pluginJars, pluginClasses...)
@@ -1021,7 +1014,7 @@ func (j *Module) collectDeps(ctx android.ModuleContext) deps {
 				deps.staticHeaderJars = append(deps.staticHeaderJars, dep.HeaderJars()...)
 				deps.staticResourceJars = append(deps.staticResourceJars, dep.ResourceJars()...)
 				// sdk lib names from dependencies are re-exported
-				j.exportedSdkLibs = append(j.exportedSdkLibs, dep.ExportedSdkLibs()...)
+				j.exportedSdkLibs.AddLibraryPaths(dep.ExportedSdkLibs())
 				deps.aidlIncludeDirs = append(deps.aidlIncludeDirs, dep.AidlIncludeDirs()...)
 				pluginJars, pluginClasses := dep.ExportedPlugins()
 				addPlugins(&deps, pluginJars, pluginClasses...)
@@ -1047,18 +1040,6 @@ func (j *Module) collectDeps(ctx android.ModuleContext) deps {
 					}
 				} else {
 					ctx.PropertyErrorf("exported_plugins", "%q is not a java_plugin module", otherName)
-				}
-			case frameworkApkTag:
-				if ctx.ModuleName() == "android_stubs_current" ||
-					ctx.ModuleName() == "android_system_stubs_current" ||
-					ctx.ModuleName() == "android_test_stubs_current" {
-					// framework stubs.jar need to depend on framework-res.apk, in order to pull the
-					// resource files out of there for aapt.
-					//
-					// Normally the package rule runs aapt, which includes the resource,
-					// but we're not running that in our package rule so just copy in the
-					// resource files here.
-					deps.staticResourceJars = append(deps.staticResourceJars, dep.(*AndroidApp).exportPackage)
 				}
 			case kotlinStdlibTag:
 				deps.kotlinStdlib = append(deps.kotlinStdlib, dep.HeaderJars()...)
@@ -1095,8 +1076,6 @@ func (j *Module) collectDeps(ctx android.ModuleContext) deps {
 			}
 		}
 	})
-
-	j.exportedSdkLibs = android.FirstUniqueStrings(j.exportedSdkLibs)
 
 	return deps
 }
@@ -1680,7 +1659,7 @@ func (j *Module) compile(ctx android.ModuleContext, aaptSrcJar android.Path) {
 		j.linter.compileSdkVersion = lintSDKVersionString(j.sdkVersion())
 		j.linter.javaLanguageLevel = flags.javaVersion.String()
 		j.linter.kotlinLanguageLevel = "1.3"
-		if j.ApexName() != "" && ctx.Config().UnbundledBuildApps() {
+		if j.ApexVariationName() != "" && ctx.Config().UnbundledBuildApps() {
 			j.linter.buildModuleReportZip = true
 		}
 		j.linter.lint(ctx)
@@ -1838,8 +1817,7 @@ func (j *Module) AidlIncludeDirs() android.Paths {
 	return j.exportAidlIncludeDirs
 }
 
-func (j *Module) ExportedSdkLibs() []string {
-	// exportedSdkLibs is type []string
+func (j *Module) ExportedSdkLibs() dexpreopt.LibraryPaths {
 	return j.exportedSdkLibs
 }
 
@@ -1972,6 +1950,7 @@ func (j *Library) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 		j.dexProperties.Uncompress_dex = proptools.BoolPtr(shouldUncompressDex(ctx, &j.dexpreopter))
 	}
 	j.dexpreopter.uncompressedDex = *j.dexProperties.Uncompress_dex
+	j.exportedSdkLibs = make(dexpreopt.LibraryPaths)
 	j.compile(ctx, nil)
 
 	// Collect the module directory for IDE info in java/jdeps.go.
@@ -1986,6 +1965,12 @@ func (j *Library) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 		j.installFile = ctx.InstallFile(android.PathForModuleInstall(ctx, "framework"),
 			j.Stem()+".jar", j.outputFile, extraInstallDeps...)
 	}
+
+	// If this is a component library (stubs, etc.) for a java_sdk_library then
+	// add the name of that java_sdk_library to the exported sdk libs to make sure
+	// that, if necessary, a <uses-library> element for that java_sdk_library is
+	// added to the Android manifest.
+	j.exportedSdkLibs.AddLibraryPath(ctx, j.OptionalImplicitSdkLibrary(), j.DexJarBuildPath(), j.DexJarInstallPath())
 
 	j.distFiles = j.GenerateTaggedDistFiles(ctx)
 }
@@ -2139,6 +2124,12 @@ func LibraryHostFactory() android.Module {
 // Java Tests
 //
 
+// Test option struct.
+type TestOptions struct {
+	// a list of extra test configuration files that should be installed with the module.
+	Extra_test_configs []string `android:"path,arch_variant"`
+}
+
 type testProperties struct {
 	// list of compatibility suites (for example "cts", "vts") that the module should be
 	// installed into.
@@ -2164,6 +2155,9 @@ type testProperties struct {
 	// Add parameterized mainline modules to auto generated test config. The options will be
 	// handled by TradeFed to do downloading and installing the specified modules on the device.
 	Test_mainline_modules []string
+
+	// Test options.
+	Test_options TestOptions
 }
 
 type hostTestProperties struct {
@@ -2192,8 +2186,9 @@ type Test struct {
 
 	testProperties testProperties
 
-	testConfig android.Path
-	data       android.Paths
+	testConfig       android.Path
+	extraTestConfigs android.Paths
+	data             android.Paths
 }
 
 type TestHost struct {
@@ -2231,6 +2226,8 @@ func (j *Test) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 		j.testProperties.Test_suites, j.testProperties.Auto_gen_config)
 
 	j.data = android.PathsForModuleSrc(ctx, j.testProperties.Data)
+
+	j.extraTestConfigs = android.PathsForModuleSrc(ctx, j.testProperties.Test_options.Extra_test_configs)
 
 	ctx.VisitDirectDepsWithTag(dataNativeBinsTag, func(dep android.Module) {
 		j.data = append(j.data, android.OutputFileForModule(ctx, dep, ""))
@@ -2537,12 +2534,16 @@ type Import struct {
 	properties ImportProperties
 
 	combinedClasspathFile android.Path
-	exportedSdkLibs       []string
+	exportedSdkLibs       dexpreopt.LibraryPaths
 	exportAidlIncludeDirs android.Paths
 }
 
 func (j *Import) sdkVersion() sdkSpec {
 	return sdkSpecFrom(String(j.properties.Sdk_version))
+}
+
+func (j *Import) makeSdkVersion() string {
+	return j.sdkVersion().raw
 }
 
 func (j *Import) minSdkVersion() sdkSpec {
@@ -2590,12 +2591,7 @@ func (j *Import) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 		TransformJetifier(ctx, outputFile, inputFile)
 	}
 	j.combinedClasspathFile = outputFile
-
-	// If this is a component library (impl, stubs, etc.) for a java_sdk_library then
-	// add the name of that java_sdk_library to the exported sdk libs to make sure
-	// that, if necessary, a <uses-library> element for that java_sdk_library is
-	// added to the Android manifest.
-	j.exportedSdkLibs = append(j.exportedSdkLibs, j.OptionalImplicitSdkLibrary()...)
+	j.exportedSdkLibs = make(dexpreopt.LibraryPaths)
 
 	ctx.VisitDirectDeps(func(module android.Module) {
 		otherName := ctx.OtherModuleName(module)
@@ -2606,22 +2602,28 @@ func (j *Import) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 			switch tag {
 			case libTag, staticLibTag:
 				// sdk lib names from dependencies are re-exported
-				j.exportedSdkLibs = append(j.exportedSdkLibs, dep.ExportedSdkLibs()...)
+				j.exportedSdkLibs.AddLibraryPaths(dep.ExportedSdkLibs())
 			}
 		case SdkLibraryDependency:
 			switch tag {
 			case libTag:
 				// names of sdk libs that are directly depended are exported
-				j.exportedSdkLibs = append(j.exportedSdkLibs, otherName)
+				j.exportedSdkLibs.AddLibraryPath(ctx, &otherName, dep.DexJarBuildPath(), dep.DexJarInstallPath())
 			}
 		}
 	})
 
-	j.exportedSdkLibs = android.FirstUniqueStrings(j.exportedSdkLibs)
+	var installFile android.Path
 	if Bool(j.properties.Installable) {
-		ctx.InstallFile(android.PathForModuleInstall(ctx, "framework"),
+		installFile = ctx.InstallFile(android.PathForModuleInstall(ctx, "framework"),
 			jarName, outputFile)
 	}
+
+	// If this is a component library (impl, stubs, etc.) for a java_sdk_library then
+	// add the name of that java_sdk_library to the exported sdk libs to make sure
+	// that, if necessary, a <uses-library> element for that java_sdk_library is
+	// added to the Android manifest.
+	j.exportedSdkLibs.AddLibraryPath(ctx, j.OptionalImplicitSdkLibrary(), outputFile, installFile)
 
 	j.exportAidlIncludeDirs = android.PathsForModuleSrc(ctx, j.properties.Aidl.Export_include_dirs)
 }
@@ -2665,7 +2667,7 @@ func (j *Import) AidlIncludeDirs() android.Paths {
 	return j.exportAidlIncludeDirs
 }
 
-func (j *Import) ExportedSdkLibs() []string {
+func (j *Import) ExportedSdkLibs() dexpreopt.LibraryPaths {
 	return j.exportedSdkLibs
 }
 

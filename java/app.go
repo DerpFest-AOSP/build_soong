@@ -598,6 +598,7 @@ func (a *AndroidApp) dexBuildActions(ctx android.ModuleContext) android.Path {
 	a.dexpreopter.optionalUsesLibs = a.usesLibrary.presentOptionalUsesLibs(ctx)
 	a.dexpreopter.libraryPaths = a.usesLibrary.usesLibraryPaths(ctx)
 	a.dexpreopter.manifestFile = a.mergedManifestFile
+	a.exportedSdkLibs = make(dexpreopt.LibraryPaths)
 
 	if ctx.ModuleName() != "framework-res" {
 		a.Module.compile(ctx, a.aaptSrcJar)
@@ -845,9 +846,7 @@ func collectAppDeps(ctx android.ModuleContext, app appDepsInterface,
 		otherName := ctx.OtherModuleName(module)
 		tag := ctx.OtherModuleDependencyTag(module)
 
-		// TODO(ccross): The tag == cc.SharedDepTag() check should be cc.IsSharedDepTag(tag) but
-		//   was left to maintain behavior when adding libraryDependencyTag.
-		if IsJniDepTag(tag) || tag == cc.SharedDepTag() {
+		if IsJniDepTag(tag) || cc.IsSharedDepTag(tag) {
 			if dep, ok := module.(*cc.Module); ok {
 				if dep.IsNdk() || dep.IsStubs() {
 					return false
@@ -965,6 +964,8 @@ func (a *AndroidApp) OutputFiles(tag string) (android.Paths, error) {
 	switch tag {
 	case ".aapt.srcjar":
 		return []android.Path{a.aaptSrcJar}, nil
+	case ".export-package.apk":
+		return []android.Path{a.exportPackage}, nil
 	}
 	return a.Library.OutputFiles(tag)
 }
@@ -1033,8 +1034,9 @@ type AndroidTest struct {
 
 	testProperties testProperties
 
-	testConfig android.Path
-	data       android.Paths
+	testConfig       android.Path
+	extraTestConfigs android.Paths
+	data             android.Paths
 }
 
 func (a *AndroidTest) InstallInTestcases() bool {
@@ -1062,6 +1064,7 @@ func (a *AndroidTest) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 	testConfig := tradefed.AutoGenInstrumentationTestConfig(ctx, a.testProperties.Test_config,
 		a.testProperties.Test_config_template, a.manifestPath, a.testProperties.Test_suites, a.testProperties.Auto_gen_config, configs)
 	a.testConfig = a.FixTestConfig(ctx, testConfig)
+	a.extraTestConfigs = android.PathsForModuleSrc(ctx, a.testProperties.Test_options.Extra_test_configs)
 	a.data = android.PathsForModuleSrc(ctx, a.testProperties.Data)
 }
 

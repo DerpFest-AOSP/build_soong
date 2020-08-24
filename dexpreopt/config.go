@@ -100,6 +100,8 @@ type GlobalSoongConfig struct {
 	ConstructContext android.Path
 }
 
+const UnknownInstallLibraryPath = "error"
+
 // LibraryPath contains paths to the library DEX jar on host and on device.
 type LibraryPath struct {
 	Host   android.Path
@@ -108,6 +110,36 @@ type LibraryPath struct {
 
 // LibraryPaths is a map from library name to on-host and on-device paths to its DEX jar.
 type LibraryPaths map[string]*LibraryPath
+
+// Add a new path to the map of library paths, unless a path for this library already exists.
+func (libPaths LibraryPaths) AddLibraryPath(ctx android.PathContext, lib *string, hostPath, installPath android.Path) {
+	if lib == nil {
+		return
+	}
+	if _, present := libPaths[*lib]; !present {
+		var devicePath string
+		if installPath != nil {
+			devicePath = android.InstallPathToOnDevicePath(ctx, installPath.(android.InstallPath))
+		} else {
+			// For some stub libraries the only known thing is the name of their implementation
+			// library, but the library itself is unavailable (missing or part of a prebuilt). In
+			// such cases we still need to add the library to <uses-library> tags in the manifest,
+			// but we cannot use if for dexpreopt.
+			devicePath = UnknownInstallLibraryPath
+		}
+		libPaths[*lib] = &LibraryPath{hostPath, devicePath}
+	}
+	return
+}
+
+// Add library paths from the second map to the first map (do not override existing entries).
+func (libPaths LibraryPaths) AddLibraryPaths(otherPaths LibraryPaths) {
+	for lib, path := range otherPaths {
+		if _, present := libPaths[lib]; !present {
+			libPaths[lib] = path
+		}
+	}
+}
 
 type ModuleConfig struct {
 	Name            string
@@ -360,7 +392,33 @@ func RegisterToolDeps(ctx android.BottomUpMutatorContext) {
 func dex2oatPathFromDep(ctx android.ModuleContext) android.Path {
 	dex2oatBin := dex2oatModuleName(ctx.Config())
 
-	dex2oatModule := ctx.GetDirectDepWithTag(dex2oatBin, dex2oatDepTag)
+	// Find the right dex2oat module, trying to follow PrebuiltDepTag from source
+	// to prebuilt if there is one. We wouldn't have to do this if the
+	// prebuilt_postdeps mutator that replaces source deps with prebuilt deps was
+	// run after RegisterToolDeps above, but changing that leads to ordering
+	// problems between mutators (RegisterToolDeps needs to run late to act on
+	// final variants, while prebuilt_postdeps needs to run before many of the
+	// PostDeps mutators, like the APEX mutators). Hence we need to dig out the
+	// prebuilt explicitly here instead.
+	var dex2oatModule android.Module
+	ctx.WalkDeps(func(child, parent android.Module) bool {
+		if parent == ctx.Module() && ctx.OtherModuleDependencyTag(child) == dex2oatDepTag {
+			// Found the source module, or prebuilt module that has replaced the source.
+			dex2oatModule = child
+			if p, ok := child.(android.PrebuiltInterface); ok && p.Prebuilt() != nil {
+				return false // If it's the prebuilt we're done.
+			} else {
+				return true // Recurse to check if the source has a prebuilt dependency.
+			}
+		}
+		if parent == dex2oatModule && ctx.OtherModuleDependencyTag(child) == android.PrebuiltDepTag {
+			if p, ok := child.(android.PrebuiltInterface); ok && p.Prebuilt() != nil && p.Prebuilt().UsePrebuilt() {
+				dex2oatModule = child // Found a prebuilt that should be used.
+			}
+		}
+		return false
+	})
+
 	if dex2oatModule == nil {
 		// If this happens there's probably a missing call to AddToolDeps in DepsMutator.
 		panic(fmt.Sprintf("Failed to lookup %s dependency", dex2oatBin))

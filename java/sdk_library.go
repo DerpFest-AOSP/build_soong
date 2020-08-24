@@ -849,22 +849,20 @@ func (e *EmbeddableSdkLibraryComponent) initSdkLibraryComponent(moduleBase *andr
 }
 
 // to satisfy SdkLibraryComponentDependency
-func (e *EmbeddableSdkLibraryComponent) OptionalImplicitSdkLibrary() []string {
-	if e.sdkLibraryComponentProperties.SdkLibraryToImplicitlyTrack != nil {
-		return []string{*e.sdkLibraryComponentProperties.SdkLibraryToImplicitlyTrack}
-	}
-	return nil
+func (e *EmbeddableSdkLibraryComponent) OptionalImplicitSdkLibrary() *string {
+	return e.sdkLibraryComponentProperties.SdkLibraryToImplicitlyTrack
 }
 
 // Implemented by modules that are (or possibly could be) a component of a java_sdk_library
 // (including the java_sdk_library) itself.
 type SdkLibraryComponentDependency interface {
+	UsesLibraryDependency
+
 	// The optional name of the sdk library that should be implicitly added to the
 	// AndroidManifest of an app that contains code which references the sdk library.
 	//
-	// Returns an array containing 0 or 1 items rather than a *string to make it easier
-	// to append this to the list of exported sdk libraries.
-	OptionalImplicitSdkLibrary() []string
+	// Returns the name of the optional implicit SDK library or nil, if there isn't one.
+	OptionalImplicitSdkLibrary() *string
 }
 
 // Make sure that all the module types that are components of java_sdk_library/_import
@@ -1376,22 +1374,22 @@ func PrebuiltJars(ctx android.BaseModuleContext, baseName string, s sdkSpec) and
 	return android.Paths{jarPath.Path()}
 }
 
-// Get the apex name for module, "" if it is for platform.
-func getApexNameForModule(module android.Module) string {
+// Get the apex names for module, nil if it is for platform.
+func getApexNamesForModule(module android.Module) []string {
 	if apex, ok := module.(android.ApexModule); ok {
-		return apex.ApexName()
+		return apex.InApexes()
 	}
 
-	return ""
+	return nil
 }
 
-// Check to see if the other module is within the same named APEX as this module.
+// Check to see if the other module is within the same set of named APEXes as this module.
 //
 // If either this or the other module are on the platform then this will return
 // false.
-func withinSameApexAs(module android.ApexModule, other android.Module) bool {
-	name := module.ApexName()
-	return name != "" && getApexNameForModule(other) == name
+func withinSameApexesAs(module android.ApexModule, other android.Module) bool {
+	names := module.InApexes()
+	return len(names) > 0 && reflect.DeepEqual(names, getApexNamesForModule(other))
 }
 
 func (module *SdkLibrary) sdkJars(ctx android.BaseModuleContext, sdkVersion sdkSpec, headerJars bool) android.Paths {
@@ -1410,7 +1408,7 @@ func (module *SdkLibrary) sdkJars(ctx android.BaseModuleContext, sdkVersion sdkS
 		// Only allow access to the implementation library in the following condition:
 		// * No sdk_version specified on the referencing module.
 		// * The referencing module is in the same apex as this.
-		if sdkVersion.kind == sdkPrivate || withinSameApexAs(module, ctx.Module()) {
+		if sdkVersion.kind == sdkPrivate || withinSameApexesAs(module, ctx.Module()) {
 			if headerJars {
 				return module.HeaderJars()
 			} else {
@@ -1949,7 +1947,7 @@ func (module *SdkLibraryImport) sdkJars(ctx android.BaseModuleContext, sdkVersio
 	// For consistency with SdkLibrary make the implementation jar available to libraries that
 	// are within the same APEX.
 	implLibraryModule := module.implLibraryModule
-	if implLibraryModule != nil && withinSameApexAs(module, ctx.Module()) {
+	if implLibraryModule != nil && withinSameApexesAs(module, ctx.Module()) {
 		if headerJars {
 			return implLibraryModule.HeaderJars()
 		} else {
@@ -1972,12 +1970,21 @@ func (module *SdkLibraryImport) SdkImplementationJars(ctx android.BaseModuleCont
 	return module.sdkJars(ctx, sdkVersion, false)
 }
 
-// to satisfy apex.javaDependency interface
+// to satisfy SdkLibraryDependency interface
 func (module *SdkLibraryImport) DexJarBuildPath() android.Path {
 	if module.implLibraryModule == nil {
 		return nil
 	} else {
 		return module.implLibraryModule.DexJarBuildPath()
+	}
+}
+
+// to satisfy SdkLibraryDependency interface
+func (module *SdkLibraryImport) DexJarInstallPath() android.Path {
+	if module.implLibraryModule == nil {
+		return nil
+	} else {
+		return module.implLibraryModule.DexJarInstallPath()
 	}
 }
 
@@ -2056,6 +2063,12 @@ func sdkLibraryXmlFactory() android.Module {
 	return module
 }
 
+func (module *sdkLibraryXml) UniqueApexVariations() bool {
+	// sdkLibraryXml needs a unique variation per APEX because the generated XML file contains the path to the
+	// mounted APEX, which contains the name of the APEX.
+	return true
+}
+
 // from android.PrebuiltEtcModule
 func (module *sdkLibraryXml) SubDir() string {
 	return "permissions"
@@ -2083,8 +2096,8 @@ func (module *sdkLibraryXml) ShouldSupportSdkVersion(ctx android.BaseModuleConte
 // File path to the runtime implementation library
 func (module *sdkLibraryXml) implPath() string {
 	implName := proptools.String(module.properties.Lib_name)
-	if apexName := module.ApexName(); apexName != "" {
-		// TODO(b/146468504): ApexName() is only a soong module name, not apex name.
+	if apexName := module.ApexVariationName(); apexName != "" {
+		// TODO(b/146468504): ApexVariationName() is only a soong module name, not apex name.
 		// In most cases, this works fine. But when apex_name is set or override_apex is used
 		// this can be wrong.
 		return fmt.Sprintf("/apex/%s/javalib/%s.jar", apexName, implName)
