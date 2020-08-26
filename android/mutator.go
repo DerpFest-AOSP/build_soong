@@ -115,6 +115,18 @@ var preArch = []RegisterMutatorFunc{
 	// a DefaultableHook.
 	RegisterDefaultsPreArchMutators,
 
+	// Add dependencies on any components so that any component references can be
+	// resolved within the deps mutator.
+	//
+	// Must be run after defaults so it can be used to create dependencies on the
+	// component modules that are creating in a DefaultableHook.
+	//
+	// Must be run before RegisterPrebuiltsPreArchMutators, i.e. before prebuilts are
+	// renamed. That is so that if a module creates components using a prebuilt module
+	// type that any dependencies (which must use prebuilt_ prefixes) are resolved to
+	// the prebuilt module and not the source module.
+	RegisterComponentsMutator,
+
 	// Create an association between prebuilt modules and their corresponding source
 	// modules (if any).
 	//
@@ -202,7 +214,9 @@ type BottomUpMutatorContext interface {
 	AddFarVariationDependencies([]blueprint.Variation, blueprint.DependencyTag, ...string)
 	AddInterVariantDependency(tag blueprint.DependencyTag, from, to blueprint.Module)
 	ReplaceDependencies(string)
+	ReplaceDependenciesIf(string, blueprint.ReplaceDependencyPredicate)
 	AliasVariation(variationName string)
+	CreateAliasVariation(fromVariationName, toVariationName string)
 }
 
 type bottomUpMutatorContext struct {
@@ -252,8 +266,21 @@ func (mutator *mutator) Parallel() MutatorHandle {
 	return mutator
 }
 
+func RegisterComponentsMutator(ctx RegisterMutatorsContext) {
+	ctx.BottomUp("component-deps", componentDepsMutator).Parallel()
+}
+
+// A special mutator that runs just prior to the deps mutator to allow the dependencies
+// on component modules to be added so that they can depend directly on a prebuilt
+// module.
+func componentDepsMutator(ctx BottomUpMutatorContext) {
+	if m := ctx.Module(); m.Enabled() {
+		m.ComponentDepsMutator(ctx)
+	}
+}
+
 func depsMutator(ctx BottomUpMutatorContext) {
-	if m, ok := ctx.Module().(Module); ok && m.Enabled() {
+	if m := ctx.Module(); m.Enabled() {
 		m.DepsMutator(ctx)
 	}
 }
@@ -403,6 +430,14 @@ func (b *bottomUpMutatorContext) ReplaceDependencies(name string) {
 	b.bp.ReplaceDependencies(name)
 }
 
+func (b *bottomUpMutatorContext) ReplaceDependenciesIf(name string, predicate blueprint.ReplaceDependencyPredicate) {
+	b.bp.ReplaceDependenciesIf(name, predicate)
+}
+
 func (b *bottomUpMutatorContext) AliasVariation(variationName string) {
 	b.bp.AliasVariation(variationName)
+}
+
+func (b *bottomUpMutatorContext) CreateAliasVariation(fromVariationName, toVariationName string) {
+	b.bp.CreateAliasVariation(fromVariationName, toVariationName)
 }

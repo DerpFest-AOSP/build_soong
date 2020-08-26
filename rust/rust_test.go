@@ -61,6 +61,7 @@ func testConfig(bp string) android.Config {
 		"foo.rs":     nil,
 		"foo.c":      nil,
 		"src/bar.rs": nil,
+		"src/any.h":  nil,
 		"liby.so":    nil,
 		"libz.so":    nil,
 	}
@@ -88,11 +89,11 @@ func testRustContext(t *testing.T, bp string, coverage bool) *android.TestContex
 	config := testConfig(bp)
 
 	if coverage {
+		config.TestProductVariables.GcovCoverage = proptools.BoolPtr(true)
 		config.TestProductVariables.Native_coverage = proptools.BoolPtr(true)
-		config.TestProductVariables.CoveragePaths = []string{"*"}
+		config.TestProductVariables.NativeCoveragePaths = []string{"*"}
 	}
 
-	t.Helper()
 	ctx := CreateTestContext()
 	ctx.Register(config)
 
@@ -164,12 +165,12 @@ func TestLinkPathFromFilePath(t *testing.T) {
 // Test to make sure dependencies are being picked up correctly.
 func TestDepsTracking(t *testing.T) {
 	ctx := testRust(t, `
-		rust_library_host_static {
+		rust_ffi_host_static {
 			name: "libstatic",
 			srcs: ["foo.rs"],
 			crate_name: "static",
 		}
-		rust_library_host_shared {
+		rust_ffi_host_shared {
 			name: "libshared",
 			srcs: ["foo.rs"],
 			crate_name: "shared",
@@ -221,6 +222,114 @@ func TestDepsTracking(t *testing.T) {
 	if !android.InList("libstatic", module.Properties.AndroidMkStaticLibs) {
 		t.Errorf("Static library dependency not detected (dependency missing from AndroidMkStaticLibs)")
 	}
+}
+
+func TestSourceProviderDeps(t *testing.T) {
+	ctx := testRust(t, `
+		rust_binary {
+			name: "fizz-buzz-dep",
+			srcs: [
+				"foo.rs",
+				":my_generator",
+				":libbindings",
+			],
+			rlibs: ["libbindings"],
+		}
+		rust_proc_macro {
+			name: "libprocmacro",
+			srcs: [
+				"foo.rs",
+				":my_generator",
+				":libbindings",
+			],
+			rlibs: ["libbindings"],
+			crate_name: "procmacro",
+		}
+		rust_library {
+			name: "libfoo",
+			srcs: [
+				"foo.rs",
+				":my_generator",
+				":libbindings",
+			],
+			rlibs: ["libbindings"],
+			crate_name: "foo",
+		}
+		genrule {
+			name: "my_generator",
+			tools: ["any_rust_binary"],
+			cmd: "$(location) -o $(out) $(in)",
+			srcs: ["src/any.h"],
+			out: ["src/any.rs"],
+		}
+		rust_bindgen {
+			name: "libbindings",
+			crate_name: "bindings",
+			source_stem: "bindings",
+			host_supported: true,
+			wrapper_src: "src/any.h",
+        }
+	`)
+
+	libfoo := ctx.ModuleForTests("libfoo", "android_arm64_armv8-a_rlib").Rule("rustc")
+	if !android.SuffixInList(libfoo.Implicits.Strings(), "/out/bindings.rs") {
+		t.Errorf("rust_bindgen generated source not included as implicit input for libfoo; Implicits %#v", libfoo.Implicits.Strings())
+	}
+	if !android.SuffixInList(libfoo.Implicits.Strings(), "/out/any.rs") {
+		t.Errorf("genrule generated source not included as implicit input for libfoo; Implicits %#v", libfoo.Implicits.Strings())
+	}
+
+	fizzBuzz := ctx.ModuleForTests("fizz-buzz-dep", "android_arm64_armv8-a").Rule("rustc")
+	if !android.SuffixInList(fizzBuzz.Implicits.Strings(), "/out/bindings.rs") {
+		t.Errorf("rust_bindgen generated source not included as implicit input for fizz-buzz-dep; Implicits %#v", libfoo.Implicits.Strings())
+	}
+	if !android.SuffixInList(fizzBuzz.Implicits.Strings(), "/out/any.rs") {
+		t.Errorf("genrule generated source not included as implicit input for fizz-buzz-dep; Implicits %#v", libfoo.Implicits.Strings())
+	}
+
+	libprocmacro := ctx.ModuleForTests("libprocmacro", "linux_glibc_x86_64").Rule("rustc")
+	if !android.SuffixInList(libprocmacro.Implicits.Strings(), "/out/bindings.rs") {
+		t.Errorf("rust_bindgen generated source not included as implicit input for libprocmacro; Implicits %#v", libfoo.Implicits.Strings())
+	}
+	if !android.SuffixInList(libprocmacro.Implicits.Strings(), "/out/any.rs") {
+		t.Errorf("genrule generated source not included as implicit input for libprocmacro; Implicits %#v", libfoo.Implicits.Strings())
+	}
+
+	// Check that our bindings are picked up as crate dependencies as well
+	libfooMod := ctx.ModuleForTests("libfoo", "android_arm64_armv8-a_dylib").Module().(*Module)
+	if !android.InList("libbindings", libfooMod.Properties.AndroidMkRlibs) {
+		t.Errorf("bindgen dependency not detected as a rlib dependency (dependency missing from AndroidMkRlibs)")
+	}
+	fizzBuzzMod := ctx.ModuleForTests("fizz-buzz-dep", "android_arm64_armv8-a").Module().(*Module)
+	if !android.InList("libbindings", fizzBuzzMod.Properties.AndroidMkRlibs) {
+		t.Errorf("bindgen dependency not detected as a rlib dependency (dependency missing from AndroidMkRlibs)")
+	}
+	libprocmacroMod := ctx.ModuleForTests("libprocmacro", "linux_glibc_x86_64").Module().(*Module)
+	if !android.InList("libbindings", libprocmacroMod.Properties.AndroidMkRlibs) {
+		t.Errorf("bindgen dependency not detected as a rlib dependency (dependency missing from AndroidMkRlibs)")
+	}
+
+}
+
+func TestSourceProviderTargetMismatch(t *testing.T) {
+	// This might error while building the dependency tree or when calling depsToPaths() depending on the lunched
+	// target, which results in two different errors. So don't check the error, just confirm there is one.
+	testRustError(t, ".*", `
+		rust_proc_macro {
+			name: "libprocmacro",
+			srcs: [
+				"foo.rs",
+				":libbindings",
+			],
+			crate_name: "procmacro",
+		}
+		rust_bindgen {
+			name: "libbindings",
+			crate_name: "bindings",
+			source_stem: "bindings",
+			wrapper_src: "src/any.h",
+		}
+	`)
 }
 
 // Test to make sure proc_macros use host variants when building device modules.

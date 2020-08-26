@@ -30,7 +30,6 @@ func TestClasspath(t *testing.T) {
 	var classpathTestcases = []struct {
 		name       string
 		unbundled  bool
-		pdk        bool
 		moduleType string
 		host       android.OsClass
 		properties string
@@ -49,27 +48,27 @@ func TestClasspath(t *testing.T) {
 	}{
 		{
 			name:           "default",
-			bootclasspath:  config.DefaultBootclasspathLibraries,
-			system:         config.DefaultSystemModules,
-			java8classpath: config.DefaultLibraries,
-			java9classpath: config.DefaultLibraries,
+			bootclasspath:  config.StableCorePlatformBootclasspathLibraries,
+			system:         config.StableCorePlatformSystemModules,
+			java8classpath: config.FrameworkLibraries,
+			java9classpath: config.FrameworkLibraries,
 			aidl:           "-Iframework/aidl",
 		},
 		{
 			name:           `sdk_version:"core_platform"`,
 			properties:     `sdk_version:"core_platform"`,
-			bootclasspath:  config.DefaultBootclasspathLibraries,
-			system:         config.DefaultSystemModules,
+			bootclasspath:  config.StableCorePlatformBootclasspathLibraries,
+			system:         config.StableCorePlatformSystemModules,
 			java8classpath: []string{},
 			aidl:           "",
 		},
 		{
 			name:           "blank sdk version",
 			properties:     `sdk_version: "",`,
-			bootclasspath:  config.DefaultBootclasspathLibraries,
-			system:         config.DefaultSystemModules,
-			java8classpath: config.DefaultLibraries,
-			java9classpath: config.DefaultLibraries,
+			bootclasspath:  config.StableCorePlatformBootclasspathLibraries,
+			system:         config.StableCorePlatformSystemModules,
+			java8classpath: config.FrameworkLibraries,
+			java9classpath: config.FrameworkLibraries,
 			aidl:           "-Iframework/aidl",
 		},
 		{
@@ -139,11 +138,10 @@ func TestClasspath(t *testing.T) {
 		},
 		{
 
-			name:           "core_current",
-			properties:     `sdk_version: "core_current",`,
-			bootclasspath:  []string{"core.current.stubs", "core-lambda-stubs"},
-			system:         "core-current-stubs-system-modules",
-			java9classpath: []string{"core.current.stubs"},
+			name:          "core_current",
+			properties:    `sdk_version: "core_current",`,
+			bootclasspath: []string{"core.current.stubs", "core-lambda-stubs"},
+			system:        "core-current-stubs-system-modules",
 		},
 		{
 
@@ -156,9 +154,9 @@ func TestClasspath(t *testing.T) {
 		{
 
 			name:           "nostdlib system_modules",
-			properties:     `sdk_version: "none", system_modules: "legacy-core-platform-api-stubs-system-modules"`,
-			system:         "legacy-core-platform-api-stubs-system-modules",
-			bootclasspath:  []string{"legacy-core-platform-api-stubs-system-modules-lib"},
+			properties:     `sdk_version: "none", system_modules: "stable-core-platform-api-stubs-system-modules"`,
+			system:         "stable-core-platform-api-stubs-system-modules",
+			bootclasspath:  []string{"stable-core-platform-api-stubs-system-modules-lib"},
 			java8classpath: []string{},
 		},
 		{
@@ -217,35 +215,6 @@ func TestClasspath(t *testing.T) {
 			aidl:           "-pprebuilts/sdk/current/public/framework.aidl",
 		},
 
-		{
-			name:           "pdk default",
-			pdk:            true,
-			bootclasspath:  []string{`""`},
-			system:         "sdk_public_30_system_modules",
-			java8classpath: []string{"prebuilts/sdk/30/public/android.jar", "prebuilts/sdk/tools/core-lambda-stubs.jar"},
-			java9classpath: []string{"prebuilts/sdk/30/public/android.jar", "prebuilts/sdk/tools/core-lambda-stubs.jar"},
-			aidl:           "-pprebuilts/sdk/30/public/framework.aidl",
-		},
-		{
-			name:           "pdk current",
-			pdk:            true,
-			properties:     `sdk_version: "current",`,
-			bootclasspath:  []string{`""`},
-			system:         "sdk_public_30_system_modules",
-			java8classpath: []string{"prebuilts/sdk/30/public/android.jar", "prebuilts/sdk/tools/core-lambda-stubs.jar"},
-			java9classpath: []string{"prebuilts/sdk/30/public/android.jar", "prebuilts/sdk/tools/core-lambda-stubs.jar"},
-			aidl:           "-pprebuilts/sdk/30/public/framework.aidl",
-		},
-		{
-			name:           "pdk 29",
-			pdk:            true,
-			properties:     `sdk_version: "29",`,
-			bootclasspath:  []string{`""`},
-			system:         "sdk_public_30_system_modules",
-			java8classpath: []string{"prebuilts/sdk/30/public/android.jar", "prebuilts/sdk/tools/core-lambda-stubs.jar"},
-			java9classpath: []string{"prebuilts/sdk/30/public/android.jar", "prebuilts/sdk/tools/core-lambda-stubs.jar"},
-			aidl:           "-pprebuilts/sdk/30/public/framework.aidl",
-		},
 		{
 			name:           "module_current",
 			properties:     `sdk_version: "module_current",`,
@@ -385,9 +354,7 @@ func TestClasspath(t *testing.T) {
 				config := testConfig(nil, bpJava8, nil)
 				if testcase.unbundled {
 					config.TestProductVariables.Unbundled_build = proptools.BoolPtr(true)
-				}
-				if testcase.pdk {
-					config.TestProductVariables.Pdk = proptools.BoolPtr(true)
+					config.TestProductVariables.Always_use_prebuilt_sdks = proptools.BoolPtr(true)
 				}
 				ctx := testContext()
 				run(t, ctx, config)
@@ -408,9 +375,7 @@ func TestClasspath(t *testing.T) {
 				config := testConfig(nil, bp, nil)
 				if testcase.unbundled {
 					config.TestProductVariables.Unbundled_build = proptools.BoolPtr(true)
-				}
-				if testcase.pdk {
-					config.TestProductVariables.Pdk = proptools.BoolPtr(true)
+					config.TestProductVariables.Always_use_prebuilt_sdks = proptools.BoolPtr(true)
 				}
 				ctx := testContext()
 				run(t, ctx, config)
@@ -434,9 +399,7 @@ func TestClasspath(t *testing.T) {
 
 				if testcase.unbundled {
 					config.TestProductVariables.Unbundled_build = proptools.BoolPtr(true)
-				}
-				if testcase.pdk {
-					config.TestProductVariables.Pdk = proptools.BoolPtr(true)
+					config.TestProductVariables.Always_use_prebuilt_sdks = proptools.BoolPtr(true)
 				}
 				ctx := testContext()
 				run(t, ctx, config)
@@ -452,9 +415,7 @@ func TestClasspath(t *testing.T) {
 
 				if testcase.unbundled {
 					config.TestProductVariables.Unbundled_build = proptools.BoolPtr(true)
-				}
-				if testcase.pdk {
-					config.TestProductVariables.Pdk = proptools.BoolPtr(true)
+					config.TestProductVariables.Always_use_prebuilt_sdks = proptools.BoolPtr(true)
 				}
 				ctx := testContext()
 				run(t, ctx, config)

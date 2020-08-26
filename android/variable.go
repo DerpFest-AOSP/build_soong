@@ -214,29 +214,29 @@ type productVariables struct {
 
 	AppsDefaultVersionName *string `json:",omitempty"`
 
-	Allow_missing_dependencies       *bool `json:",omitempty"`
-	Unbundled_build                  *bool `json:",omitempty"`
-	Unbundled_build_sdks_from_source *bool `json:",omitempty"`
-	Malloc_not_svelte                *bool `json:",omitempty"`
-	Malloc_zero_contents             *bool `json:",omitempty"`
-	Malloc_pattern_fill_contents     *bool `json:",omitempty"`
-	Safestack                        *bool `json:",omitempty"`
-	HostStaticBinaries               *bool `json:",omitempty"`
-	Binder32bit                      *bool `json:",omitempty"`
-	UseGoma                          *bool `json:",omitempty"`
-	UseRBE                           *bool `json:",omitempty"`
-	UseRBEJAVAC                      *bool `json:",omitempty"`
-	UseRBER8                         *bool `json:",omitempty"`
-	UseRBED8                         *bool `json:",omitempty"`
-	Debuggable                       *bool `json:",omitempty"`
-	Eng                              *bool `json:",omitempty"`
-	Treble_linker_namespaces         *bool `json:",omitempty"`
-	Enforce_vintf_manifest           *bool `json:",omitempty"`
-	Pdk                              *bool `json:",omitempty"`
-	Uml                              *bool `json:",omitempty"`
-	Use_lmkd_stats_log               *bool `json:",omitempty"`
-	Arc                              *bool `json:",omitempty"`
-	MinimizeJavaDebugInfo            *bool `json:",omitempty"`
+	Allow_missing_dependencies   *bool `json:",omitempty"`
+	Unbundled_build              *bool `json:",omitempty"`
+	Unbundled_build_apps         *bool `json:",omitempty"`
+	Always_use_prebuilt_sdks     *bool `json:",omitempty"`
+	Malloc_not_svelte            *bool `json:",omitempty"`
+	Malloc_zero_contents         *bool `json:",omitempty"`
+	Malloc_pattern_fill_contents *bool `json:",omitempty"`
+	Safestack                    *bool `json:",omitempty"`
+	HostStaticBinaries           *bool `json:",omitempty"`
+	Binder32bit                  *bool `json:",omitempty"`
+	UseGoma                      *bool `json:",omitempty"`
+	UseRBE                       *bool `json:",omitempty"`
+	UseRBEJAVAC                  *bool `json:",omitempty"`
+	UseRBER8                     *bool `json:",omitempty"`
+	UseRBED8                     *bool `json:",omitempty"`
+	Debuggable                   *bool `json:",omitempty"`
+	Eng                          *bool `json:",omitempty"`
+	Treble_linker_namespaces     *bool `json:",omitempty"`
+	Enforce_vintf_manifest       *bool `json:",omitempty"`
+	Uml                          *bool `json:",omitempty"`
+	Use_lmkd_stats_log           *bool `json:",omitempty"`
+	Arc                          *bool `json:",omitempty"`
+	MinimizeJavaDebugInfo        *bool `json:",omitempty"`
 
 	Check_elf_files *bool `json:",omitempty"`
 
@@ -266,11 +266,16 @@ type productVariables struct {
 
 	SamplingPGO *bool `json:",omitempty"`
 
-	NativeLineCoverage   *bool    `json:",omitempty"`
-	Native_coverage      *bool    `json:",omitempty"`
-	ClangCoverage        *bool    `json:",omitempty"`
-	CoveragePaths        []string `json:",omitempty"`
-	CoverageExcludePaths []string `json:",omitempty"`
+	JavaCoveragePaths        []string `json:",omitempty"`
+	JavaCoverageExcludePaths []string `json:",omitempty"`
+
+	GcovCoverage               *bool    `json:",omitempty"`
+	ClangCoverage              *bool    `json:",omitempty"`
+	NativeCoveragePaths        []string `json:",omitempty"`
+	NativeCoverageExcludePaths []string `json:",omitempty"`
+
+	// Set by NewConfig
+	Native_coverage *bool
 
 	SanitizeHost       []string `json:",omitempty"`
 	SanitizeDevice     []string `json:",omitempty"`
@@ -302,8 +307,6 @@ type productVariables struct {
 	BoardPlatPrivateSepolicyDirs []string `json:",omitempty"`
 	BoardSepolicyM4Defs          []string `json:",omitempty"`
 
-	BoardVndkRuntimeDisable *bool `json:",omitempty"`
-
 	VendorVars map[string]map[string]string `json:",omitempty"`
 
 	Ndk_abis               *bool `json:",omitempty"`
@@ -319,7 +322,7 @@ type productVariables struct {
 	PackageNameOverrides         []string `json:",omitempty"`
 
 	EnforceSystemCertificate          *bool    `json:",omitempty"`
-	EnforceSystemCertificateWhitelist []string `json:",omitempty"`
+	EnforceSystemCertificateAllowList []string `json:",omitempty"`
 
 	ProductHiddenAPIStubs       []string `json:",omitempty"`
 	ProductHiddenAPIStubsSystem []string `json:",omitempty"`
@@ -340,6 +343,9 @@ type productVariables struct {
 	InstallExtraFlattenedApexes *bool `json:",omitempty"`
 
 	BoardUsesRecoveryAsBoot *bool `json:",omitempty"`
+
+	BoardKernelBinaries                []string `json:",omitempty"`
+	BoardKernelModuleInterfaceVersions []string `json:",omitempty"`
 }
 
 func boolPtr(v bool) *bool {

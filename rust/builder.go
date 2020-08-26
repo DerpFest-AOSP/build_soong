@@ -21,13 +21,14 @@ import (
 	"github.com/google/blueprint/pathtools"
 
 	"android/soong/android"
+	"android/soong/cc"
 )
 
 var (
 	_     = pctx.SourcePathVariable("rustcCmd", "${config.RustBin}/rustc")
 	rustc = pctx.AndroidStaticRule("rustc",
 		blueprint.RuleParams{
-			Command: "$rustcCmd " +
+			Command: "$envVars $rustcCmd " +
 				"-C linker=${config.RustLinker} " +
 				"-C link-args=\"${crtBegin} ${config.RustLinkerArgs} ${linkFlags} ${crtEnd}\" " +
 				"--emit link -o $out --emit dep-info=$out.d $in ${libFlags} $rustcFlags",
@@ -36,7 +37,19 @@ var (
 			Deps:    blueprint.DepsGCC,
 			Depfile: "$out.d",
 		},
-		"rustcFlags", "linkFlags", "libFlags", "crtBegin", "crtEnd")
+		"rustcFlags", "linkFlags", "libFlags", "crtBegin", "crtEnd", "envVars")
+
+	_            = pctx.SourcePathVariable("clippyCmd", "${config.RustBin}/clippy-driver")
+	clippyDriver = pctx.AndroidStaticRule("clippy",
+		blueprint.RuleParams{
+			Command: "$envVars $clippyCmd " +
+				// Because clippy-driver uses rustc as backend, we need to have some output even during the linting.
+				// Use the metadata output as it has the smallest footprint.
+				"--emit metadata -o $out $in ${libFlags} " +
+				"$rustcFlags $clippyFlags",
+			CommandDeps: []string{"$clippyCmd"},
+		},
+		"rustcFlags", "libFlags", "clippyFlags", "envVars")
 
 	zip = pctx.AndroidStaticRule("zip",
 		blueprint.RuleParams{
@@ -45,6 +58,14 @@ var (
 			Rspfile:        "$out.rsp",
 			RspfileContent: "$in",
 		})
+
+	cp = pctx.AndroidStaticRule("cp",
+		blueprint.RuleParams{
+			Command:        "cp `cat $outDir.rsp` $outDir",
+			Rspfile:        "${outDir}.rsp",
+			RspfileContent: "$in",
+		},
+		"outDir")
 )
 
 type buildOutput struct {
@@ -56,38 +77,38 @@ func init() {
 	pctx.HostBinToolVariable("SoongZipCmd", "soong_zip")
 }
 
-func TransformSrcToBinary(ctx android.ModuleContext, mainSrc android.Path, deps PathDeps, flags Flags,
-	outputFile android.WritablePath, includeDirs []string) buildOutput {
+func TransformSrcToBinary(ctx ModuleContext, mainSrc android.Path, deps PathDeps, flags Flags,
+	outputFile android.WritablePath, linkDirs []string) buildOutput {
 	flags.RustFlags = append(flags.RustFlags, "-C lto")
 
-	return transformSrctoCrate(ctx, mainSrc, deps, flags, outputFile, "bin", includeDirs)
+	return transformSrctoCrate(ctx, mainSrc, deps, flags, outputFile, "bin", linkDirs)
 }
 
-func TransformSrctoRlib(ctx android.ModuleContext, mainSrc android.Path, deps PathDeps, flags Flags,
-	outputFile android.WritablePath, includeDirs []string) buildOutput {
-	return transformSrctoCrate(ctx, mainSrc, deps, flags, outputFile, "rlib", includeDirs)
+func TransformSrctoRlib(ctx ModuleContext, mainSrc android.Path, deps PathDeps, flags Flags,
+	outputFile android.WritablePath, linkDirs []string) buildOutput {
+	return transformSrctoCrate(ctx, mainSrc, deps, flags, outputFile, "rlib", linkDirs)
 }
 
-func TransformSrctoDylib(ctx android.ModuleContext, mainSrc android.Path, deps PathDeps, flags Flags,
-	outputFile android.WritablePath, includeDirs []string) buildOutput {
-	return transformSrctoCrate(ctx, mainSrc, deps, flags, outputFile, "dylib", includeDirs)
+func TransformSrctoDylib(ctx ModuleContext, mainSrc android.Path, deps PathDeps, flags Flags,
+	outputFile android.WritablePath, linkDirs []string) buildOutput {
+	return transformSrctoCrate(ctx, mainSrc, deps, flags, outputFile, "dylib", linkDirs)
 }
 
-func TransformSrctoStatic(ctx android.ModuleContext, mainSrc android.Path, deps PathDeps, flags Flags,
-	outputFile android.WritablePath, includeDirs []string) buildOutput {
+func TransformSrctoStatic(ctx ModuleContext, mainSrc android.Path, deps PathDeps, flags Flags,
+	outputFile android.WritablePath, linkDirs []string) buildOutput {
 	flags.RustFlags = append(flags.RustFlags, "-C lto")
-	return transformSrctoCrate(ctx, mainSrc, deps, flags, outputFile, "staticlib", includeDirs)
+	return transformSrctoCrate(ctx, mainSrc, deps, flags, outputFile, "staticlib", linkDirs)
 }
 
-func TransformSrctoShared(ctx android.ModuleContext, mainSrc android.Path, deps PathDeps, flags Flags,
-	outputFile android.WritablePath, includeDirs []string) buildOutput {
+func TransformSrctoShared(ctx ModuleContext, mainSrc android.Path, deps PathDeps, flags Flags,
+	outputFile android.WritablePath, linkDirs []string) buildOutput {
 	flags.RustFlags = append(flags.RustFlags, "-C lto")
-	return transformSrctoCrate(ctx, mainSrc, deps, flags, outputFile, "cdylib", includeDirs)
+	return transformSrctoCrate(ctx, mainSrc, deps, flags, outputFile, "cdylib", linkDirs)
 }
 
-func TransformSrctoProcMacro(ctx android.ModuleContext, mainSrc android.Path, deps PathDeps,
-	flags Flags, outputFile android.WritablePath, includeDirs []string) buildOutput {
-	return transformSrctoCrate(ctx, mainSrc, deps, flags, outputFile, "proc-macro", includeDirs)
+func TransformSrctoProcMacro(ctx ModuleContext, mainSrc android.Path, deps PathDeps,
+	flags Flags, outputFile android.WritablePath, linkDirs []string) buildOutput {
+	return transformSrctoCrate(ctx, mainSrc, deps, flags, outputFile, "proc-macro", linkDirs)
 }
 
 func rustLibsToPaths(libs RustLibraries) android.Paths {
@@ -98,18 +119,19 @@ func rustLibsToPaths(libs RustLibraries) android.Paths {
 	return paths
 }
 
-func transformSrctoCrate(ctx android.ModuleContext, main android.Path, deps PathDeps, flags Flags,
-	outputFile android.WritablePath, crate_type string, includeDirs []string) buildOutput {
+func transformSrctoCrate(ctx ModuleContext, main android.Path, deps PathDeps, flags Flags,
+	outputFile android.WritablePath, crate_type string, linkDirs []string) buildOutput {
 
 	var inputs android.Paths
 	var implicits android.Paths
+	var envVars []string
 	var output buildOutput
 	var libFlags, rustcFlags, linkFlags []string
 	var implicitOutputs android.WritablePaths
 
 	output.outputFile = outputFile
-	crate_name := ctx.(ModuleContext).CrateName()
-	targetTriple := ctx.(ModuleContext).toolchain().RustTriple()
+	crate_name := ctx.RustModule().CrateName()
+	targetTriple := ctx.toolchain().RustTriple()
 
 	inputs = append(inputs, main)
 
@@ -124,12 +146,10 @@ func transformSrctoCrate(ctx android.ModuleContext, main android.Path, deps Path
 		rustcFlags = append(rustcFlags, "--target="+targetTriple)
 		linkFlags = append(linkFlags, "-target "+targetTriple)
 	}
-	// TODO once we have static libraries in the host prebuilt .bp, this
-	// should be unconditionally added.
-	if !(ctx.Host() && ctx.TargetPrimary()) {
-		// If we're not targeting the host primary arch, do not use an implicit sysroot
-		rustcFlags = append(rustcFlags, "--sysroot=/dev/null")
-	}
+
+	// Suppress an implicit sysroot
+	rustcFlags = append(rustcFlags, "--sysroot=/dev/null")
+
 	// Collect linker flags
 	linkFlags = append(linkFlags, flags.GlobalLinkFlags...)
 	linkFlags = append(linkFlags, flags.LinkFlags...)
@@ -145,7 +165,7 @@ func transformSrctoCrate(ctx android.ModuleContext, main android.Path, deps Path
 		libFlags = append(libFlags, "--extern "+proc_macro.CrateName+"="+proc_macro.Path.String())
 	}
 
-	for _, path := range includeDirs {
+	for _, path := range linkDirs {
 		libFlags = append(libFlags, "-L "+path)
 	}
 
@@ -155,21 +175,74 @@ func transformSrctoCrate(ctx android.ModuleContext, main android.Path, deps Path
 	implicits = append(implicits, rustLibsToPaths(deps.ProcMacros)...)
 	implicits = append(implicits, deps.StaticLibs...)
 	implicits = append(implicits, deps.SharedLibs...)
+
 	if deps.CrtBegin.Valid() {
 		implicits = append(implicits, deps.CrtBegin.Path(), deps.CrtEnd.Path())
 	}
 
 	if flags.Coverage {
 		var gcnoFile android.WritablePath
+		// Provide consistency with cc gcda output, see cc/builder.go init()
+		profileEmitArg := strings.TrimPrefix(cc.PwdPrefix(), "PWD=") + "/"
 
 		if outputFile.Ext() != "" {
 			gcnoFile = android.PathForModuleOut(ctx, pathtools.ReplaceExtension(outputFile.Base(), "gcno"))
+			rustcFlags = append(rustcFlags, "-Z profile-emit="+profileEmitArg+android.PathForModuleOut(
+				ctx, pathtools.ReplaceExtension(outputFile.Base(), "gcda")).String())
 		} else {
 			gcnoFile = android.PathForModuleOut(ctx, outputFile.Base()+".gcno")
+			rustcFlags = append(rustcFlags, "-Z profile-emit="+profileEmitArg+android.PathForModuleOut(
+				ctx, outputFile.Base()+".gcda").String())
 		}
 
 		implicitOutputs = append(implicitOutputs, gcnoFile)
 		output.coverageFile = gcnoFile
+	}
+
+	if len(deps.SrcDeps) > 0 {
+		genSubDir := "out/"
+		moduleGenDir := android.PathForModuleOut(ctx, genSubDir)
+		var outputs android.WritablePaths
+
+		for _, genSrc := range deps.SrcDeps {
+			if android.SuffixInList(outputs.Strings(), genSubDir+genSrc.Base()) {
+				ctx.PropertyErrorf("srcs",
+					"multiple source providers generate the same filename output: "+genSrc.Base())
+			}
+			outputs = append(outputs, android.PathForModuleOut(ctx, genSubDir+genSrc.Base()))
+		}
+
+		ctx.Build(pctx, android.BuildParams{
+			Rule:        cp,
+			Description: "cp " + moduleGenDir.Rel(),
+			Outputs:     outputs,
+			Inputs:      deps.SrcDeps,
+			Args: map[string]string{
+				"outDir": moduleGenDir.String(),
+			},
+		})
+		implicits = append(implicits, outputs.Paths()...)
+		envVars = append(envVars, "OUT_DIR=$$PWD/"+moduleGenDir.String())
+	}
+
+	if flags.Clippy {
+		clippyFile := android.PathForModuleOut(ctx, outputFile.Base()+".clippy")
+		ctx.Build(pctx, android.BuildParams{
+			Rule:            clippyDriver,
+			Description:     "clippy " + main.Rel(),
+			Output:          clippyFile,
+			ImplicitOutputs: nil,
+			Inputs:          inputs,
+			Implicits:       implicits,
+			Args: map[string]string{
+				"rustcFlags":  strings.Join(rustcFlags, " "),
+				"libFlags":    strings.Join(libFlags, " "),
+				"clippyFlags": strings.Join(flags.ClippyFlags, " "),
+				"envVars":     strings.Join(envVars, " "),
+			},
+		})
+		// Declare the clippy build as an implicit dependency of the original crate.
+		implicits = append(implicits, clippyFile)
 	}
 
 	ctx.Build(pctx, android.BuildParams{
@@ -185,13 +258,14 @@ func transformSrctoCrate(ctx android.ModuleContext, main android.Path, deps Path
 			"libFlags":   strings.Join(libFlags, " "),
 			"crtBegin":   deps.CrtBegin.String(),
 			"crtEnd":     deps.CrtEnd.String(),
+			"envVars":    strings.Join(envVars, " "),
 		},
 	})
 
 	return output
 }
 
-func TransformCoverageFilesToZip(ctx android.ModuleContext,
+func TransformCoverageFilesToZip(ctx ModuleContext,
 	covFiles android.Paths, baseName string) android.OptionalPath {
 	if len(covFiles) > 0 {
 

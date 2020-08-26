@@ -27,8 +27,9 @@ import (
 
 var sharedLibrarySdkMemberType = &librarySdkMemberType{
 	SdkMemberTypeBase: android.SdkMemberTypeBase{
-		PropertyName: "native_shared_libs",
-		SupportsSdk:  true,
+		PropertyName:    "native_shared_libs",
+		SupportsSdk:     true,
+		HostOsDependent: true,
 	},
 	prebuiltModuleType: "cc_prebuilt_library_shared",
 	linkTypes:          []string{"shared"},
@@ -36,8 +37,9 @@ var sharedLibrarySdkMemberType = &librarySdkMemberType{
 
 var staticLibrarySdkMemberType = &librarySdkMemberType{
 	SdkMemberTypeBase: android.SdkMemberTypeBase{
-		PropertyName: "native_static_libs",
-		SupportsSdk:  true,
+		PropertyName:    "native_static_libs",
+		SupportsSdk:     true,
+		HostOsDependent: true,
 	},
 	prebuiltModuleType: "cc_prebuilt_library_static",
 	linkTypes:          []string{"static"},
@@ -45,8 +47,9 @@ var staticLibrarySdkMemberType = &librarySdkMemberType{
 
 var staticAndSharedLibrarySdkMemberType = &librarySdkMemberType{
 	SdkMemberTypeBase: android.SdkMemberTypeBase{
-		PropertyName: "native_libs",
-		SupportsSdk:  true,
+		PropertyName:    "native_libs",
+		SupportsSdk:     true,
+		HostOsDependent: true,
 	},
 	prebuiltModuleType: "cc_prebuilt_library",
 	linkTypes:          []string{"static", "shared"},
@@ -124,6 +127,14 @@ func (mt *librarySdkMemberType) AddPrebuiltModule(ctx android.SdkMemberContext, 
 	if stl != nil {
 		pbm.AddProperty("stl", proptools.String(stl))
 	}
+
+	if lib, ok := ccModule.linker.(*libraryDecorator); ok {
+		uhs := lib.Properties.Unique_host_soname
+		if uhs != nil {
+			pbm.AddProperty("unique_host_soname", proptools.Bool(uhs))
+		}
+	}
+
 	return pbm
 }
 
@@ -201,6 +212,11 @@ var includeDirProperties = []includeDirsProperty{
 // Add properties that may, or may not, be arch specific.
 func addPossiblyArchSpecificProperties(sdkModuleContext android.ModuleContext, builder android.SnapshotBuilder, libInfo *nativeLibInfoProperties, outputProperties android.BpPropertySet) {
 
+	if libInfo.SanitizeNever {
+		sanitizeSet := outputProperties.AddPropertySet("sanitize")
+		sanitizeSet.AddProperty("never", true)
+	}
+
 	// Copy the generated library to the snapshot and add a reference to it in the .bp module.
 	if libInfo.outputFile != nil {
 		nativeLibraryPath := nativeLibraryPathFor(libInfo)
@@ -226,7 +242,7 @@ func addPossiblyArchSpecificProperties(sdkModuleContext android.ModuleContext, b
 	for _, propertyInfo := range includeDirProperties {
 		// Calculate the base directory in the snapshot into which the files will be copied.
 		// lib.ArchType is "" for common properties.
-		targetDir := filepath.Join(libInfo.archType, propertyInfo.snapshotDir)
+		targetDir := filepath.Join(libInfo.OsPrefix(), libInfo.archType, propertyInfo.snapshotDir)
 
 		propertyName := propertyInfo.propertyName
 
@@ -348,6 +364,9 @@ type nativeLibInfoProperties struct {
 	// not vary by arch so cannot be android specific.
 	StubsVersion string `sdk:"ignored-on-host"`
 
+	// Value of SanitizeProperties.Sanitize.Never. Needs to be propagated for CRT objects.
+	SanitizeNever bool `android:"arch_variant"`
+
 	// outputFile is not exported as it is always arch specific.
 	outputFile android.Path
 }
@@ -372,7 +391,11 @@ func (p *nativeLibInfoProperties) PopulateFromVariant(ctx android.SdkMemberConte
 	// Make sure that the include directories are unique.
 	p.ExportedIncludeDirs = android.FirstUniquePaths(exportedIncludeDirs)
 	p.exportedGeneratedIncludeDirs = android.FirstUniquePaths(exportedGeneratedIncludeDirs)
-	p.ExportedSystemIncludeDirs = android.FirstUniquePaths(ccModule.ExportedSystemIncludeDirs())
+
+	// Take a copy before filtering out duplicates to avoid changing the slice owned by the
+	// ccModule.
+	dirs := append(android.Paths(nil), ccModule.ExportedSystemIncludeDirs()...)
+	p.ExportedSystemIncludeDirs = android.FirstUniquePaths(dirs)
 
 	p.ExportedFlags = ccModule.ExportedFlags()
 	if ccModule.linker != nil {
@@ -389,6 +412,10 @@ func (p *nativeLibInfoProperties) PopulateFromVariant(ctx android.SdkMemberConte
 
 	if ccModule.HasStubsVariants() {
 		p.StubsVersion = ccModule.StubsVersion()
+	}
+
+	if ccModule.sanitize != nil && proptools.Bool(ccModule.sanitize.Properties.Sanitize.Never) {
+		p.SanitizeNever = true
 	}
 }
 

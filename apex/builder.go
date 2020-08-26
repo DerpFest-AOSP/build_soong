@@ -17,6 +17,7 @@ package apex
 import (
 	"encoding/json"
 	"fmt"
+	"path"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -165,13 +166,13 @@ var (
 	diffApexContentRule = pctx.StaticRule("diffApexContentRule", blueprint.RuleParams{
 		Command: `diff --unchanged-group-format='' \` +
 			`--changed-group-format='%<' \` +
-			`${image_content_file} ${whitelisted_files_file} || (` +
+			`${image_content_file} ${allowed_files_file} || (` +
 			`echo -e "New unexpected files were added to ${apex_module_name}." ` +
 			` "To fix the build run following command:" && ` +
-			`echo "system/apex/tools/update_whitelist.sh ${whitelisted_files_file} ${image_content_file}" && ` +
+			`echo "system/apex/tools/update_allowed_list.sh ${allowed_files_file} ${image_content_file}" && ` +
 			`exit 1); touch ${out}`,
-		Description: "Diff ${image_content_file} and ${whitelisted_files_file}",
-	}, "image_content_file", "whitelisted_files_file", "apex_module_name")
+		Description: "Diff ${image_content_file} and ${allowed_files_file}",
+	}, "image_content_file", "allowed_files_file", "apex_module_name")
 )
 
 func (a *apexBundle) buildManifest(ctx android.ModuleContext, provideNativeLibs, requireNativeLibs []string) {
@@ -231,10 +232,47 @@ func (a *apexBundle) buildManifest(ctx android.ModuleContext, provideNativeLibs,
 	})
 }
 
+func (a *apexBundle) buildFileContexts(ctx android.ModuleContext) {
+	if a.properties.ApexType == zipApex {
+		return
+	}
+	var fileContexts android.Path
+	if a.properties.File_contexts == nil {
+		fileContexts = android.PathForSource(ctx, "system/sepolicy/apex", ctx.ModuleName()+"-file_contexts")
+	} else {
+		fileContexts = android.PathForModuleSrc(ctx, *a.properties.File_contexts)
+	}
+	if a.Platform() {
+		if matched, err := path.Match("system/sepolicy/**/*", fileContexts.String()); err != nil || !matched {
+			ctx.PropertyErrorf("file_contexts", "should be under system/sepolicy, but %q", fileContexts)
+			return
+		}
+	}
+	if !android.ExistentPathForSource(ctx, fileContexts.String()).Valid() {
+		ctx.PropertyErrorf("file_contexts", "cannot find file_contexts file: %q", a.fileContexts)
+		return
+	}
+
+	output := android.PathForModuleOut(ctx, "file_contexts")
+	rule := android.NewRuleBuilder()
+	// remove old file
+	rule.Command().Text("rm").FlagWithOutput("-f ", output)
+	// copy file_contexts
+	rule.Command().Text("cat").Input(fileContexts).Text(">>").Output(output)
+	// new line
+	rule.Command().Text("echo").Text(">>").Output(output)
+	// force-label /apex_manifest.pb and / as system_file so that apexd can read them
+	rule.Command().Text("echo").Flag("/apex_manifest\\\\.pb u:object_r:system_file:s0").Text(">>").Output(output)
+	rule.Command().Text("echo").Flag("/ u:object_r:system_file:s0").Text(">>").Output(output)
+	rule.Build(pctx, ctx, "file_contexts."+a.Name(), "Generate file_contexts")
+
+	a.fileContexts = output.OutputPath
+}
+
 func (a *apexBundle) buildNoticeFiles(ctx android.ModuleContext, apexFileName string) android.NoticeOutputs {
 	var noticeFiles android.Paths
 
-	a.walkPayloadDeps(ctx, func(ctx android.ModuleContext, from blueprint.Module, to android.ApexModule, externalDep bool) bool {
+	a.WalkPayloadDeps(ctx, func(ctx android.ModuleContext, from blueprint.Module, to android.ApexModule, externalDep bool) bool {
 		if externalDep {
 			// As soon as the dependency graph crosses the APEX boundary, don't go further.
 			return false
@@ -352,7 +390,7 @@ func (a *apexBundle) buildUnflattenedApex(ctx android.ModuleContext) {
 		} else {
 			if fi.class == appSet {
 				copyCommands = append(copyCommands,
-					fmt.Sprintf("unzip -q -d %s %s", destPathDir, fi.builtFile.String()))
+					fmt.Sprintf("unzip -qDD -d %s %s", destPathDir, fi.builtFile.String()))
 			} else {
 				copyCommands = append(copyCommands, "cp -f "+fi.builtFile.String()+" "+destPath)
 			}
@@ -365,16 +403,16 @@ func (a *apexBundle) buildUnflattenedApex(ctx android.ModuleContext) {
 		}
 		for _, d := range fi.dataPaths {
 			// TODO(eakammer): This is now the third repetition of ~this logic for test paths, refactoring should be possible
-			relPath := d.Rel()
-			dataPath := d.String()
+			relPath := d.SrcPath.Rel()
+			dataPath := d.SrcPath.String()
 			if !strings.HasSuffix(dataPath, relPath) {
 				panic(fmt.Errorf("path %q does not end with %q", dataPath, relPath))
 			}
 
-			dataDest := android.PathForModuleOut(ctx, "image"+suffix, fi.apexRelativePath(relPath)).String()
+			dataDest := android.PathForModuleOut(ctx, "image"+suffix, fi.apexRelativePath(relPath), d.RelativeInstallPath).String()
 
-			copyCommands = append(copyCommands, "cp -f "+d.String()+" "+dataDest)
-			implicitInputs = append(implicitInputs, d)
+			copyCommands = append(copyCommands, "cp -f "+d.SrcPath.String()+" "+dataDest)
+			implicitInputs = append(implicitInputs, d.SrcPath)
 		}
 	}
 
@@ -391,7 +429,7 @@ func (a *apexBundle) buildUnflattenedApex(ctx android.ModuleContext) {
 	emitCommands = append(emitCommands, "sort -o "+imageContentFile.String()+" "+imageContentFile.String())
 	implicitInputs = append(implicitInputs, a.manifestPbOut)
 
-	if a.properties.Whitelisted_files != nil {
+	if a.overridableProperties.Allowed_files != nil {
 		ctx.Build(pctx, android.BuildParams{
 			Rule:        emitApexContentRule,
 			Implicits:   implicitInputs,
@@ -402,7 +440,7 @@ func (a *apexBundle) buildUnflattenedApex(ctx android.ModuleContext) {
 			},
 		})
 		implicitInputs = append(implicitInputs, imageContentFile)
-		whitelistedFilesFile := android.PathForModuleSrc(ctx, proptools.String(a.properties.Whitelisted_files))
+		allowedFilesFile := android.PathForModuleSrc(ctx, proptools.String(a.overridableProperties.Allowed_files))
 
 		phonyOutput := android.PathForModuleOut(ctx, a.Name()+"-diff-phony-output")
 		ctx.Build(pctx, android.BuildParams{
@@ -411,9 +449,9 @@ func (a *apexBundle) buildUnflattenedApex(ctx android.ModuleContext) {
 			Output:      phonyOutput,
 			Description: "diff apex image content",
 			Args: map[string]string{
-				"whitelisted_files_file": whitelistedFilesFile.String(),
-				"image_content_file":     imageContentFile.String(),
-				"apex_module_name":       a.Name(),
+				"allowed_files_file": allowedFilesFile.String(),
+				"image_content_file": imageContentFile.String(),
+				"apex_module_name":   a.Name(),
 			},
 		})
 
@@ -435,7 +473,7 @@ func (a *apexBundle) buildUnflattenedApex(ctx android.ModuleContext) {
 			if f.installDir == "bin" || strings.HasPrefix(f.installDir, "bin/") {
 				executablePaths = append(executablePaths, pathInApex)
 				for _, d := range f.dataPaths {
-					readOnlyPaths = append(readOnlyPaths, filepath.Join(f.installDir, d.Rel()))
+					readOnlyPaths = append(readOnlyPaths, filepath.Join(f.installDir, d.RelativeInstallPath, d.SrcPath.Rel()))
 				}
 				for _, s := range f.symlinks {
 					executablePaths = append(executablePaths, filepath.Join(f.installDir, s))
@@ -733,7 +771,7 @@ func (a *apexBundle) buildApexDependencyInfo(ctx android.ModuleContext) {
 	}
 
 	depInfos := android.DepNameToDepInfoMap{}
-	a.walkPayloadDeps(ctx, func(ctx android.ModuleContext, from blueprint.Module, to android.ApexModule, externalDep bool) bool {
+	a.WalkPayloadDeps(ctx, func(ctx android.ModuleContext, from blueprint.Module, to android.ApexModule, externalDep bool) bool {
 		if from.Name() == to.Name() {
 			// This can happen for cc.reuseObjTag. We are not interested in tracking this.
 			// As soon as the dependency graph crosses the APEX boundary, don't go further.
@@ -776,4 +814,13 @@ func (a *apexBundle) buildApexDependencyInfo(ctx android.ModuleContext) {
 			a.ApexBundleDepsInfo.FlatListPath(),
 		},
 	})
+}
+
+func (a *apexBundle) buildLintReports(ctx android.ModuleContext) {
+	depSetsBuilder := java.NewLintDepSetBuilder()
+	for _, fi := range a.filesInfo {
+		depSetsBuilder.Transitive(fi.lintDepSets)
+	}
+
+	a.lintReports = java.BuildModuleLintReportZips(ctx, depSetsBuilder.Build())
 }

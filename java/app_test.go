@@ -147,7 +147,7 @@ func TestAndroidAppSet(t *testing.T) {
 			name: "foo",
 			set: "prebuilts/apks/app.apks",
 			prerelease: true,
-        }`)
+		}`)
 	module := ctx.ModuleForTests("foo", "android_common")
 	const packedSplitApks = "foo.zip"
 	params := module.Output(packedSplitApks)
@@ -157,12 +157,15 @@ func TestAndroidAppSet(t *testing.T) {
 	if s := params.Args["allow-prereleased"]; s != "true" {
 		t.Errorf("wrong allow-prereleased value: '%s', expected 'true'", s)
 	}
+	if s := params.Args["partition"]; s != "system" {
+		t.Errorf("wrong partition value: '%s', expected 'system'", s)
+	}
 	mkEntries := android.AndroidMkEntriesForTest(t, config, "", module.Module())[0]
-	actualMaster := mkEntries.EntryMap["LOCAL_APK_SET_MASTER_FILE"]
-	expectedMaster := []string{"foo.apk"}
-	if !reflect.DeepEqual(actualMaster, expectedMaster) {
-		t.Errorf("Unexpected LOCAL_APK_SET_MASTER_FILE value: '%s', expected: '%s',",
-			actualMaster, expectedMaster)
+	actualInstallFile := mkEntries.EntryMap["LOCAL_APK_SET_INSTALL_FILE"]
+	expectedInstallFile := []string{"foo.apk"}
+	if !reflect.DeepEqual(actualInstallFile, expectedInstallFile) {
+		t.Errorf("Unexpected LOCAL_APK_SET_INSTALL_FILE value: '%s', expected: '%s',",
+			actualInstallFile, expectedInstallFile)
 	}
 }
 
@@ -473,6 +476,24 @@ func TestUpdatableApps(t *testing.T) {
 	}
 }
 
+func TestUpdatableApps_TransitiveDepsShouldSetMinSdkVersion(t *testing.T) {
+	testJavaError(t, `module "bar".*: should support min_sdk_version\(29\)`, cc.GatherRequiredDepsForTest(android.Android)+`
+		android_app {
+			name: "foo",
+			srcs: ["a.java"],
+			updatable: true,
+			sdk_version: "current",
+			min_sdk_version: "29",
+			static_libs: ["bar"],
+		}
+
+		java_library {
+			name: "bar",
+			sdk_version: "current",
+		}
+	`)
+}
+
 func TestUpdatableApps_JniLibsShouldShouldSupportMinSdkVersion(t *testing.T) {
 	testJava(t, cc.GatherRequiredDepsForTest(android.Android)+`
 		android_app {
@@ -510,16 +531,6 @@ func TestUpdatableApps_JniLibShouldBeBuiltAgainstMinSdkVersion(t *testing.T) {
 			system_shared_libs: [],
 			sdk_version: "29",
 		}
-
-		ndk_prebuilt_object {
-			name: "ndk_crtbegin_so.29",
-			sdk_version: "29",
-		}
-
-		ndk_prebuilt_object {
-			name: "ndk_crtend_so.29",
-			sdk_version: "29",
-		}
 	`
 	fs := map[string][]byte{
 		"prebuilts/ndk/current/platforms/android-29/arch-arm64/usr/lib/crtbegin_so.o": nil,
@@ -532,16 +543,28 @@ func TestUpdatableApps_JniLibShouldBeBuiltAgainstMinSdkVersion(t *testing.T) {
 
 	inputs := ctx.ModuleForTests("libjni", "android_arm64_armv8-a_sdk_shared").Description("link").Implicits
 	var crtbeginFound, crtendFound bool
+	expectedCrtBegin := ctx.ModuleForTests("crtbegin_so",
+		"android_arm64_armv8-a_sdk_29").Rule("partialLd").Output
+	expectedCrtEnd := ctx.ModuleForTests("crtend_so",
+		"android_arm64_armv8-a_sdk_29").Rule("partialLd").Output
+	implicits := []string{}
 	for _, input := range inputs {
-		switch input.String() {
-		case "prebuilts/ndk/current/platforms/android-29/arch-arm64/usr/lib/crtbegin_so.o":
+		implicits = append(implicits, input.String())
+		if strings.HasSuffix(input.String(), expectedCrtBegin.String()) {
 			crtbeginFound = true
-		case "prebuilts/ndk/current/platforms/android-29/arch-arm64/usr/lib/crtend_so.o":
+		} else if strings.HasSuffix(input.String(), expectedCrtEnd.String()) {
 			crtendFound = true
 		}
 	}
-	if !crtbeginFound || !crtendFound {
-		t.Error("should link with ndk_crtbegin_so.29 and ndk_crtend_so.29")
+	if !crtbeginFound {
+		t.Error(fmt.Sprintf(
+			"expected implicit with suffix %q, have the following implicits:\n%s",
+			expectedCrtBegin, strings.Join(implicits, "\n")))
+	}
+	if !crtendFound {
+		t.Error(fmt.Sprintf(
+			"expected implicit with suffix %q, have the following implicits:\n%s",
+			expectedCrtEnd, strings.Join(implicits, "\n")))
 	}
 }
 
@@ -2503,10 +2526,24 @@ func TestUsesLibraries(t *testing.T) {
 			sdk_version: "current",
 		}
 
+		java_sdk_library {
+			name: "runtime-library",
+			srcs: ["a.java"],
+			sdk_version: "current",
+		}
+
+		java_library {
+			name: "static-runtime-helper",
+			srcs: ["a.java"],
+			libs: ["runtime-library"],
+			sdk_version: "current",
+		}
+
 		android_app {
 			name: "app",
 			srcs: ["a.java"],
 			libs: ["qux", "quuz.stubs"],
+			static_libs: ["static-runtime-helper"],
 			uses_libs: ["foo"],
 			sdk_version: "current",
 			optional_uses_libs: [
@@ -2539,11 +2576,10 @@ func TestUsesLibraries(t *testing.T) {
 
 	// Test that implicit dependencies on java_sdk_library instances are passed to the manifest.
 	manifestFixerArgs := app.Output("manifest_fixer/AndroidManifest.xml").Args["args"]
-	if w := "--uses-library qux"; !strings.Contains(manifestFixerArgs, w) {
-		t.Errorf("unexpected manifest_fixer args: wanted %q in %q", w, manifestFixerArgs)
-	}
-	if w := "--uses-library quuz"; !strings.Contains(manifestFixerArgs, w) {
-		t.Errorf("unexpected manifest_fixer args: wanted %q in %q", w, manifestFixerArgs)
+	for _, w := range []string{"qux", "quuz", "runtime-library"} {
+		if !strings.Contains(manifestFixerArgs, "--uses-library "+w) {
+			t.Errorf("unexpected manifest_fixer args: wanted %q in %q", w, manifestFixerArgs)
+		}
 	}
 
 	// Test that all libraries are verified
@@ -2569,13 +2605,13 @@ func TestUsesLibraries(t *testing.T) {
 	// Test that only present libraries are preopted
 	cmd = app.Rule("dexpreopt").RuleParams.Command
 
-	if w := `dex_preopt_target_libraries="/system/framework/foo.jar /system/framework/bar.jar"`; !strings.Contains(cmd, w) {
+	if w := `--target-classpath-for-sdk any /system/framework/foo.jar:/system/framework/bar.jar`; !strings.Contains(cmd, w) {
 		t.Errorf("wanted %q in %q", w, cmd)
 	}
 
 	cmd = prebuilt.Rule("dexpreopt").RuleParams.Command
 
-	if w := `dex_preopt_target_libraries="/system/framework/foo.jar /system/framework/bar.jar"`; !strings.Contains(cmd, w) {
+	if w := `--target-classpath-for-sdk any /system/framework/foo.jar:/system/framework/bar.jar`; !strings.Contains(cmd, w) {
 		t.Errorf("wanted %q in %q", w, cmd)
 	}
 }
@@ -2657,7 +2693,7 @@ func TestCodelessApp(t *testing.T) {
 }
 
 func TestEmbedNotice(t *testing.T) {
-	ctx, _ := testJava(t, cc.GatherRequiredDepsForTest(android.Android)+`
+	ctx, _ := testJavaWithFS(t, cc.GatherRequiredDepsForTest(android.Android)+`
 		android_app {
 			name: "foo",
 			srcs: ["a.java"],
@@ -2713,7 +2749,12 @@ func TestEmbedNotice(t *testing.T) {
 			srcs: ["b.java"],
 			notice: "TOOL_NOTICE",
 		}
-	`)
+	`, map[string][]byte{
+		"APP_NOTICE":     nil,
+		"GENRULE_NOTICE": nil,
+		"LIB_NOTICE":     nil,
+		"TOOL_NOTICE":    nil,
+	})
 
 	// foo has NOTICE files to process, and embed_notices is true.
 	foo := ctx.ModuleForTests("foo", "android_common")
@@ -2840,6 +2881,7 @@ func TestUncompressDex(t *testing.T) {
 		config := testAppConfig(nil, bp, nil)
 		if unbundled {
 			config.TestProductVariables.Unbundled_build = proptools.BoolPtr(true)
+			config.TestProductVariables.Always_use_prebuilt_sdks = proptools.BoolPtr(true)
 		}
 
 		ctx := testContext()

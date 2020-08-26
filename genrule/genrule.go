@@ -83,7 +83,6 @@ type hostToolDependencyTag struct {
 
 type generatorProperties struct {
 	// The command to run on one or more input files. Cmd supports substitution of a few variables
-	// (the actual substitution is implemented in GenerateAndroidBuildActions below)
 	//
 	// Available variables for substitution:
 	//
@@ -94,9 +93,6 @@ type generatorProperties struct {
 	//  $(depfile): a file to which dependencies will be written, if the depfile property is set to true
 	//  $(genDir): the sandbox directory for this tool; contains $(out)
 	//  $$: a literal $
-	//
-	// All files used must be declared as inputs (to ensure proper up-to-date checks).
-	// Use "$(in)" directly in Cmd to ensure that all inputs used are declared.
 	Cmd *string
 
 	// Enable reading a file containing dependencies in gcc format after the command completes
@@ -263,9 +259,9 @@ func (g *Module) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 
 		// If AllowMissingDependencies is enabled, the build will not have stopped when
 		// AddFarVariationDependencies was called on a missing tool, which will result in nonsensical
-		// "cmd: unknown location label ..." errors later.  Add a dummy file to the local label.  The
-		// command that uses this dummy file will never be executed because the rule will be replaced with
-		// an android.Error rule reporting the missing dependencies.
+		// "cmd: unknown location label ..." errors later.  Add a placeholder file to the local label.
+		// The command that uses this placeholder file will never be executed because the rule will be
+		// replaced with an android.Error rule reporting the missing dependencies.
 		if ctx.Config().AllowMissingDependencies() {
 			for _, tool := range g.properties.Tools {
 				if !seenTools[tool] {
@@ -296,9 +292,9 @@ func (g *Module) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 
 			// If AllowMissingDependencies is enabled, the build will not have stopped when
 			// the dependency was added on a missing SourceFileProducer module, which will result in nonsensical
-			// "cmd: label ":..." has no files" errors later.  Add a dummy file to the local label.  The
-			// command that uses this dummy file will never be executed because the rule will be replaced with
-			// an android.Error rule reporting the missing dependencies.
+			// "cmd: label ":..." has no files" errors later.  Add a placeholder file to the local label.
+			// The command that uses this placeholder file will never be executed because the rule will be
+			// replaced with an android.Error rule reporting the missing dependencies.
 			ctx.AddMissingDependencies(missingDeps)
 			addLocationLabel(in, []string{"***missing srcs " + in + "***"})
 		} else {
@@ -557,6 +553,12 @@ func (g *Module) AndroidMk() android.AndroidMkData {
 			}
 		},
 	}
+}
+
+func (g *Module) ShouldSupportSdkVersion(ctx android.BaseModuleContext, sdkVersion int) error {
+	// Because generated outputs are checked by client modules(e.g. cc_library, ...)
+	// we can safely ignore the check here.
+	return nil
 }
 
 func generatorFactory(taskGenerator taskFunc, props ...interface{}) *Module {

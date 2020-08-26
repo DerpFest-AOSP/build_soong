@@ -40,15 +40,15 @@ type GlobalConfig struct {
 	DisableGenerateProfile bool   // don't generate profiles
 	ProfileDir             string // directory to find profiles in
 
-	BootJars          []string // modules for jars that form the boot class path
-	UpdatableBootJars []string // jars within apex that form the boot class path
+	BootJars          android.ConfiguredJarList // modules for jars that form the boot class path
+	UpdatableBootJars android.ConfiguredJarList // jars within apex that form the boot class path
 
-	ArtApexJars []string // modules for jars that are in the ART APEX
+	ArtApexJars android.ConfiguredJarList // modules for jars that are in the ART APEX
 
-	SystemServerJars          []string // jars that form the system server
-	SystemServerApps          []string // apps that are loaded into system server
-	UpdatableSystemServerJars []string // jars within apex that are loaded into system server
-	SpeedApps                 []string // apps that should be speed optimized
+	SystemServerJars          []string                  // jars that form the system server
+	SystemServerApps          []string                  // apps that are loaded into system server
+	UpdatableSystemServerJars android.ConfiguredJarList // jars within apex that are loaded into system server
+	SpeedApps                 []string                  // apps that should be speed optimized
 
 	BrokenSuboptimalOrderOfSystemServerJars bool // if true, sub-optimal order does not cause a build error
 
@@ -100,6 +100,8 @@ type GlobalSoongConfig struct {
 	ConstructContext android.Path
 }
 
+const UnknownInstallLibraryPath = "error"
+
 // LibraryPath contains paths to the library DEX jar on host and on device.
 type LibraryPath struct {
 	Host   android.Path
@@ -108,6 +110,36 @@ type LibraryPath struct {
 
 // LibraryPaths is a map from library name to on-host and on-device paths to its DEX jar.
 type LibraryPaths map[string]*LibraryPath
+
+// Add a new path to the map of library paths, unless a path for this library already exists.
+func (libPaths LibraryPaths) AddLibraryPath(ctx android.PathContext, lib *string, hostPath, installPath android.Path) {
+	if lib == nil {
+		return
+	}
+	if _, present := libPaths[*lib]; !present {
+		var devicePath string
+		if installPath != nil {
+			devicePath = android.InstallPathToOnDevicePath(ctx, installPath.(android.InstallPath))
+		} else {
+			// For some stub libraries the only known thing is the name of their implementation
+			// library, but the library itself is unavailable (missing or part of a prebuilt). In
+			// such cases we still need to add the library to <uses-library> tags in the manifest,
+			// but we cannot use if for dexpreopt.
+			devicePath = UnknownInstallLibraryPath
+		}
+		libPaths[*lib] = &LibraryPath{hostPath, devicePath}
+	}
+	return
+}
+
+// Add library paths from the second map to the first map (do not override existing entries).
+func (libPaths LibraryPaths) AddLibraryPaths(otherPaths LibraryPaths) {
+	for lib, path := range otherPaths {
+		if _, present := libPaths[lib]; !present {
+			libPaths[lib] = path
+		}
+	}
+}
 
 type ModuleConfig struct {
 	Name            string
@@ -123,10 +155,10 @@ type ModuleConfig struct {
 	ProfileIsTextListing bool
 	ProfileBootListing   android.OptionalPath
 
-	EnforceUsesLibraries         bool
-	PresentOptionalUsesLibraries []string
-	UsesLibraries                []string
-	LibraryPaths                 LibraryPaths
+	EnforceUsesLibraries  bool
+	OptionalUsesLibraries []string
+	UsesLibraries         []string
+	LibraryPaths          LibraryPaths
 
 	Archs                   []android.ArchType
 	DexPreoptImages         []android.Path
@@ -189,8 +221,12 @@ func ParseGlobalConfig(ctx android.PathContext, data []byte) (*GlobalConfig, err
 
 		// Copies of entries in GlobalConfig that are not constructable without extra parameters.  They will be
 		// used to construct the real value manually below.
-		DirtyImageObjects string
-		BootImageProfiles []string
+		BootJars                  []string
+		UpdatableBootJars         []string
+		ArtApexJars               []string
+		UpdatableSystemServerJars []string
+		DirtyImageObjects         string
+		BootImageProfiles         []string
 	}
 
 	config := GlobalJSONConfig{}
@@ -200,6 +236,10 @@ func ParseGlobalConfig(ctx android.PathContext, data []byte) (*GlobalConfig, err
 	}
 
 	// Construct paths that require a PathContext.
+	config.GlobalConfig.BootJars = android.CreateConfiguredJarList(ctx, config.BootJars)
+	config.GlobalConfig.UpdatableBootJars = android.CreateConfiguredJarList(ctx, config.UpdatableBootJars)
+	config.GlobalConfig.ArtApexJars = android.CreateConfiguredJarList(ctx, config.ArtApexJars)
+	config.GlobalConfig.UpdatableSystemServerJars = android.CreateConfiguredJarList(ctx, config.UpdatableSystemServerJars)
 	config.GlobalConfig.DirtyImageObjects = android.OptionalPathForPath(constructPath(ctx, config.DirtyImageObjects))
 	config.GlobalConfig.BootImageProfiles = constructPaths(ctx, config.BootImageProfiles)
 
@@ -352,7 +392,33 @@ func RegisterToolDeps(ctx android.BottomUpMutatorContext) {
 func dex2oatPathFromDep(ctx android.ModuleContext) android.Path {
 	dex2oatBin := dex2oatModuleName(ctx.Config())
 
-	dex2oatModule := ctx.GetDirectDepWithTag(dex2oatBin, dex2oatDepTag)
+	// Find the right dex2oat module, trying to follow PrebuiltDepTag from source
+	// to prebuilt if there is one. We wouldn't have to do this if the
+	// prebuilt_postdeps mutator that replaces source deps with prebuilt deps was
+	// run after RegisterToolDeps above, but changing that leads to ordering
+	// problems between mutators (RegisterToolDeps needs to run late to act on
+	// final variants, while prebuilt_postdeps needs to run before many of the
+	// PostDeps mutators, like the APEX mutators). Hence we need to dig out the
+	// prebuilt explicitly here instead.
+	var dex2oatModule android.Module
+	ctx.WalkDeps(func(child, parent android.Module) bool {
+		if parent == ctx.Module() && ctx.OtherModuleDependencyTag(child) == dex2oatDepTag {
+			// Found the source module, or prebuilt module that has replaced the source.
+			dex2oatModule = child
+			if p, ok := child.(android.PrebuiltInterface); ok && p.Prebuilt() != nil {
+				return false // If it's the prebuilt we're done.
+			} else {
+				return true // Recurse to check if the source has a prebuilt dependency.
+			}
+		}
+		if parent == dex2oatModule && ctx.OtherModuleDependencyTag(child) == android.PrebuiltDepTag {
+			if p, ok := child.(android.PrebuiltInterface); ok && p.Prebuilt() != nil && p.Prebuilt().UsePrebuilt() {
+				dex2oatModule = child // Found a prebuilt that should be used.
+			}
+		}
+		return false
+	})
+
 	if dex2oatModule == nil {
 		// If this happens there's probably a missing call to AddToolDeps in DepsMutator.
 		panic(fmt.Sprintf("Failed to lookup %s dependency", dex2oatBin))
@@ -383,7 +449,7 @@ func createGlobalSoongConfig(ctx android.ModuleContext) *GlobalSoongConfig {
 		SoongZip:         ctx.Config().HostToolPath(ctx, "soong_zip"),
 		Zip2zip:          ctx.Config().HostToolPath(ctx, "zip2zip"),
 		ManifestCheck:    ctx.Config().HostToolPath(ctx, "manifest_check"),
-		ConstructContext: android.PathForSource(ctx, "build/make/core/construct_context.sh"),
+		ConstructContext: ctx.Config().HostToolPath(ctx, "construct_context"),
 	}
 }
 
@@ -530,12 +596,12 @@ func GlobalConfigForTests(ctx android.PathContext) *GlobalConfig {
 		PatternsOnSystemOther:              nil,
 		DisableGenerateProfile:             false,
 		ProfileDir:                         "",
-		BootJars:                           nil,
-		UpdatableBootJars:                  nil,
-		ArtApexJars:                        nil,
+		BootJars:                           android.EmptyConfiguredJarList(),
+		UpdatableBootJars:                  android.EmptyConfiguredJarList(),
+		ArtApexJars:                        android.EmptyConfiguredJarList(),
 		SystemServerJars:                   nil,
 		SystemServerApps:                   nil,
-		UpdatableSystemServerJars:          nil,
+		UpdatableSystemServerJars:          android.EmptyConfiguredJarList(),
 		SpeedApps:                          nil,
 		PreoptFlags:                        nil,
 		DefaultCompilerFilter:              "",
@@ -574,7 +640,7 @@ func GlobalSoongConfigForTests(config android.Config) *GlobalSoongConfig {
 			SoongZip:         android.PathForTesting("soong_zip"),
 			Zip2zip:          android.PathForTesting("zip2zip"),
 			ManifestCheck:    android.PathForTesting("manifest_check"),
-			ConstructContext: android.PathForTesting("construct_context.sh"),
+			ConstructContext: android.PathForTesting("construct_context"),
 		}
 	}).(*GlobalSoongConfig)
 }

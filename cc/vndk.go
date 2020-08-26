@@ -26,6 +26,8 @@ import (
 	"android/soong/android"
 	"android/soong/cc/config"
 	"android/soong/etc"
+
+	"github.com/google/blueprint"
 )
 
 const (
@@ -127,7 +129,7 @@ func (vndk *vndkdep) typeName() string {
 	return "native:vendor:vndkspext"
 }
 
-func (vndk *vndkdep) vndkCheckLinkType(ctx android.ModuleContext, to *Module, tag DependencyTag) {
+func (vndk *vndkdep) vndkCheckLinkType(ctx android.ModuleContext, to *Module, tag blueprint.DependencyTag) {
 	if to.linker == nil {
 		return
 	}
@@ -340,16 +342,24 @@ func processVndkLibrary(mctx android.BottomUpMutatorContext, m *Module) {
 	}
 }
 
-func IsForVndkApex(mctx android.BottomUpMutatorContext, m *Module) bool {
+// Check for modules that mustn't be VNDK
+func shouldSkipVndkMutator(m *Module) bool {
 	if !m.Enabled() {
-		return false
+		return true
 	}
-
-	if !mctx.Device() {
-		return false
+	if !m.Device() {
+		// Skip non-device modules
+		return true
 	}
-
 	if m.Target().NativeBridge == android.NativeBridgeEnabled {
+		// Skip native_bridge modules
+		return true
+	}
+	return false
+}
+
+func IsForVndkApex(mctx android.BottomUpMutatorContext, m *Module) bool {
+	if shouldSkipVndkMutator(m) {
 		return false
 	}
 
@@ -383,11 +393,8 @@ func VndkMutator(mctx android.BottomUpMutatorContext) {
 	if !ok {
 		return
 	}
-	if !m.Enabled() {
-		return
-	}
-	if m.Target().NativeBridge == android.NativeBridgeEnabled {
-		// Skip native_bridge modules
+
+	if shouldSkipVndkMutator(m) {
 		return
 	}
 
@@ -551,10 +558,6 @@ func (c *vndkSnapshotSingleton) GenerateBuildActions(ctx android.SingletonContex
 	}
 
 	if ctx.DeviceConfig().PlatformVndkVersion() == "" {
-		return
-	}
-
-	if ctx.DeviceConfig().BoardVndkRuntimeDisable() {
 		return
 	}
 

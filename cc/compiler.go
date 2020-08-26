@@ -86,6 +86,10 @@ type BaseCompilerProperties struct {
 	// genrule modules.
 	Generated_sources []string `android:"arch_variant"`
 
+	// list of generated sources that should not be used to build the C/C++ module.
+	// This is most useful in the arch/multilib variants to remove non-common files
+	Exclude_generated_sources []string `android:"arch_variant"`
+
 	// list of generated headers to add to the include path. These are the names
 	// of genrule modules.
 	Generated_headers []string `android:"arch_variant"`
@@ -150,6 +154,10 @@ type BaseCompilerProperties struct {
 			// List of additional cflags that should be used to build the vendor
 			// variant of the C/C++ module.
 			Cflags []string
+
+			// list of generated sources that should not be used to
+			// build the vendor variant of the C/C++ module.
+			Exclude_generated_sources []string
 		}
 		Recovery struct {
 			// list of source files that should only be used in the
@@ -163,6 +171,10 @@ type BaseCompilerProperties struct {
 			// List of additional cflags that should be used to build the recovery
 			// variant of the C/C++ module.
 			Cflags []string
+
+			// list of generated sources that should not be used to
+			// build the recovery variant of the C/C++ module.
+			Exclude_generated_sources []string
 		}
 	}
 
@@ -227,6 +239,7 @@ func (compiler *baseCompiler) compilerInit(ctx BaseModuleContext) {}
 
 func (compiler *baseCompiler) compilerDeps(ctx DepsContext, deps Deps) Deps {
 	deps.GeneratedSources = append(deps.GeneratedSources, compiler.Properties.Generated_sources...)
+	deps.GeneratedSources = removeListFromList(deps.GeneratedSources, compiler.Properties.Exclude_generated_sources)
 	deps.GeneratedHeaders = append(deps.GeneratedHeaders, compiler.Properties.Generated_headers...)
 
 	android.ProtoDeps(ctx, &compiler.Proto)
@@ -322,10 +335,10 @@ func (compiler *baseCompiler) compilerFlags(ctx ModuleContext, flags Flags, deps
 		flags.Global.CommonFlags = append(flags.Global.CommonFlags, "-D__ANDROID_RECOVERY__")
 	}
 
-	if ctx.apexName() != "" {
+	if ctx.apexVariationName() != "" {
 		flags.Global.CommonFlags = append(flags.Global.CommonFlags, "-D__ANDROID_APEX__")
 		if Bool(compiler.Properties.Use_apex_name_macro) {
-			flags.Global.CommonFlags = append(flags.Global.CommonFlags, "-D__ANDROID_APEX_"+makeDefineString(ctx.apexName())+"__")
+			flags.Global.CommonFlags = append(flags.Global.CommonFlags, "-D__ANDROID_APEX_"+makeDefineString(ctx.apexVariationName())+"__")
 		}
 		if ctx.Device() {
 			flags.Global.CommonFlags = append(flags.Global.CommonFlags, "-D__ANDROID_SDK_VERSION__="+strconv.Itoa(ctx.apexSdkVersion()))
@@ -514,7 +527,7 @@ func (compiler *baseCompiler) compilerFlags(ctx ModuleContext, flags Flags, deps
 		flags.Local.CFlags = append(flags.Local.CFlags, "-fopenmp")
 	}
 
-	// Exclude directories from manual binder interface whitelisting.
+	// Exclude directories from manual binder interface allowed list.
 	//TODO(b/145621474): Move this check into IInterface.h when clang-tidy no longer uses absolute paths.
 	if android.HasAnyPrefix(ctx.ModuleDir(), allowedManualInterfacePaths) {
 		flags.Local.CFlags = append(flags.Local.CFlags, "-DDO_NOT_CHECK_MANUAL_BINDER_INTERFACES")
@@ -543,6 +556,10 @@ func (compiler *baseCompiler) hasSrcExt(ext string) bool {
 	return false
 }
 
+func (compiler *baseCompiler) uniqueApexVariations() bool {
+	return Bool(compiler.Properties.Use_apex_name_macro)
+}
+
 // makeDefineString transforms a name of an APEX module into a value to be used as value for C define
 // For example, com.android.foo => COM_ANDROID_FOO
 func makeDefineString(name string) string {
@@ -552,7 +569,7 @@ func makeDefineString(name string) string {
 var gnuToCReplacer = strings.NewReplacer("gnu", "c")
 
 func ndkPathDeps(ctx ModuleContext) android.Paths {
-	if ctx.useSdk() {
+	if ctx.Module().(*Module).IsSdkVariant() {
 		// The NDK sysroot timestamp file depends on all the NDK sysroot files
 		// (headers and libraries).
 		return android.Paths{getNdkBaseTimestampFile(ctx)}

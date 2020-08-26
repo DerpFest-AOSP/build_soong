@@ -38,7 +38,7 @@ func runSoong(ctx Context, config Config) {
 		ctx.BeginTrace(metrics.RunSoong, "blueprint bootstrap")
 		defer ctx.EndTrace()
 
-		cmd := Command(ctx, config, "blueprint bootstrap", "build/blueprint/bootstrap.bash", "-t")
+		cmd := Command(ctx, config, "blueprint bootstrap", "build/blueprint/bootstrap.bash", "-t", "-n")
 		cmd.Environment.Set("BLUEPRINTDIR", "./build/blueprint")
 		cmd.Environment.Set("BOOTSTRAP", "./build/blueprint/bootstrap.bash")
 		cmd.Environment.Set("BUILDDIR", config.SoongOutDir())
@@ -138,6 +138,13 @@ func runSoong(ctx Context, config Config) {
 
 	soongBuildMetrics := loadSoongBuildMetrics(ctx, config)
 	logSoongBuildMetrics(ctx, soongBuildMetrics)
+
+	distGzipFile(ctx, config, config.SoongNinjaFile(), "soong")
+
+	if !config.SkipMake() {
+		distGzipFile(ctx, config, config.SoongAndroidMk(), "soong")
+		distGzipFile(ctx, config, config.SoongMakeVarsMk(), "soong")
+	}
 
 	if ctx.Metrics != nil {
 		ctx.Metrics.SetSoongBuildMetrics(soongBuildMetrics)

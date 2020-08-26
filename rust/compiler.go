@@ -24,16 +24,16 @@ import (
 	"android/soong/rust/config"
 )
 
-func getEdition(compiler *baseCompiler) string {
+func (compiler *baseCompiler) edition() string {
 	return proptools.StringDefault(compiler.Properties.Edition, config.DefaultEdition)
-}
-
-func getDenyWarnings(compiler *baseCompiler) bool {
-	return BoolDefault(compiler.Properties.Deny_warnings, config.DefaultDenyWarnings)
 }
 
 func (compiler *baseCompiler) setNoStdlibs() {
 	compiler.Properties.No_stdlibs = proptools.BoolPtr(true)
+}
+
+func (compiler *baseCompiler) disableLints() {
+	compiler.Properties.Lints = proptools.StringPtr("none")
 }
 
 func NewBaseCompiler(dir, dir64 string, location installLocation) *baseCompiler {
@@ -50,11 +50,22 @@ type installLocation int
 const (
 	InstallInSystem installLocation = 0
 	InstallInData                   = iota
+
+	incorrectSourcesError = "srcs can only contain one path for a rust file and source providers prefixed by \":\""
 )
 
 type BaseCompilerProperties struct {
-	// whether to pass "-D warnings" to rustc. Defaults to true.
-	Deny_warnings *bool
+	// path to the source file that is the main entry point of the program (e.g. main.rs or lib.rs)
+	Srcs []string `android:"path,arch_variant"`
+
+	// name of the lint set that should be used to validate this module.
+	//
+	// Possible values are "default" (for using a sensible set of lints
+	// depending on the module's location), "android" (for the strictest
+	// lint set that applies to all Android platform code), "vendor" (for
+	// a relaxed set) and "none" (for ignoring all lint warnings and
+	// errors). The default value is "default".
+	Lints *string
 
 	// flags to pass to rustc
 	Flags []string `android:"path,arch_variant"`
@@ -68,6 +79,9 @@ type BaseCompilerProperties struct {
 	// list of rust dylib crate dependencies
 	Dylibs []string `android:"arch_variant"`
 
+	// list of rust automatic crate dependencies
+	Rustlibs []string `android:"arch_variant"`
+
 	// list of rust proc_macro crate dependencies
 	Proc_macros []string `android:"arch_variant"`
 
@@ -77,7 +91,10 @@ type BaseCompilerProperties struct {
 	// list of C static library dependencies
 	Static_libs []string `android:"arch_variant"`
 
-	// crate name, required for libraries. This must be the expected extern crate name used in source
+	// crate name, required for modules which produce Rust libraries: rust_library, rust_ffi and SourceProvider
+	// modules which create library variants (rust_bindgen). This must be the expected extern crate name used in
+	// source, and is required to conform to an enforced format matching library output files (if the output file is
+	// lib<someName><suffix>, the crate_name property must be <someName>).
 	Crate_name string `android:"arch_variant"`
 
 	// list of features to enable for this crate
@@ -100,17 +117,8 @@ type BaseCompilerProperties struct {
 }
 
 type baseCompiler struct {
-	Properties    BaseCompilerProperties
-	pathDeps      android.Paths
-	rustFlagsDeps android.Paths
-	linkFlagsDeps android.Paths
-	flags         string
-	linkFlags     string
-	depFlags      []string
-	linkDirs      []string
-	edition       string
-	src           android.Path //rustc takes a single src file
-	coverageFile  android.Path //rustc generates a single gcno file
+	Properties   BaseCompilerProperties
+	coverageFile android.Path //rustc generates a single gcno file
 
 	// Install related
 	dir      string
@@ -119,6 +127,18 @@ type baseCompiler struct {
 	relative string
 	path     android.InstallPath
 	location installLocation
+
+	coverageOutputZipFile android.OptionalPath
+	unstrippedOutputFile  android.Path
+	distFile              android.OptionalPath
+}
+
+func (compiler *baseCompiler) Disabled() bool {
+	return false
+}
+
+func (compiler *baseCompiler) SetDisabled() {
+	panic("baseCompiler does not implement SetDisabled()")
 }
 
 func (compiler *baseCompiler) coverageOutputZipPath() android.OptionalPath {
@@ -145,12 +165,14 @@ func (compiler *baseCompiler) featuresToFlags(features []string) []string {
 
 func (compiler *baseCompiler) compilerFlags(ctx ModuleContext, flags Flags) Flags {
 
-	if getDenyWarnings(compiler) {
-		flags.RustFlags = append(flags.RustFlags, "-D warnings")
+	lintFlags, err := config.RustcLintsForDir(ctx.ModuleDir(), compiler.Properties.Lints)
+	if err != nil {
+		ctx.PropertyErrorf("lints", err.Error())
 	}
+	flags.RustFlags = append(flags.RustFlags, lintFlags)
 	flags.RustFlags = append(flags.RustFlags, compiler.Properties.Flags...)
 	flags.RustFlags = append(flags.RustFlags, compiler.featuresToFlags(compiler.Properties.Features)...)
-	flags.RustFlags = append(flags.RustFlags, "--edition="+getEdition(compiler))
+	flags.RustFlags = append(flags.RustFlags, "--edition="+compiler.edition())
 	flags.LinkFlags = append(flags.LinkFlags, compiler.Properties.Ld_flags...)
 	flags.GlobalRustFlags = append(flags.GlobalRustFlags, config.GlobalRustFlags...)
 	flags.GlobalRustFlags = append(flags.GlobalRustFlags, ctx.toolchain().ToolchainRustFlags())
@@ -182,6 +204,7 @@ func (compiler *baseCompiler) compile(ctx ModuleContext, flags Flags, deps PathD
 func (compiler *baseCompiler) compilerDeps(ctx DepsContext, deps Deps) Deps {
 	deps.Rlibs = append(deps.Rlibs, compiler.Properties.Rlibs...)
 	deps.Dylibs = append(deps.Dylibs, compiler.Properties.Dylibs...)
+	deps.Rustlibs = append(deps.Rustlibs, compiler.Properties.Rustlibs...)
 	deps.ProcMacros = append(deps.ProcMacros, compiler.Properties.Proc_macros...)
 	deps.StaticLibs = append(deps.StaticLibs, compiler.Properties.Static_libs...)
 	deps.SharedLibs = append(deps.SharedLibs, compiler.Properties.Shared_libs...)
@@ -193,23 +216,13 @@ func (compiler *baseCompiler) compilerDeps(ctx DepsContext, deps Deps) Deps {
 				stdlib = stdlib + "_" + ctx.toolchain().RustTriple()
 			}
 
-			// This check is technically insufficient - on the host, where
-			// static linking is the default, if one of our static
-			// dependencies uses a dynamic library, we need to dynamically
-			// link the stdlib as well.
-			if (len(deps.Dylibs) > 0) || ctx.Device() {
-				// Dynamically linked stdlib
-				deps.Dylibs = append(deps.Dylibs, stdlib)
-			} else if ctx.Host() && !ctx.TargetPrimary() {
-				// Otherwise use the static in-tree stdlib for host secondary arch
-				deps.Rlibs = append(deps.Rlibs, stdlib+".static")
-			}
+			deps.Rustlibs = append(deps.Rustlibs, stdlib)
 		}
 	}
 	return deps
 }
 
-func (compiler *baseCompiler) bionicDeps(ctx DepsContext, deps Deps) Deps {
+func bionicDeps(deps Deps) Deps {
 	deps.SharedLibs = append(deps.SharedLibs, "liblog")
 	deps.SharedLibs = append(deps.SharedLibs, "libc")
 	deps.SharedLibs = append(deps.SharedLibs, "libm")
@@ -253,7 +266,7 @@ func (compiler *baseCompiler) getStem(ctx ModuleContext) string {
 }
 
 func (compiler *baseCompiler) getStemWithoutSuffix(ctx BaseModuleContext) string {
-	stem := ctx.baseModuleName()
+	stem := ctx.ModuleName()
 	if String(compiler.Properties.Stem) != "" {
 		stem = String(compiler.Properties.Stem)
 	}
@@ -265,10 +278,25 @@ func (compiler *baseCompiler) relativeInstallPath() string {
 	return String(compiler.Properties.Relative_install_path)
 }
 
-func srcPathFromModuleSrcs(ctx ModuleContext, srcs []string) android.Path {
-	srcPaths := android.PathsForModuleSrc(ctx, srcs)
-	if len(srcPaths) != 1 {
-		ctx.PropertyErrorf("srcs", "srcs can only contain one path for rust modules")
+// Returns the Path for the main source file along with Paths for generated source files from modules listed in srcs.
+func srcPathFromModuleSrcs(ctx ModuleContext, srcs []string) (android.Path, android.Paths) {
+	// The srcs can contain strings with prefix ":".
+	// They are dependent modules of this module, with android.SourceDepTag.
+	// They are not the main source file compiled by rustc.
+	numSrcs := 0
+	srcIndex := 0
+	for i, s := range srcs {
+		if android.SrcIsModule(s) == "" {
+			numSrcs++
+			srcIndex = i
+		}
 	}
-	return srcPaths[0]
+	if numSrcs != 1 {
+		ctx.PropertyErrorf("srcs", incorrectSourcesError)
+	}
+	if srcIndex != 0 {
+		ctx.PropertyErrorf("srcs", "main source file must be the first in srcs")
+	}
+	paths := android.PathsForModuleSrc(ctx, srcs)
+	return paths[srcIndex], paths[1:]
 }

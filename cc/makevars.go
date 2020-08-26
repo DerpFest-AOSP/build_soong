@@ -97,7 +97,6 @@ func makeVarsProvider(ctx android.MakeVarsContext) {
 	ctx.Strict("CLANG_EXTERNAL_CFLAGS", "${config.ClangExternalCflags}")
 	ctx.Strict("GLOBAL_CLANG_CFLAGS_NO_OVERRIDE", "${config.NoOverrideClangGlobalCflags}")
 	ctx.Strict("GLOBAL_CLANG_CPPFLAGS_NO_OVERRIDE", "")
-	ctx.Strict("NDK_PREBUILT_SHARED_LIBRARIES", strings.Join(ndkPrebuiltSharedLibs, " "))
 
 	ctx.Strict("BOARD_VNDK_VERSION", ctx.DeviceConfig().VndkVersion())
 
@@ -149,8 +148,6 @@ func makeVarsProvider(ctx android.MakeVarsContext) {
 	ctx.Strict("AIDL_CPP", "${aidlCmd}")
 	ctx.Strict("ALLOWED_MANUAL_INTERFACE_PATHS", strings.Join(allowedManualInterfacePaths, " "))
 
-	ctx.Strict("M4", "${m4Cmd}")
-
 	ctx.Strict("RS_GLOBAL_INCLUDES", "${config.RsGlobalIncludes}")
 
 	ctx.Strict("SOONG_STRIP_PATH", "${stripPath}")
@@ -174,8 +171,8 @@ func makeVarsProvider(ctx android.MakeVarsContext) {
 	ctx.StrictRaw("SRC_HEADERS", strings.Join(includes, " "))
 	ctx.StrictRaw("SRC_SYSTEM_HEADERS", strings.Join(systemIncludes, " "))
 
-	sort.Strings(ndkMigratedLibs)
-	ctx.Strict("NDK_MIGRATED_LIBS", strings.Join(ndkMigratedLibs, " "))
+	sort.Strings(ndkKnownLibs)
+	ctx.Strict("NDK_KNOWN_LIBS", strings.Join(ndkKnownLibs, " "))
 
 	hostTargets := ctx.Config().Targets[android.BuildOs]
 	makeVarsToolchain(ctx, "", hostTargets[0])

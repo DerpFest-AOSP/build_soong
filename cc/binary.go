@@ -98,8 +98,8 @@ type binaryDecorator struct {
 	// Output archive of gcno coverage information
 	coverageOutputFile android.OptionalPath
 
-	// Location of the file that should be copied to dist dir when requested
-	distFile android.OptionalPath
+	// Location of the files that should be copied to dist dir when requested
+	distFiles android.TaggedDistFiles
 
 	post_install_cmds []string
 }
@@ -130,34 +130,12 @@ func (binary *binaryDecorator) linkerDeps(ctx DepsContext, deps Deps) Deps {
 	deps = binary.baseLinker.linkerDeps(ctx, deps)
 	if ctx.toolchain().Bionic() {
 		if !Bool(binary.baseLinker.Properties.Nocrt) {
-			if !ctx.useSdk() {
-				if binary.static() {
-					deps.CrtBegin = "crtbegin_static"
-				} else {
-					deps.CrtBegin = "crtbegin_dynamic"
-				}
-				deps.CrtEnd = "crtend_android"
+			if binary.static() {
+				deps.CrtBegin = "crtbegin_static"
 			} else {
-				// TODO(danalbert): Add generation of crt objects.
-				// For `sdk_version: "current"`, we don't actually have a
-				// freshly generated set of CRT objects. Use the last stable
-				// version.
-				version := ctx.sdkVersion()
-				if version == "current" {
-					version = getCurrentNdkPrebuiltVersion(ctx)
-				}
-
-				if binary.static() {
-					deps.CrtBegin = "ndk_crtbegin_static." + version
-				} else {
-					if binary.static() {
-						deps.CrtBegin = "ndk_crtbegin_static." + version
-					} else {
-						deps.CrtBegin = "ndk_crtbegin_dynamic." + version
-					}
-					deps.CrtEnd = "ndk_crtend_android." + version
-				}
+				deps.CrtBegin = "crtbegin_dynamic"
 			}
+			deps.CrtEnd = "crtend_android"
 		}
 
 		if binary.static() {
@@ -367,11 +345,11 @@ func (binary *binaryDecorator) link(ctx ModuleContext,
 			binary.injectVersionSymbol(ctx, outputFile, versionedOutputFile)
 		} else {
 			versionedOutputFile := android.PathForModuleOut(ctx, "versioned", fileName)
-			binary.distFile = android.OptionalPathForPath(versionedOutputFile)
+			binary.distFiles = android.MakeDefaultDistFiles(versionedOutputFile)
 
 			if binary.stripper.needsStrip(ctx) {
 				out := android.PathForModuleOut(ctx, "versioned-stripped", fileName)
-				binary.distFile = android.OptionalPathForPath(out)
+				binary.distFiles = android.MakeDefaultDistFiles(out)
 				binary.stripper.stripExecutableOrSharedLib(ctx, versionedOutputFile, out, builderFlags)
 			}
 
@@ -467,7 +445,7 @@ func (binary *binaryDecorator) install(ctx ModuleContext, file android.Path) {
 	// The original path becomes a symlink to the corresponding file in the
 	// runtime APEX.
 	translatedArch := ctx.Target().NativeBridge == android.NativeBridgeEnabled
-	if InstallToBootstrap(ctx.baseModuleName(), ctx.Config()) && !translatedArch && ctx.apexName() == "" && !ctx.inRamdisk() && !ctx.inRecovery() {
+	if InstallToBootstrap(ctx.baseModuleName(), ctx.Config()) && !translatedArch && ctx.apexVariationName() == "" && !ctx.inRamdisk() && !ctx.inRecovery() {
 		if ctx.Device() && isBionic(ctx.baseModuleName()) {
 			binary.installSymlinkToRuntimeApex(ctx, file)
 		}

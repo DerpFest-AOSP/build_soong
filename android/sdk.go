@@ -34,10 +34,8 @@ type RequiredSdks interface {
 	RequiredSdks() SdkRefs
 }
 
-// SdkAware is the interface that must be supported by any module to become a member of SDK or to be
-// built with SDK
-type SdkAware interface {
-	Module
+// Provided to improve code navigation with the IDE.
+type sdkAwareWithoutModule interface {
 	RequiredSdks
 
 	sdkBase() *SdkBase
@@ -46,6 +44,13 @@ type SdkAware interface {
 	ContainingSdk() SdkRef
 	MemberName() string
 	BuildWithSdks(sdks SdkRefs)
+}
+
+// SdkAware is the interface that must be supported by any module to become a member of SDK or to be
+// built with SDK
+type SdkAware interface {
+	Module
+	sdkAwareWithoutModule
 }
 
 // SdkRef refers to a version of an SDK
@@ -266,6 +271,9 @@ type SdkMemberTypeDependencyTag interface {
 	SdkMemberType() SdkMemberType
 }
 
+var _ SdkMemberTypeDependencyTag = (*sdkMemberDependencyTag)(nil)
+var _ ReplaceSourceWithPrebuilt = (*sdkMemberDependencyTag)(nil)
+
 type sdkMemberDependencyTag struct {
 	blueprint.BaseDependencyTag
 	memberType SdkMemberType
@@ -273,6 +281,12 @@ type sdkMemberDependencyTag struct {
 
 func (t *sdkMemberDependencyTag) SdkMemberType() SdkMemberType {
 	return t.memberType
+}
+
+// Prevent dependencies from the sdk/module_exports onto their members from being
+// replaced with a preferred prebuilt.
+func (t *sdkMemberDependencyTag) ReplaceSourceWithPrebuilt() bool {
+	return false
 }
 
 func DependencyTagForSdkMemberType(memberType SdkMemberType) SdkMemberTypeDependencyTag {
@@ -312,6 +326,12 @@ type SdkMemberType interface {
 	// Any dependency that is to be treated as a member of the sdk needs to implement
 	// SdkAware and be added with an SdkMemberTypeDependencyTag tag.
 	HasTransitiveSdkMembers() bool
+
+	// Return true if prebuilt host artifacts may be specific to the host OS. Only
+	// applicable to modules where HostSupported() is true. If this is true,
+	// snapshots will list each host OS variant explicitly and disable all other
+	// host OS'es.
+	IsHostOsDependent() bool
 
 	// Add dependencies from the SDK module to all the module variants the member
 	// type contributes to the SDK. `names` is the list of module names given in
@@ -375,6 +395,7 @@ type SdkMemberTypeBase struct {
 	PropertyName         string
 	SupportsSdk          bool
 	TransitiveSdkMembers bool
+	HostOsDependent      bool
 }
 
 func (b *SdkMemberTypeBase) SdkPropertyName() string {
@@ -387,6 +408,10 @@ func (b *SdkMemberTypeBase) UsableWithSdkAndSdkSnapshot() bool {
 
 func (b *SdkMemberTypeBase) HasTransitiveSdkMembers() bool {
 	return b.TransitiveSdkMembers
+}
+
+func (b *SdkMemberTypeBase) IsHostOsDependent() bool {
+	return b.HostOsDependent
 }
 
 // Encapsulates the information about registered SdkMemberTypes.
@@ -457,8 +482,7 @@ func RegisterSdkMemberType(memberType SdkMemberType) {
 
 // Base structure for all implementations of SdkMemberProperties.
 //
-// Contains common properties that apply across many different member types. These
-// are not affected by the optimization to extract common values.
+// Contains common properties that apply across many different member types.
 type SdkMemberPropertiesBase struct {
 	// The number of unique os types supported by the member variants.
 	//
@@ -480,9 +504,7 @@ type SdkMemberPropertiesBase struct {
 	Os OsType `sdk:"keep"`
 
 	// The setting to use for the compile_multilib property.
-	//
-	// This property is set after optimization so there is no point in trying to optimize it.
-	Compile_multilib string `sdk:"keep"`
+	Compile_multilib string `android:"arch_variant"`
 }
 
 // The os prefix to use for any file paths in the sdk.

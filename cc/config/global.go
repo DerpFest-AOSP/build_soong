@@ -32,6 +32,7 @@ var (
 		"-Wno-unused",
 		"-Winit-self",
 		"-Wpointer-arith",
+		"-Wunreachable-code-loop-increment",
 
 		// Make paths in deps files relative
 		"-no-canonical-prefixes",
@@ -51,6 +52,7 @@ var (
 		"-Werror=date-time",
 		"-Werror=pragma-pack",
 		"-Werror=pragma-pack-suspicious-include",
+		"-Werror=unreachable-code-loop-increment",
 	}
 
 	commonGlobalConlyflags = []string{}
@@ -128,8 +130,8 @@ var (
 
 	// prebuilts/clang default settings.
 	ClangDefaultBase         = "prebuilts/clang/host"
-	ClangDefaultVersion      = "clang-r383902"
-	ClangDefaultShortVersion = "11.0.1"
+	ClangDefaultVersion      = "clang-r383902b"
+	ClangDefaultShortVersion = "11.0.2"
 
 	// Directories with warnings from Android.bp files.
 	WarningAllowedProjects = []string{
@@ -259,7 +261,9 @@ func init() {
 
 	pctx.VariableFunc("RECXXPool", remoteexec.EnvOverrideFunc("RBE_CXX_POOL", remoteexec.DefaultPool))
 	pctx.VariableFunc("RECXXLinksPool", remoteexec.EnvOverrideFunc("RBE_CXX_LINKS_POOL", remoteexec.DefaultPool))
+	pctx.VariableFunc("REClangTidyPool", remoteexec.EnvOverrideFunc("RBE_CLANG_TIDY_POOL", remoteexec.DefaultPool))
 	pctx.VariableFunc("RECXXLinksExecStrategy", remoteexec.EnvOverrideFunc("RBE_CXX_LINKS_EXEC_STRATEGY", remoteexec.LocalExecStrategy))
+	pctx.VariableFunc("REClangTidyExecStrategy", remoteexec.EnvOverrideFunc("RBE_CLANG_TIDY_EXEC_STRATEGY", remoteexec.LocalExecStrategy))
 	pctx.VariableFunc("REAbiDumperExecStrategy", remoteexec.EnvOverrideFunc("RBE_ABI_DUMPER_EXEC_STRATEGY", remoteexec.LocalExecStrategy))
 	pctx.VariableFunc("REAbiLinkerExecStrategy", remoteexec.EnvOverrideFunc("RBE_ABI_LINKER_EXEC_STRATEGY", remoteexec.LocalExecStrategy))
 }

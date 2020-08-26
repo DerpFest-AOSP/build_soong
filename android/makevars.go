@@ -17,12 +17,12 @@ package android
 import (
 	"bytes"
 	"fmt"
-	"io/ioutil"
-	"os"
+	"sort"
 	"strconv"
 	"strings"
 
 	"github.com/google/blueprint"
+	"github.com/google/blueprint/pathtools"
 	"github.com/google/blueprint/proptools"
 )
 
@@ -35,11 +35,57 @@ func androidMakeVarsProvider(ctx MakeVarsContext) {
 }
 
 ///////////////////////////////////////////////////////////////////////////////
-// Interface for other packages to use to declare make variables
-type MakeVarsContext interface {
+
+// BaseMakeVarsContext contains the common functions for other packages to use
+// to declare make variables
+type BaseMakeVarsContext interface {
 	Config() Config
 	DeviceConfig() DeviceConfig
 	AddNinjaFileDeps(deps ...string)
+
+	Failed() bool
+
+	// These are equivalent to Strict and Check, but do not attempt to
+	// evaluate the values before writing them to the Makefile. They can
+	// be used when all ninja variables have already been evaluated through
+	// Eval().
+	StrictRaw(name, value string)
+	CheckRaw(name, value string)
+
+	// GlobWithDeps returns a list of files that match the specified pattern but do not match any
+	// of the patterns in excludes.  It also adds efficient dependencies to rerun the primary
+	// builder whenever a file matching the pattern as added or removed, without rerunning if a
+	// file that does not match the pattern is added to a searched directory.
+	GlobWithDeps(pattern string, excludes []string) ([]string, error)
+
+	// Phony creates a phony rule in Make, which will allow additional DistForGoal
+	// dependencies to be added to it.  Phony can be called on the same name multiple
+	// times to add additional dependencies.
+	Phony(names string, deps ...Path)
+
+	// DistForGoal creates a rule to copy one or more Paths to the artifacts
+	// directory on the build server when the specified goal is built.
+	DistForGoal(goal string, paths ...Path)
+
+	// DistForGoalWithFilename creates a rule to copy a Path to the artifacts
+	// directory on the build server with the given filename when the specified
+	// goal is built.
+	DistForGoalWithFilename(goal string, path Path, filename string)
+
+	// DistForGoals creates a rule to copy one or more Paths to the artifacts
+	// directory on the build server when any of the specified goals are built.
+	DistForGoals(goals []string, paths ...Path)
+
+	// DistForGoalsWithFilename creates a rule to copy a Path to the artifacts
+	// directory on the build server with the given filename when any of the
+	// specified goals are built.
+	DistForGoalsWithFilename(goals []string, path Path, filename string)
+}
+
+// MakeVarsContext contains the set of functions available for MakeVarsProvider
+// and SingletonMakeVarsProvider implementations.
+type MakeVarsContext interface {
+	BaseMakeVarsContext
 
 	ModuleName(module blueprint.Module) string
 	ModuleDir(module blueprint.Module) string
@@ -49,7 +95,6 @@ type MakeVarsContext interface {
 
 	ModuleErrorf(module blueprint.Module, format string, args ...interface{})
 	Errorf(format string, args ...interface{})
-	Failed() bool
 
 	VisitAllModules(visit func(Module))
 	VisitAllModulesIf(pred func(Module) bool, visit func(Module))
@@ -71,19 +116,12 @@ type MakeVarsContext interface {
 	// Evaluates a ninja string and returns the result. Used if more
 	// complicated modification needs to happen before giving it to Make.
 	Eval(ninjaStr string) (string, error)
+}
 
-	// These are equivalent to Strict and Check, but do not attempt to
-	// evaluate the values before writing them to the Makefile. They can
-	// be used when all ninja variables have already been evaluated through
-	// Eval().
-	StrictRaw(name, value string)
-	CheckRaw(name, value string)
-
-	// GlobWithDeps returns a list of files that match the specified pattern but do not match any
-	// of the patterns in excludes.  It also adds efficient dependencies to rerun the primary
-	// builder whenever a file matching the pattern as added or removed, without rerunning if a
-	// file that does not match the pattern is added to a searched directory.
-	GlobWithDeps(pattern string, excludes []string) ([]string, error)
+// MakeVarsModuleContext contains the set of functions available for modules
+// implementing the ModuleMakeVarsProvider interface.
+type MakeVarsModuleContext interface {
+	BaseMakeVarsContext
 }
 
 var _ PathContext = MakeVarsContext(nil)
@@ -113,6 +151,14 @@ func SingletonmakeVarsProviderAdapter(singleton SingletonMakeVarsProvider) MakeV
 	return func(ctx MakeVarsContext) { singleton.MakeVars(ctx) }
 }
 
+// ModuleMakeVarsProvider is a Module with an extra method to provide extra values to be exported to Make.
+type ModuleMakeVarsProvider interface {
+	Module
+
+	// MakeVars uses a MakeVarsModuleContext to provide extra values to be exported to Make.
+	MakeVars(ctx MakeVarsModuleContext)
+}
+
 ///////////////////////////////////////////////////////////////////////////////
 
 func makeVarsSingletonFunc() Singleton {
@@ -130,9 +176,11 @@ var makeVarsProviders []makeVarsProvider
 
 type makeVarsContext struct {
 	SingletonContext
-	config Config
-	pctx   PackageContext
-	vars   []makeVarsVariable
+	config  Config
+	pctx    PackageContext
+	vars    []makeVarsVariable
+	phonies []phony
+	dists   []dist
 }
 
 var _ MakeVarsContext = &makeVarsContext{}
@@ -144,6 +192,16 @@ type makeVarsVariable struct {
 	strict bool
 }
 
+type phony struct {
+	name string
+	deps []string
+}
+
+type dist struct {
+	goals []string
+	paths []string
+}
+
 func (s *makeVarsSingleton) GenerateBuildActions(ctx SingletonContext) {
 	if !ctx.Config().EmbeddedInMake() {
 		return
@@ -152,11 +210,16 @@ func (s *makeVarsSingleton) GenerateBuildActions(ctx SingletonContext) {
 	outFile := absolutePath(PathForOutput(ctx,
 		"make_vars"+proptools.String(ctx.Config().productVariables.Make_suffix)+".mk").String())
 
+	lateOutFile := absolutePath(PathForOutput(ctx,
+		"late"+proptools.String(ctx.Config().productVariables.Make_suffix)+".mk").String())
+
 	if ctx.Failed() {
 		return
 	}
 
-	vars := []makeVarsVariable{}
+	var vars []makeVarsVariable
+	var dists []dist
+	var phonies []phony
 	for _, provider := range makeVarsProviders {
 		mctx := &makeVarsContext{
 			SingletonContext: ctx,
@@ -166,25 +229,61 @@ func (s *makeVarsSingleton) GenerateBuildActions(ctx SingletonContext) {
 		provider.call(mctx)
 
 		vars = append(vars, mctx.vars...)
+		phonies = append(phonies, mctx.phonies...)
+		dists = append(dists, mctx.dists...)
 	}
+
+	ctx.VisitAllModules(func(m Module) {
+		if provider, ok := m.(ModuleMakeVarsProvider); ok {
+			mctx := &makeVarsContext{
+				SingletonContext: ctx,
+			}
+
+			provider.MakeVars(mctx)
+
+			vars = append(vars, mctx.vars...)
+			phonies = append(phonies, mctx.phonies...)
+			dists = append(dists, mctx.dists...)
+		}
+	})
 
 	if ctx.Failed() {
 		return
 	}
 
+	sort.Slice(vars, func(i, j int) bool {
+		return vars[i].name < vars[j].name
+	})
+	sort.Slice(phonies, func(i, j int) bool {
+		return phonies[i].name < phonies[j].name
+	})
+	lessArr := func(a, b []string) bool {
+		if len(a) == len(b) {
+			for i := range a {
+				if a[i] < b[i] {
+					return true
+				}
+			}
+			return false
+		}
+		return len(a) < len(b)
+	}
+	sort.Slice(dists, func(i, j int) bool {
+		return lessArr(dists[i].goals, dists[j].goals) || lessArr(dists[i].paths, dists[j].paths)
+	})
+
 	outBytes := s.writeVars(vars)
 
-	if _, err := os.Stat(absolutePath(outFile)); err == nil {
-		if data, err := ioutil.ReadFile(absolutePath(outFile)); err == nil {
-			if bytes.Equal(data, outBytes) {
-				return
-			}
-		}
-	}
-
-	if err := ioutil.WriteFile(absolutePath(outFile), outBytes, 0666); err != nil {
+	if err := pathtools.WriteFileIfChanged(outFile, outBytes, 0666); err != nil {
 		ctx.Errorf(err.Error())
 	}
+
+	lateOutBytes := s.writeLate(phonies, dists)
+
+	if err := pathtools.WriteFileIfChanged(lateOutFile, lateOutBytes, 0666); err != nil {
+		ctx.Errorf(err.Error())
+	}
+
 }
 
 func (s *makeVarsSingleton) writeVars(vars []makeVarsVariable) []byte {
@@ -263,6 +362,33 @@ my_check_failed :=
 
 	fmt.Fprintln(buf, "\nsoong-compare-var :=")
 
+	fmt.Fprintln(buf)
+
+	return buf.Bytes()
+}
+
+func (s *makeVarsSingleton) writeLate(phonies []phony, dists []dist) []byte {
+	buf := &bytes.Buffer{}
+
+	fmt.Fprint(buf, `# Autogenerated file
+
+# Values written by Soong read after parsing all Android.mk files.
+
+
+`)
+
+	for _, phony := range phonies {
+		fmt.Fprintf(buf, ".PHONY: %s\n", phony.name)
+		fmt.Fprintf(buf, "%s: %s\n", phony.name, strings.Join(phony.deps, "\\\n  "))
+	}
+
+	fmt.Fprintln(buf)
+
+	for _, dist := range dists {
+		fmt.Fprintf(buf, "$(call dist-for-goals,%s,%s)\n",
+			strings.Join(dist.goals, " "), strings.Join(dist.paths, " "))
+	}
+
 	return buf.Bytes()
 }
 
@@ -299,6 +425,17 @@ func (c *makeVarsContext) addVariable(name, ninjaStr string, strict, sort bool) 
 	c.addVariableRaw(name, value, strict, sort)
 }
 
+func (c *makeVarsContext) addPhony(name string, deps []string) {
+	c.phonies = append(c.phonies, phony{name, deps})
+}
+
+func (c *makeVarsContext) addDist(goals []string, paths []string) {
+	c.dists = append(c.dists, dist{
+		goals: goals,
+		paths: paths,
+	})
+}
+
 func (c *makeVarsContext) Strict(name, ninjaStr string) {
 	c.addVariable(name, ninjaStr, true, false)
 }
@@ -317,4 +454,24 @@ func (c *makeVarsContext) CheckSorted(name, ninjaStr string) {
 }
 func (c *makeVarsContext) CheckRaw(name, value string) {
 	c.addVariableRaw(name, value, false, false)
+}
+
+func (c *makeVarsContext) Phony(name string, deps ...Path) {
+	c.addPhony(name, Paths(deps).Strings())
+}
+
+func (c *makeVarsContext) DistForGoal(goal string, paths ...Path) {
+	c.DistForGoals([]string{goal}, paths...)
+}
+
+func (c *makeVarsContext) DistForGoalWithFilename(goal string, path Path, filename string) {
+	c.DistForGoalsWithFilename([]string{goal}, path, filename)
+}
+
+func (c *makeVarsContext) DistForGoals(goals []string, paths ...Path) {
+	c.addDist(goals, Paths(paths).Strings())
+}
+
+func (c *makeVarsContext) DistForGoalsWithFilename(goals []string, path Path, filename string) {
+	c.addDist(goals, []string{path.String() + ":" + filename})
 }

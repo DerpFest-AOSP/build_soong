@@ -26,18 +26,18 @@ import (
 type AndroidMkContext interface {
 	Name() string
 	Target() android.Target
-	subAndroidMk(*android.AndroidMkData, interface{})
+	SubAndroidMk(*android.AndroidMkData, interface{})
 }
 
-type subAndroidMkProvider interface {
+type SubAndroidMkProvider interface {
 	AndroidMk(AndroidMkContext, *android.AndroidMkData)
 }
 
-func (mod *Module) subAndroidMk(data *android.AndroidMkData, obj interface{}) {
+func (mod *Module) SubAndroidMk(data *android.AndroidMkData, obj interface{}) {
 	if mod.subAndroidMkOnce == nil {
-		mod.subAndroidMkOnce = make(map[subAndroidMkProvider]bool)
+		mod.subAndroidMkOnce = make(map[SubAndroidMkProvider]bool)
 	}
-	if androidmk, ok := obj.(subAndroidMkProvider); ok {
+	if androidmk, ok := obj.(SubAndroidMkProvider); ok {
 		if !mod.subAndroidMkOnce[androidmk] {
 			mod.subAndroidMkOnce[androidmk] = true
 			androidmk.AndroidMk(mod, data)
@@ -76,18 +76,25 @@ func (mod *Module) AndroidMk() android.AndroidMkData {
 		},
 	}
 
-	mod.subAndroidMk(&ret, mod.compiler)
-
+	if mod.compiler != nil && !mod.compiler.Disabled() {
+		mod.SubAndroidMk(&ret, mod.compiler)
+	} else if mod.sourceProvider != nil {
+		// If the compiler is disabled, this is a SourceProvider.
+		mod.SubAndroidMk(&ret, mod.sourceProvider)
+	}
 	ret.SubName += mod.Properties.SubName
 
 	return ret
 }
 
 func (binary *binaryDecorator) AndroidMk(ctx AndroidMkContext, ret *android.AndroidMkData) {
-	ctx.subAndroidMk(ret, binary.baseCompiler)
+	ctx.SubAndroidMk(ret, binary.baseCompiler)
+
+	if binary.distFile.Valid() {
+		ret.DistFiles = android.MakeDefaultDistFiles(binary.distFile.Path())
+	}
 
 	ret.Class = "EXECUTABLES"
-	ret.DistFile = binary.distFile
 	ret.Extra = append(ret.Extra, func(w io.Writer, outputFile android.Path) {
 		fmt.Fprintln(w, "LOCAL_SOONG_UNSTRIPPED_BINARY :=", binary.unstrippedOutputFile.String())
 		if binary.coverageOutputZipFile.Valid() {
@@ -99,7 +106,6 @@ func (binary *binaryDecorator) AndroidMk(ctx AndroidMkContext, ret *android.Andr
 func (test *testDecorator) AndroidMk(ctx AndroidMkContext, ret *android.AndroidMkData) {
 	test.binaryDecorator.AndroidMk(ctx, ret)
 	ret.Class = "NATIVE_TESTS"
-	ret.SubName = test.getMutatedModuleSubName(ctx.Name())
 	ret.Extra = append(ret.Extra, func(w io.Writer, outputFile android.Path) {
 		if len(test.Properties.Test_suites) > 0 {
 			fmt.Fprintln(w, "LOCAL_COMPATIBILITY_SUITE :=",
@@ -116,7 +122,7 @@ func (test *testDecorator) AndroidMk(ctx AndroidMkContext, ret *android.AndroidM
 }
 
 func (library *libraryDecorator) AndroidMk(ctx AndroidMkContext, ret *android.AndroidMkData) {
-	ctx.subAndroidMk(ret, library.baseCompiler)
+	ctx.SubAndroidMk(ret, library.baseCompiler)
 
 	if library.rlib() {
 		ret.Class = "RLIB_LIBRARIES"
@@ -128,7 +134,10 @@ func (library *libraryDecorator) AndroidMk(ctx AndroidMkContext, ret *android.An
 		ret.Class = "SHARED_LIBRARIES"
 	}
 
-	ret.DistFile = library.distFile
+	if library.distFile.Valid() {
+		ret.DistFiles = android.MakeDefaultDistFiles(library.distFile.Path())
+	}
+
 	ret.Extra = append(ret.Extra, func(w io.Writer, outputFile android.Path) {
 		if !library.rlib() {
 			fmt.Fprintln(w, "LOCAL_SOONG_UNSTRIPPED_BINARY :=", library.unstrippedOutputFile.String())
@@ -141,11 +150,33 @@ func (library *libraryDecorator) AndroidMk(ctx AndroidMkContext, ret *android.An
 }
 
 func (procMacro *procMacroDecorator) AndroidMk(ctx AndroidMkContext, ret *android.AndroidMkData) {
-	ctx.subAndroidMk(ret, procMacro.baseCompiler)
+	ctx.SubAndroidMk(ret, procMacro.baseCompiler)
 
 	ret.Class = "PROC_MACRO_LIBRARIES"
-	ret.DistFile = procMacro.distFile
+	if procMacro.distFile.Valid() {
+		ret.DistFiles = android.MakeDefaultDistFiles(procMacro.distFile.Path())
+	}
 
+}
+
+func (sourceProvider *BaseSourceProvider) AndroidMk(ctx AndroidMkContext, ret *android.AndroidMkData) {
+	outFile := sourceProvider.OutputFile
+	ret.Class = "ETC"
+	ret.OutputFile = android.OptionalPathForPath(outFile)
+	ret.SubName += sourceProvider.subName
+	ret.Extra = append(ret.Extra, func(w io.Writer, outputFile android.Path) {
+		_, file := filepath.Split(outFile.String())
+		stem, suffix, _ := android.SplitFileExt(file)
+		fmt.Fprintln(w, "LOCAL_MODULE_SUFFIX := "+suffix)
+		fmt.Fprintln(w, "LOCAL_MODULE_STEM := "+stem)
+	})
+}
+
+func (bindgen *bindgenDecorator) AndroidMk(ctx AndroidMkContext, ret *android.AndroidMkData) {
+	ctx.SubAndroidMk(ret, bindgen.BaseSourceProvider)
+	ret.Extra = append(ret.Extra, func(w io.Writer, outputFile android.Path) {
+		fmt.Fprintln(w, "LOCAL_UNINSTALLABLE_MODULE := true")
+	})
 }
 
 func (compiler *baseCompiler) AndroidMk(ctx AndroidMkContext, ret *android.AndroidMkData) {

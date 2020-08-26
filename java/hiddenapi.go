@@ -23,8 +23,8 @@ import (
 )
 
 var hiddenAPIGenerateCSVRule = pctx.AndroidStaticRule("hiddenAPIGenerateCSV", blueprint.RuleParams{
-	Command:     "${config.Class2Greylist} --stub-api-flags ${stubAPIFlags} $in $outFlag $out",
-	CommandDeps: []string{"${config.Class2Greylist}"},
+	Command:     "${config.Class2NonSdkList} --stub-api-flags ${stubAPIFlags} $in $outFlag $out",
+	CommandDeps: []string{"${config.Class2NonSdkList}"},
 }, "outFlag", "stubAPIFlags")
 
 type hiddenAPI struct {
@@ -59,10 +59,9 @@ type hiddenAPIIntf interface {
 
 var _ hiddenAPIIntf = (*hiddenAPI)(nil)
 
-func (h *hiddenAPI) hiddenAPI(ctx android.ModuleContext, dexJar android.ModuleOutPath,
+func (h *hiddenAPI) hiddenAPI(ctx android.ModuleContext, name string, primary bool, dexJar android.ModuleOutPath,
 	implementationJar android.Path, uncompressDex bool) android.ModuleOutPath {
 	if !ctx.Config().IsEnvTrue("UNSAFE_DISABLE_HIDDENAPI_FLAGS") {
-		name := ctx.ModuleName()
 
 		// Modules whose names are of the format <x>-hiddenapi provide hiddenapi information
 		// for the boot jar module <x>. Otherwise, the module provides information for itself.
@@ -90,7 +89,14 @@ func (h *hiddenAPI) hiddenAPI(ctx android.ModuleContext, dexJar android.ModuleOu
 			// the gathered information in the generated dex file.
 			if name == bootJarName {
 				hiddenAPIJar := android.PathForModuleOut(ctx, "hiddenapi", name+".jar")
-				h.bootDexJarPath = dexJar
+
+				// More than one library with the same classes can be encoded but only one can
+				// be added to the global set of flags, otherwise it will result in duplicate
+				// classes which is an error. Therefore, only add the dex jar of one of them
+				// to the global set of flags.
+				if primary {
+					h.bootDexJarPath = dexJar
+				}
 				hiddenAPIEncodeDex(ctx, hiddenAPIJar, dexJar, uncompressDex)
 				dexJar = hiddenAPIJar
 			}
@@ -140,7 +146,7 @@ func (h *hiddenAPI) hiddenAPIGenerateCSV(ctx android.ModuleContext, flagsCSV, me
 
 var hiddenAPIEncodeDexRule = pctx.AndroidStaticRule("hiddenAPIEncodeDex", blueprint.RuleParams{
 	Command: `rm -rf $tmpDir && mkdir -p $tmpDir && mkdir $tmpDir/dex-input && mkdir $tmpDir/dex-output &&
-		unzip -o -q $in 'classes*.dex' -d $tmpDir/dex-input &&
+		unzip -qoDD $in 'classes*.dex' -d $tmpDir/dex-input &&
 		for INPUT_DEX in $$(find $tmpDir/dex-input -maxdepth 1 -name 'classes*.dex' | sort); do
 		  echo "--input-dex=$${INPUT_DEX}";
 		  echo "--output-dex=$tmpDir/dex-output/$$(basename $${INPUT_DEX})";

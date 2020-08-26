@@ -149,21 +149,33 @@ func (c *Module) AndroidMkEntries() []android.AndroidMkEntries {
 	return []android.AndroidMkEntries{entries}
 }
 
-func AndroidMkDataPaths(data android.Paths) []string {
+func AndroidMkDataPaths(data []android.DataPath) []string {
 	var testFiles []string
 	for _, d := range data {
-		rel := d.Rel()
-		path := d.String()
+		rel := d.SrcPath.Rel()
+		path := d.SrcPath.String()
 		if !strings.HasSuffix(path, rel) {
 			panic(fmt.Errorf("path %q does not end with %q", path, rel))
 		}
 		path = strings.TrimSuffix(path, rel)
-		testFiles = append(testFiles, path+":"+rel)
+		testFileString := path + ":" + rel
+		if len(d.RelativeInstallPath) > 0 {
+			testFileString += ":" + d.RelativeInstallPath
+		}
+		testFiles = append(testFiles, testFileString)
 	}
 	return testFiles
 }
 
-func androidMkWriteTestData(data android.Paths, ctx AndroidMkContext, entries *android.AndroidMkEntries) {
+func androidMkWriteExtraTestConfigs(extraTestConfigs android.Paths, entries *android.AndroidMkEntries) {
+	if len(extraTestConfigs) > 0 {
+		entries.ExtraEntries = append(entries.ExtraEntries, func(entries *android.AndroidMkEntries) {
+			entries.AddStrings("LOCAL_EXTRA_FULL_TEST_CONFIGS", extraTestConfigs.Strings()...)
+		})
+	}
+}
+
+func androidMkWriteTestData(data []android.DataPath, ctx AndroidMkContext, entries *android.AndroidMkEntries) {
 	testFiles := AndroidMkDataPaths(data)
 	if len(testFiles) > 0 {
 		entries.ExtraEntries = append(entries.ExtraEntries, func(entries *android.AndroidMkEntries) {
@@ -202,29 +214,15 @@ func (library *libraryDecorator) androidMkWriteExportedFlags(entries *android.An
 }
 
 func (library *libraryDecorator) androidMkEntriesWriteAdditionalDependenciesForSourceAbiDiff(entries *android.AndroidMkEntries) {
-	if library.sAbiOutputFile.Valid() {
-		entries.SetString("LOCAL_ADDITIONAL_DEPENDENCIES",
-			"$(LOCAL_ADDITIONAL_DEPENDENCIES) "+library.sAbiOutputFile.String())
-		if library.sAbiDiff.Valid() && !library.static() {
-			entries.SetString("LOCAL_ADDITIONAL_DEPENDENCIES",
-				"$(LOCAL_ADDITIONAL_DEPENDENCIES) "+library.sAbiDiff.String())
-			entries.SetString("HEADER_ABI_DIFFS",
-				"$(HEADER_ABI_DIFFS) "+library.sAbiDiff.String())
-		}
+	if library.sAbiDiff.Valid() && !library.static() {
+		entries.AddStrings("LOCAL_ADDITIONAL_DEPENDENCIES", library.sAbiDiff.String())
 	}
 }
 
 // TODO(ccross): remove this once apex/androidmk.go is converted to AndroidMkEntries
 func (library *libraryDecorator) androidMkWriteAdditionalDependenciesForSourceAbiDiff(w io.Writer) {
-	if library.sAbiOutputFile.Valid() {
-		fmt.Fprintln(w, "LOCAL_ADDITIONAL_DEPENDENCIES := $(LOCAL_ADDITIONAL_DEPENDENCIES) ",
-			library.sAbiOutputFile.String())
-		if library.sAbiDiff.Valid() && !library.static() {
-			fmt.Fprintln(w, "LOCAL_ADDITIONAL_DEPENDENCIES := $(LOCAL_ADDITIONAL_DEPENDENCIES) ",
-				library.sAbiDiff.String())
-			fmt.Fprintln(w, "HEADER_ABI_DIFFS := $(HEADER_ABI_DIFFS) ",
-				library.sAbiDiff.String())
-		}
+	if library.sAbiDiff.Valid() && !library.static() {
+		fmt.Fprintln(w, "LOCAL_ADDITIONAL_DEPENDENCIES +=", library.sAbiDiff.String())
 	}
 }
 
@@ -249,7 +247,10 @@ func (library *libraryDecorator) AndroidMkEntries(ctx AndroidMkContext, entries 
 		entries.Class = "HEADER_LIBRARIES"
 	}
 
-	entries.DistFile = library.distFile
+	if library.distFile != nil {
+		entries.DistFiles = android.MakeDefaultDistFiles(library.distFile)
+	}
+
 	entries.ExtraEntries = append(entries.ExtraEntries, func(entries *android.AndroidMkEntries) {
 		library.androidMkWriteExportedFlags(entries)
 		library.androidMkEntriesWriteAdditionalDependenciesForSourceAbiDiff(entries)
@@ -279,10 +280,8 @@ func (library *libraryDecorator) AndroidMkEntries(ctx AndroidMkContext, entries 
 			entries.SubName = "." + library.stubsVersion()
 		}
 		entries.ExtraEntries = append(entries.ExtraEntries, func(entries *android.AndroidMkEntries) {
-			// Note library.skipInstall() has a special case to get here for static
-			// libraries that otherwise would have skipped installation and hence not
-			// have executed AndroidMkEntries at all. The reason is to ensure they get
-			// a NOTICE file make target which other libraries might depend on.
+			// library.makeUninstallable() depends on this to bypass SkipInstall() for
+			// static libraries.
 			entries.SetBool("LOCAL_UNINSTALLABLE_MODULE", true)
 			if library.buildStubs() {
 				entries.SetBool("LOCAL_NO_NOTICE_FILE", true)
@@ -318,7 +317,7 @@ func (binary *binaryDecorator) AndroidMkEntries(ctx AndroidMkContext, entries *a
 	ctx.subAndroidMk(entries, binary.baseInstaller)
 
 	entries.Class = "EXECUTABLES"
-	entries.DistFile = binary.distFile
+	entries.DistFiles = binary.distFiles
 	entries.ExtraEntries = append(entries.ExtraEntries, func(entries *android.AndroidMkEntries) {
 		entries.SetString("LOCAL_SOONG_UNSTRIPPED_BINARY", binary.unstrippedOutputFile.String())
 		if len(binary.symlinks) > 0 {
@@ -354,8 +353,11 @@ func (benchmark *benchmarkDecorator) AndroidMkEntries(ctx AndroidMkContext, entr
 			entries.SetBool("LOCAL_DISABLE_AUTO_GENERATE_TEST_CONFIG", true)
 		}
 	})
-
-	androidMkWriteTestData(benchmark.data, ctx, entries)
+	dataPaths := []android.DataPath{}
+	for _, srcPath := range benchmark.data {
+		dataPaths = append(dataPaths, android.DataPath{SrcPath: srcPath})
+	}
+	androidMkWriteTestData(dataPaths, ctx, entries)
 }
 
 func (test *testBinary) AndroidMkEntries(ctx AndroidMkContext, entries *android.AndroidMkEntries) {
@@ -378,6 +380,7 @@ func (test *testBinary) AndroidMkEntries(ctx AndroidMkContext, entries *android.
 	})
 
 	androidMkWriteTestData(test.data, ctx, entries)
+	androidMkWriteExtraTestConfigs(test.extraTestConfigs, entries)
 }
 
 func (fuzz *fuzzBinary) AndroidMkEntries(ctx AndroidMkContext, entries *android.AndroidMkEntries) {
@@ -457,6 +460,9 @@ func (c *stubDecorator) AndroidMkEntries(ctx AndroidMkContext, entries *android.
 		entries.SetString("LOCAL_MODULE_PATH", path)
 		entries.SetString("LOCAL_MODULE_STEM", stem)
 		entries.SetBool("LOCAL_NO_NOTICE_FILE", true)
+		if c.parsedCoverageXmlPath.String() != "" {
+			entries.SetString("SOONG_NDK_API_XML", "$(SOONG_NDK_API_XML) "+c.parsedCoverageXmlPath.String())
+		}
 	})
 }
 
@@ -505,10 +511,14 @@ func (c *vendorSnapshotLibraryDecorator) AndroidMkEntries(ctx AndroidMkContext, 
 		entries.Class = "HEADER_LIBRARIES"
 	}
 
+	entries.SubName = ""
+
+	if c.sanitizerProperties.CfiEnabled {
+		entries.SubName += ".cfi"
+	}
+
 	if c.androidMkVendorSuffix {
-		entries.SubName = vendorSuffix
-	} else {
-		entries.SubName = ""
+		entries.SubName += vendorSuffix
 	}
 
 	entries.ExtraEntries = append(entries.ExtraEntries, func(entries *android.AndroidMkEntries) {

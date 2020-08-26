@@ -91,7 +91,7 @@ func (library *Library) AndroidMkEntries() []android.AndroidMkEntries {
 	} else {
 		mainEntries = android.AndroidMkEntries{
 			Class:      "JAVA_LIBRARIES",
-			DistFile:   android.OptionalPathForPath(library.distFile),
+			DistFiles:  library.distFiles,
 			OutputFile: android.OptionalPathForPath(library.outputFile),
 			Include:    "$(BUILD_SYSTEM)/soong_java_prebuilt.mk",
 			ExtraEntries: []android.AndroidMkExtraEntriesFunc{
@@ -121,16 +121,17 @@ func (library *Library) AndroidMkEntries() []android.AndroidMkEntries {
 						entries.SetPath("LOCAL_SOONG_JACOCO_REPORT_CLASSES_JAR", library.jacocoReportClassesFile)
 					}
 
-					entries.AddStrings("LOCAL_EXPORT_SDK_LIBRARIES", library.exportedSdkLibs...)
+					entries.AddStrings("LOCAL_EXPORT_SDK_LIBRARIES", android.SortedStringKeys(library.exportedSdkLibs)...)
 
 					if len(library.additionalCheckedModules) != 0 {
 						entries.AddStrings("LOCAL_ADDITIONAL_CHECKED_MODULE", library.additionalCheckedModules.Strings()...)
 					}
 
-					if library.proguardDictionary != nil {
-						entries.SetPath("LOCAL_SOONG_PROGUARD_DICT", library.proguardDictionary)
-					}
+					entries.SetOptionalPath("LOCAL_SOONG_PROGUARD_DICT", library.dexer.proguardDictionary)
+					entries.SetOptionalPath("LOCAL_SOONG_PROGUARD_USAGE_ZIP", library.dexer.proguardUsageZip)
 					entries.SetString("LOCAL_MODULE_STEM", library.Stem())
+
+					entries.SetOptionalPaths("LOCAL_SOONG_LINT_REPORTS", library.linter.reports)
 				},
 			},
 		}
@@ -160,6 +161,7 @@ func (j *Test) AndroidMkEntries() []android.AndroidMkEntries {
 		if j.testConfig != nil {
 			entries.SetPath("LOCAL_FULL_TEST_CONFIG", j.testConfig)
 		}
+		androidMkWriteExtraTestConfigs(j.extraTestConfigs, entries)
 		androidMkWriteTestData(j.data, entries)
 		if !BoolDefault(j.testProperties.Auto_gen_config, true) {
 			entries.SetString("LOCAL_DISABLE_AUTO_GENERATE_TEST_CONFIG", "true")
@@ -167,6 +169,12 @@ func (j *Test) AndroidMkEntries() []android.AndroidMkEntries {
 	})
 
 	return entriesList
+}
+
+func androidMkWriteExtraTestConfigs(extraTestConfigs android.Paths, entries *android.AndroidMkEntries) {
+	if len(extraTestConfigs) > 0 {
+		entries.AddStrings("LOCAL_EXTRA_FULL_TEST_CONFIGS", extraTestConfigs.Strings()...)
+	}
 }
 
 func (j *TestHelperLibrary) AndroidMkEntries() []android.AndroidMkEntries {
@@ -194,7 +202,7 @@ func (prebuilt *Import) AndroidMkEntries() []android.AndroidMkEntries {
 				entries.SetBool("LOCAL_UNINSTALLABLE_MODULE", !Bool(prebuilt.properties.Installable))
 				entries.SetPath("LOCAL_SOONG_HEADER_JAR", prebuilt.combinedClasspathFile)
 				entries.SetPath("LOCAL_SOONG_CLASSES_JAR", prebuilt.combinedClasspathFile)
-				entries.SetString("LOCAL_SDK_VERSION", prebuilt.sdkVersion().raw)
+				entries.SetString("LOCAL_SDK_VERSION", prebuilt.makeSdkVersion())
 				entries.SetString("LOCAL_MODULE_STEM", prebuilt.Stem())
 			},
 		},
@@ -330,9 +338,8 @@ func (app *AndroidApp) AndroidMkEntries() []android.AndroidMkEntries {
 				if app.jacocoReportClassesFile != nil {
 					entries.SetPath("LOCAL_SOONG_JACOCO_REPORT_CLASSES_JAR", app.jacocoReportClassesFile)
 				}
-				if app.proguardDictionary != nil {
-					entries.SetPath("LOCAL_SOONG_PROGUARD_DICT", app.proguardDictionary)
-				}
+				entries.SetOptionalPath("LOCAL_SOONG_PROGUARD_DICT", app.dexer.proguardDictionary)
+				entries.SetOptionalPath("LOCAL_SOONG_PROGUARD_USAGE_ZIP", app.dexer.proguardUsageZip)
 
 				if app.Name() == "framework-res" {
 					entries.SetString("LOCAL_MODULE_PATH", "$(TARGET_OUT_JAVA_LIBRARIES)")
@@ -370,9 +377,15 @@ func (app *AndroidApp) AndroidMkEntries() []android.AndroidMkEntries {
 				entries.SetString("LOCAL_CERTIFICATE", app.certificate.AndroidMkString())
 				entries.AddStrings("LOCAL_OVERRIDES_PACKAGES", app.getOverriddenPackages()...)
 
-				for _, jniLib := range app.installJniLibs {
-					entries.AddStrings("LOCAL_SOONG_JNI_LIBS_"+jniLib.target.Arch.ArchType.String(), jniLib.name)
+				if app.embeddedJniLibs {
+					jniSymbols := app.JNISymbolsInstalls(app.installPathForJNISymbols.String())
+					entries.SetString("LOCAL_SOONG_JNI_LIBS_SYMBOLS", jniSymbols.String())
+				} else {
+					for _, jniLib := range app.jniLibs {
+						entries.AddStrings("LOCAL_SOONG_JNI_LIBS_"+jniLib.target.Arch.ArchType.String(), jniLib.name)
+					}
 				}
+
 				if len(app.jniCoverageOutputs) > 0 {
 					entries.AddStrings("LOCAL_PREBUILT_COVERAGE_ARCHIVE", app.jniCoverageOutputs.Strings()...)
 				}
@@ -383,6 +396,8 @@ func (app *AndroidApp) AndroidMkEntries() []android.AndroidMkEntries {
 					install := app.onDeviceDir + "/" + extra.Base()
 					entries.AddStrings("LOCAL_SOONG_BUILT_INSTALLED", extra.String()+":"+install)
 				}
+
+				entries.SetOptionalPaths("LOCAL_SOONG_LINT_REPORTS", app.linter.reports)
 			},
 		},
 		ExtraFooters: []android.AndroidMkExtraFootersFunc{
@@ -423,6 +438,7 @@ func (a *AndroidTest) AndroidMkEntries() []android.AndroidMkEntries {
 		if a.testConfig != nil {
 			entries.SetPath("LOCAL_FULL_TEST_CONFIG", a.testConfig)
 		}
+		androidMkWriteExtraTestConfigs(a.extraTestConfigs, entries)
 		androidMkWriteTestData(a.data, entries)
 	})
 
@@ -549,15 +565,21 @@ func (dstubs *Droidstubs) AndroidMkEntries() []android.AndroidMkEntries {
 	// are created in make if only the api txt file is being generated. This is
 	// needed because an invalid output file would prevent the make entries from
 	// being written.
+	//
+	// Note that dstubs.apiFile can be also be nil if WITHOUT_CHECKS_API is true.
 	// TODO(b/146727827): Revert when we do not need to generate stubs and API separately.
-	distFile := android.OptionalPathForPath(dstubs.apiFile)
+
+	var distFiles android.TaggedDistFiles
+	if dstubs.apiFile != nil {
+		distFiles = android.MakeDefaultDistFiles(dstubs.apiFile)
+	}
 	outputFile := android.OptionalPathForPath(dstubs.stubsSrcJar)
 	if !outputFile.Valid() {
-		outputFile = distFile
+		outputFile = android.OptionalPathForPath(dstubs.apiFile)
 	}
 	return []android.AndroidMkEntries{android.AndroidMkEntries{
 		Class:      "JAVA_LIBRARIES",
-		DistFile:   distFile,
+		DistFiles:  distFiles,
 		OutputFile: outputFile,
 		Include:    "$(BUILD_SYSTEM)/soong_droiddoc_prebuilt.mk",
 		ExtraEntries: []android.AndroidMkExtraEntriesFunc{
@@ -718,7 +740,8 @@ func (apkSet *AndroidAppSet) AndroidMkEntries() []android.AndroidMkEntries {
 			ExtraEntries: []android.AndroidMkExtraEntriesFunc{
 				func(entries *android.AndroidMkEntries) {
 					entries.SetBoolIfTrue("LOCAL_PRIVILEGED_MODULE", apkSet.Privileged())
-					entries.SetString("LOCAL_APK_SET_MASTER_FILE", apkSet.masterFile)
+					entries.SetString("LOCAL_APK_SET_INSTALL_FILE", apkSet.InstallFile())
+					entries.SetPath("LOCAL_APKCERTS_FILE", apkSet.apkcertsFile)
 					entries.AddStrings("LOCAL_OVERRIDES_PACKAGES", apkSet.properties.Overrides...)
 				},
 			},

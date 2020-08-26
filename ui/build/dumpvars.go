@@ -143,6 +143,7 @@ var BannerVars = []string{
 	"TARGET_BUILD_VARIANT",
 	"TARGET_BUILD_TYPE",
 	"TARGET_BUILD_APPS",
+	"TARGET_BUILD_UNBUNDLED",
 	"TARGET_ARCH",
 	"TARGET_ARCH_VARIANT",
 	"TARGET_CPU_VARIANT",
@@ -160,8 +161,6 @@ var BannerVars = []string{
 	"BUILD_ID",
 	"OUT_DIR",
 	"AUX_OS_VARIANT_LIST",
-	"TARGET_BUILD_PDK",
-	"PDK_FUSION_PLATFORM_ZIP",
 	"PRODUCT_SOONG_NAMESPACES",
 }
 
@@ -187,6 +186,7 @@ func runMakeProductConfig(ctx Context, config Config) {
 		"TARGET_PRODUCT",
 		"TARGET_BUILD_VARIANT",
 		"TARGET_BUILD_APPS",
+		"TARGET_BUILD_UNBUNDLED",
 
 		// compiler wrappers set up by make
 		"CC_WRAPPER",
@@ -279,7 +279,6 @@ func runMakeProductConfig(ctx Context, config Config) {
 	config.SetTargetDevice(make_vars["TARGET_DEVICE"])
 	config.SetTargetDeviceDir(make_vars["TARGET_DEVICE_DIR"])
 
-	config.SetPdkBuild(make_vars["TARGET_BUILD_PDK"] == "true")
 	config.SetBuildBrokenDupRules(make_vars["BUILD_BROKEN_DUP_RULES"] == "true")
 	config.SetBuildBrokenUsesNetwork(make_vars["BUILD_BROKEN_USES_NETWORK"] == "true")
 	config.SetBuildBrokenNinjaUsesEnvVars(strings.Fields(make_vars["BUILD_BROKEN_NINJA_USES_ENV_VARS"]))

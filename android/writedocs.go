@@ -44,6 +44,10 @@ func primaryBuilderPath(ctx SingletonContext) Path {
 }
 
 func (c *docsSingleton) GenerateBuildActions(ctx SingletonContext) {
+	var deps Paths
+	deps = append(deps, pathForBuildToolDep(ctx, ctx.Config().moduleListFile))
+	deps = append(deps, pathForBuildToolDep(ctx, ctx.Config().ProductVariablesFileName))
+
 	// Generate build system docs for the primary builder.  Generating docs reads the source
 	// files used to build the primary builder, but that dependency will be picked up through
 	// the dependency on the primary builder itself.  There are no dependencies on the
@@ -63,15 +67,12 @@ func (c *docsSingleton) GenerateBuildActions(ctx SingletonContext) {
 	ctx.Build(pctx, BuildParams{
 		Rule:   soongDocs,
 		Output: docsFile,
+		Inputs: deps,
 		Args: map[string]string{
 			"outDir": PathForOutput(ctx, "docs").String(),
 		},
 	})
 
 	// Add a phony target for building the documentation
-	ctx.Build(pctx, BuildParams{
-		Rule:   blueprint.Phony,
-		Output: PathForPhony(ctx, "soong_docs"),
-		Input:  docsFile,
-	})
+	ctx.Phony("soong_docs", docsFile)
 }

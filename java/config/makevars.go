@@ -25,9 +25,11 @@ func init() {
 }
 
 func makeVarsProvider(ctx android.MakeVarsContext) {
-	ctx.Strict("TARGET_DEFAULT_JAVA_LIBRARIES", strings.Join(DefaultLibraries, " "))
-	ctx.Strict("TARGET_DEFAULT_BOOTCLASSPATH_LIBRARIES", strings.Join(DefaultBootclasspathLibraries, " "))
-	ctx.Strict("DEFAULT_SYSTEM_MODULES", DefaultSystemModules)
+	ctx.Strict("FRAMEWORK_LIBRARIES", strings.Join(FrameworkLibraries, " "))
+
+	// These are used by make when LOCAL_PRIVATE_PLATFORM_APIS is set (equivalent to platform_apis in blueprint):
+	ctx.Strict("LEGACY_CORE_PLATFORM_BOOTCLASSPATH_LIBRARIES", strings.Join(LegacyCorePlatformBootclasspathLibraries, " "))
+	ctx.Strict("LEGACY_CORE_PLATFORM_SYSTEM_MODULES", LegacyCorePlatformSystemModules)
 
 	ctx.Strict("ANDROID_JAVA_HOME", "${JavaHome}")
 	ctx.Strict("ANDROID_JAVA8_HOME", "prebuilts/jdk/jdk8/${hostPrebuiltTag}")
@@ -64,7 +66,7 @@ func makeVarsProvider(ctx android.MakeVarsContext) {
 	ctx.Strict("ZIPSYNC", "${ZipSyncCmd}")
 
 	ctx.Strict("JACOCO_CLI_JAR", "${JacocoCLIJar}")
-	ctx.Strict("DEFAULT_JACOCO_EXCLUDE_FILTER", strings.Join(DefaultJacocoExcludeFilter, ","))
+	ctx.Strict("DEFAULT_JACOCO_EXCLUDE_FILTER", strings.Join(DefaultMakeJacocoExcludeFilter, ","))
 
 	ctx.Strict("EXTRACT_JAR_PACKAGES", "${ExtractJarPackagesCmd}")
 
@@ -73,7 +75,7 @@ func makeVarsProvider(ctx android.MakeVarsContext) {
 
 	ctx.Strict("ANDROID_MANIFEST_MERGER", "${ManifestMergerCmd}")
 
-	ctx.Strict("CLASS2GREYLIST", "${Class2Greylist}")
+	ctx.Strict("CLASS2NONSDKLIST", "${Class2NonSdkList}")
 	ctx.Strict("HIDDENAPI", "${HiddenAPI}")
 
 	ctx.Strict("DEX_FLAGS", "${DexFlags}")

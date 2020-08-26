@@ -212,7 +212,7 @@ var neverallowTests = []struct {
 				}`),
 		},
 		expectedErrors: []string{
-			"java_device_for_host can only be used in whitelisted projects",
+			"java_device_for_host can only be used in allowed projects",
 		},
 	},
 	// Libcore rule tests
@@ -261,46 +261,46 @@ var neverallowTests = []struct {
 	},
 	// CC sdk rule tests
 	{
-		name: `"sdk_variant_only" outside whitelist`,
+		name: `"sdk_variant_only" outside allowed list`,
 		fs: map[string][]byte{
 			"Android.bp": []byte(`
 				cc_library {
-					name: "outside_whitelist",
+					name: "outside_allowed_list",
 					sdk_version: "current",
 					sdk_variant_only: true,
 				}`),
 		},
 		expectedErrors: []string{
-			`module "outside_whitelist": violates neverallow`,
+			`module "outside_allowed_list": violates neverallow`,
 		},
 	},
 	{
-		name: `"sdk_variant_only: false" outside whitelist`,
+		name: `"sdk_variant_only: false" outside allowed list`,
 		fs: map[string][]byte{
 			"Android.bp": []byte(`
 				cc_library {
-					name: "outside_whitelist",
+					name: "outside_allowed_list",
 					sdk_version: "current",
 					sdk_variant_only: false,
 				}`),
 		},
 		expectedErrors: []string{
-			`module "outside_whitelist": violates neverallow`,
+			`module "outside_allowed_list": violates neverallow`,
 		},
 	},
 	{
-		name: `"platform" outside whitelist`,
+		name: `"platform" outside allowed list`,
 		fs: map[string][]byte{
 			"Android.bp": []byte(`
 				cc_library {
-					name: "outside_whitelist",
+					name: "outside_allowed_list",
 					platform: {
 						shared_libs: ["libfoo"],
 					},
 				}`),
 		},
 		expectedErrors: []string{
-			`module "outside_whitelist": violates neverallow`,
+			`module "outside_allowed_list": violates neverallow`,
 		},
 	},
 	{
@@ -324,6 +324,20 @@ var neverallowTests = []struct {
 		},
 		expectedErrors: []string{
 			"module \"outside_art_libraries\": violates neverallow",
+		},
+	},
+	{
+		name: "disallowed makefile_goal",
+		fs: map[string][]byte{
+			"Android.bp": []byte(`
+				makefile_goal {
+					name: "foo",
+					product_out_path: "boot/trap.img"
+				}
+			`),
+		},
+		expectedErrors: []string{
+			"Only boot images may be imported as a makefile goal.",
 		},
 	},
 }
@@ -350,6 +364,7 @@ func testNeverallow(config Config) (*TestContext, []error) {
 	ctx.RegisterModuleType("java_library", newMockJavaLibraryModule)
 	ctx.RegisterModuleType("java_library_host", newMockJavaLibraryModule)
 	ctx.RegisterModuleType("java_device_for_host", newMockJavaLibraryModule)
+	ctx.RegisterModuleType("makefile_goal", newMockMakefileGoalModule)
 	ctx.PostDepsMutators(RegisterNeverallowMutator)
 	ctx.Register(config)
 
@@ -437,4 +452,23 @@ func newMockJavaLibraryModule() Module {
 }
 
 func (p *mockJavaLibraryModule) GenerateAndroidBuildActions(ModuleContext) {
+}
+
+type mockMakefileGoalProperties struct {
+	Product_out_path *string
+}
+
+type mockMakefileGoalModule struct {
+	ModuleBase
+	properties mockMakefileGoalProperties
+}
+
+func newMockMakefileGoalModule() Module {
+	m := &mockMakefileGoalModule{}
+	m.AddProperties(&m.properties)
+	InitAndroidModule(m)
+	return m
+}
+
+func (p *mockMakefileGoalModule) GenerateAndroidBuildActions(ModuleContext) {
 }

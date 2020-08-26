@@ -77,10 +77,6 @@ func (d *dexpreopter) dexpreoptDisabled(ctx android.BaseModuleContext) bool {
 		return true
 	}
 
-	if ctx.Config().UnbundledBuild() {
-		return true
-	}
-
 	if d.isTest {
 		return true
 	}
@@ -177,7 +173,7 @@ func (d *dexpreopter) dexpreopt(ctx android.ModuleContext, dexJarFile android.Mo
 			profileBootListing = android.ExistentPathForSource(ctx,
 				ctx.ModuleDir(), String(d.dexpreoptProperties.Dex_preopt.Profile)+"-boot")
 			profileIsTextListing = true
-		} else {
+		} else if global.ProfileDir != "" {
 			profileClassListing = android.ExistentPathForSource(ctx,
 				global.ProfileDir, ctx.ModuleName()+".prof")
 		}
@@ -197,10 +193,10 @@ func (d *dexpreopter) dexpreopt(ctx android.ModuleContext, dexJarFile android.Mo
 		ProfileIsTextListing: profileIsTextListing,
 		ProfileBootListing:   profileBootListing,
 
-		EnforceUsesLibraries:         d.enforceUsesLibs,
-		PresentOptionalUsesLibraries: d.optionalUsesLibs,
-		UsesLibraries:                d.usesLibs,
-		LibraryPaths:                 d.libraryPaths,
+		EnforceUsesLibraries:  d.enforceUsesLibs,
+		OptionalUsesLibraries: d.optionalUsesLibs,
+		UsesLibraries:         d.usesLibs,
+		LibraryPaths:          d.libraryPaths,
 
 		Archs:                   archs,
 		DexPreoptImages:         images,

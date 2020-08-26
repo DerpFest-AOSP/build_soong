@@ -29,7 +29,8 @@ func init() {
 
 var ccBinarySdkMemberType = &binarySdkMemberType{
 	SdkMemberTypeBase: android.SdkMemberTypeBase{
-		PropertyName: "native_binaries",
+		PropertyName:    "native_binaries",
+		HostOsDependent: true,
 	},
 }
 
@@ -140,10 +141,6 @@ func (p *nativeBinaryInfoProperties) PopulateFromVariant(ctx android.SdkMemberCo
 }
 
 func (p *nativeBinaryInfoProperties) AddToPropertySet(ctx android.SdkMemberContext, propertySet android.BpPropertySet) {
-	if p.Compile_multilib != "" {
-		propertySet.AddProperty("compile_multilib", p.Compile_multilib)
-	}
-
 	builder := ctx.SnapshotBuilder()
 	if p.outputFile != nil {
 		propertySet.AddProperty("srcs", []string{nativeBinaryPathFor(*p)})

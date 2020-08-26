@@ -50,6 +50,8 @@ type BuildParams struct {
 	Implicit        Path
 	Implicits       Paths
 	OrderOnly       Paths
+	Validation      Path
+	Validations     Paths
 	Default         bool
 	Args            map[string]string
 }
@@ -95,6 +97,8 @@ type EarlyModuleContext interface {
 	GlobFiles(globPattern string, excludes []string) Paths
 	IsSymlink(path Path) bool
 	Readlink(path Path) string
+
+	Namespace() *Namespace
 }
 
 // BaseModuleContext is the same as blueprint.BaseModuleContext except that Config() returns
@@ -207,13 +211,16 @@ type ModuleContext interface {
 	// Similar to blueprint.ModuleContext.Build, but takes Paths instead of []string,
 	// and performs more verification.
 	Build(pctx PackageContext, params BuildParams)
+	// Phony creates a Make-style phony rule, a rule with no commands that can depend on other
+	// phony rules or real files.  Phony can be called on the same name multiple times to add
+	// additional dependencies.
+	Phony(phony string, deps ...Path)
 
 	PrimaryModule() Module
 	FinalModule() Module
 	VisitAllModuleVariants(visit func(Module))
 
 	GetMissingDependencies() []string
-	Namespace() blueprint.Namespace
 }
 
 type Module interface {
@@ -223,6 +230,16 @@ type Module interface {
 	// but GenerateAndroidBuildActions also has access to Android-specific information.
 	// For more information, see Module.GenerateBuildActions within Blueprint's module_ctx.go
 	GenerateAndroidBuildActions(ModuleContext)
+
+	// Add dependencies to the components of a module, i.e. modules that are created
+	// by the module and which are considered to be part of the creating module.
+	//
+	// This is called before prebuilts are renamed so as to allow a dependency to be
+	// added directly to a prebuilt child module instead of depending on a source module
+	// and relying on prebuilt processing to switch to the prebuilt module if preferred.
+	//
+	// A dependency on a prebuilt must include the "prebuilt_" prefix.
+	ComponentDepsMutator(ctx BottomUpMutatorContext)
 
 	DepsMutator(BottomUpMutatorContext)
 
@@ -240,6 +257,7 @@ type Module interface {
 	InstallForceOS() *OsType
 	SkipInstall()
 	IsSkipInstall() bool
+	MakeUninstallable()
 	ExportedToMake() bool
 	InitRc() Paths
 	VintfFragments() Paths
@@ -309,6 +327,28 @@ func (q qualifiedModuleName) getContainingPackageId() qualifiedModuleName {
 func newPackageId(pkg string) qualifiedModuleName {
 	// A qualified id for a package module has no name.
 	return qualifiedModuleName{pkg: pkg, name: ""}
+}
+
+type Dist struct {
+	// Copy the output of this module to the $DIST_DIR when `dist` is specified on the
+	// command line and any of these targets are also on the command line, or otherwise
+	// built
+	Targets []string `android:"arch_variant"`
+
+	// The name of the output artifact. This defaults to the basename of the output of
+	// the module.
+	Dest *string `android:"arch_variant"`
+
+	// The directory within the dist directory to store the artifact. Defaults to the
+	// top level directory ("").
+	Dir *string `android:"arch_variant"`
+
+	// A suffix to add to the artifact file name (before any extension).
+	Suffix *string `android:"arch_variant"`
+
+	// A string tag to select the OutputFiles associated with the tag. Defaults to the
+	// the empty "" string.
+	Tag *string `android:"arch_variant"`
 }
 
 type nameProperties struct {
@@ -450,23 +490,13 @@ type commonProperties struct {
 	// relative path to a file to include in the list of notices for the device
 	Notice *string `android:"path"`
 
-	Dist struct {
-		// copy the output of this module to the $DIST_DIR when `dist` is specified on the
-		// command line and  any of these targets are also on the command line, or otherwise
-		// built
-		Targets []string `android:"arch_variant"`
+	// configuration to distribute output files from this module to the distribution
+	// directory (default: $OUT/dist, configurable with $DIST_DIR)
+	Dist Dist `android:"arch_variant"`
 
-		// The name of the output artifact. This defaults to the basename of the output of
-		// the module.
-		Dest *string `android:"arch_variant"`
-
-		// The directory within the dist directory to store the artifact. Defaults to the
-		// top level directory ("").
-		Dir *string `android:"arch_variant"`
-
-		// A suffix to add to the artifact file name (before any extension).
-		Suffix *string `android:"arch_variant"`
-	} `android:"arch_variant"`
+	// a list of configurations to distribute output files from this module to the
+	// distribution directory (default: $OUT/dist, configurable with $DIST_DIR)
+	Dists []Dist `android:"arch_variant"`
 
 	// The OsType of artifacts that this module variant is responsible for creating.
 	//
@@ -520,6 +550,9 @@ type commonProperties struct {
 
 	SkipInstall bool `blueprint:"mutated"`
 
+	// Disabled by mutators. If set to true, it overrides Enabled property.
+	ForcedDisabled bool `blueprint:"mutated"`
+
 	NamespaceExportedToMake bool `blueprint:"mutated"`
 
 	MissingDeps []string `blueprint:"mutated"`
@@ -531,6 +564,20 @@ type commonProperties struct {
 
 	// set by ImageMutator
 	ImageVariation string `blueprint:"mutated"`
+}
+
+// A map of OutputFile tag keys to Paths, for disting purposes.
+type TaggedDistFiles map[string]Paths
+
+func MakeDefaultDistFiles(paths ...Path) TaggedDistFiles {
+	for _, path := range paths {
+		if path == nil {
+			panic("The path to a dist file cannot be nil.")
+		}
+	}
+
+	// The default OutputFile tag is the empty "" string.
+	return TaggedDistFiles{"": paths}
 }
 
 type hostAndDeviceProperties struct {
@@ -722,6 +769,7 @@ type ModuleBase struct {
 	installFiles       InstallPaths
 	checkbuildFiles    Paths
 	noticeFiles        Paths
+	phonies            map[string]Paths
 
 	// Used by buildTargetSingleton to create checkbuild and per-directory build targets
 	// Only set on the final variant of each module
@@ -743,6 +791,8 @@ type ModuleBase struct {
 
 	prefer32 func(ctx BaseModuleContext, base *ModuleBase, class OsClass) bool
 }
+
+func (m *ModuleBase) ComponentDepsMutator(BottomUpMutatorContext) {}
 
 func (m *ModuleBase) DepsMutator(BottomUpMutatorContext) {}
 
@@ -810,6 +860,41 @@ func (m *ModuleBase) visibilityProperties() []visibilityProperty {
 	return m.visibilityPropertyInfo
 }
 
+func (m *ModuleBase) Dists() []Dist {
+	if len(m.commonProperties.Dist.Targets) > 0 {
+		// Make a copy of the underlying Dists slice to protect against
+		// backing array modifications with repeated calls to this method.
+		distsCopy := append([]Dist(nil), m.commonProperties.Dists...)
+		return append(distsCopy, m.commonProperties.Dist)
+	} else {
+		return m.commonProperties.Dists
+	}
+}
+
+func (m *ModuleBase) GenerateTaggedDistFiles(ctx BaseModuleContext) TaggedDistFiles {
+	distFiles := make(TaggedDistFiles)
+	for _, dist := range m.Dists() {
+		var tag string
+		var distFilesForTag Paths
+		if dist.Tag == nil {
+			tag = ""
+		} else {
+			tag = *dist.Tag
+		}
+		distFilesForTag, err := m.base().module.(OutputFileProducer).OutputFiles(tag)
+		if err != nil {
+			ctx.PropertyErrorf("dist.tag", "%s", err.Error())
+		}
+		for _, distFile := range distFilesForTag {
+			if distFile != nil && !distFiles[tag].containsPath(distFile) {
+				distFiles[tag] = append(distFiles[tag], distFile)
+			}
+		}
+	}
+
+	return distFiles
+}
+
 func (m *ModuleBase) Target() Target {
 	return m.commonProperties.CompileTarget
 }
@@ -828,6 +913,10 @@ func (m *ModuleBase) Os() OsType {
 
 func (m *ModuleBase) Host() bool {
 	return m.Os().Class == Host || m.Os().Class == HostCross
+}
+
+func (m *ModuleBase) Device() bool {
+	return m.Os().Class == Device
 }
 
 func (m *ModuleBase) Arch() Arch {
@@ -944,6 +1033,9 @@ func (m *ModuleBase) PartitionTag(config DeviceConfig) string {
 }
 
 func (m *ModuleBase) Enabled() bool {
+	if m.commonProperties.ForcedDisabled {
+		return false
+	}
 	if m.commonProperties.Enabled == nil {
 		return !m.Os().DefaultDisabled
 	}
@@ -951,7 +1043,7 @@ func (m *ModuleBase) Enabled() bool {
 }
 
 func (m *ModuleBase) Disable() {
-	m.commonProperties.Enabled = proptools.BoolPtr(false)
+	m.commonProperties.ForcedDisabled = true
 }
 
 func (m *ModuleBase) SkipInstall() {
@@ -960,6 +1052,15 @@ func (m *ModuleBase) SkipInstall() {
 
 func (m *ModuleBase) IsSkipInstall() bool {
 	return m.commonProperties.SkipInstall == true
+}
+
+// Similar to SkipInstall, but if the AndroidMk entry would set
+// LOCAL_UNINSTALLABLE_MODULE then this variant may still output that entry
+// rather than leaving it out altogether. That happens in cases where it would
+// have other side effects, in particular when it adds a NOTICE file target,
+// which other install targets might depend on.
+func (m *ModuleBase) MakeUninstallable() {
+	m.SkipInstall()
 }
 
 func (m *ModuleBase) ExportedToMake() bool {
@@ -1087,32 +1188,23 @@ func (m *ModuleBase) generateModuleTarget(ctx ModuleContext) {
 
 	var deps Paths
 
-	namespacePrefix := ctx.Namespace().(*Namespace).id
+	namespacePrefix := ctx.Namespace().id
 	if namespacePrefix != "" {
 		namespacePrefix = namespacePrefix + "-"
 	}
 
 	if len(allInstalledFiles) > 0 {
-		name := PathForPhony(ctx, namespacePrefix+ctx.ModuleName()+"-install")
-		ctx.Build(pctx, BuildParams{
-			Rule:      blueprint.Phony,
-			Output:    name,
-			Implicits: allInstalledFiles.Paths(),
-			Default:   !ctx.Config().EmbeddedInMake(),
-		})
-		deps = append(deps, name)
-		m.installTarget = name
+		name := namespacePrefix + ctx.ModuleName() + "-install"
+		ctx.Phony(name, allInstalledFiles.Paths()...)
+		m.installTarget = PathForPhony(ctx, name)
+		deps = append(deps, m.installTarget)
 	}
 
 	if len(allCheckbuildFiles) > 0 {
-		name := PathForPhony(ctx, namespacePrefix+ctx.ModuleName()+"-checkbuild")
-		ctx.Build(pctx, BuildParams{
-			Rule:      blueprint.Phony,
-			Output:    name,
-			Implicits: allCheckbuildFiles,
-		})
-		deps = append(deps, name)
-		m.checkbuildTarget = name
+		name := namespacePrefix + ctx.ModuleName() + "-checkbuild"
+		ctx.Phony(name, allCheckbuildFiles...)
+		m.checkbuildTarget = PathForPhony(ctx, name)
+		deps = append(deps, m.checkbuildTarget)
 	}
 
 	if len(deps) > 0 {
@@ -1121,12 +1213,7 @@ func (m *ModuleBase) generateModuleTarget(ctx ModuleContext) {
 			suffix = "-soong"
 		}
 
-		name := PathForPhony(ctx, namespacePrefix+ctx.ModuleName()+suffix)
-		ctx.Build(pctx, BuildParams{
-			Rule:      blueprint.Phony,
-			Outputs:   []WritablePath{name},
-			Implicits: deps,
-		})
+		ctx.Phony(namespacePrefix+ctx.ModuleName()+suffix, deps...)
 
 		m.blueprintDir = ctx.ModuleDir()
 	}
@@ -1245,7 +1332,7 @@ func (m *ModuleBase) GenerateBuildActions(blueprintCtx blueprint.ModuleContext) 
 		suffix = append(suffix, ctx.Arch().ArchType.String())
 	}
 	if apex, ok := m.module.(ApexModule); ok && !apex.IsForPlatform() {
-		suffix = append(suffix, apex.ApexName())
+		suffix = append(suffix, apex.ApexVariationName())
 	}
 
 	ctx.Variable(pctx, "moduleDesc", desc)
@@ -1313,6 +1400,9 @@ func (m *ModuleBase) GenerateBuildActions(blueprintCtx blueprint.ModuleContext) 
 		m.checkbuildFiles = append(m.checkbuildFiles, ctx.checkbuildFiles...)
 		m.initRcPaths = PathsForModuleSrc(ctx, m.commonProperties.Init_rc)
 		m.vintfFragmentsPaths = PathsForModuleSrc(ctx, m.commonProperties.Vintf_fragments)
+		for k, v := range ctx.phonies {
+			m.phonies[k] = append(m.phonies[k], v...)
+		}
 	} else if ctx.Config().AllowMissingDependencies() {
 		// If the module is not enabled it will not create any build rules, nothing will call
 		// ctx.GetMissingDependencies(), and blueprint will consider the missing dependencies to be unhandled
@@ -1409,6 +1499,10 @@ func (e *earlyModuleContext) SystemExtSpecific() bool {
 	return e.kind == systemExtSpecificModule
 }
 
+func (e *earlyModuleContext) Namespace() *Namespace {
+	return e.EarlyModuleContext.Namespace().(*Namespace)
+}
+
 type baseModuleContext struct {
 	bp blueprint.BaseModuleContext
 	earlyModuleContext
@@ -1460,6 +1554,7 @@ type moduleContext struct {
 	installFiles    InstallPaths
 	checkbuildFiles Paths
 	module          Module
+	phonies         map[string]Paths
 
 	// For tests
 	buildParams []BuildParams
@@ -1495,6 +1590,7 @@ func convertBuildParams(params BuildParams) blueprint.BuildParams {
 		Inputs:          params.Inputs.Strings(),
 		Implicits:       params.Implicits.Strings(),
 		OrderOnly:       params.OrderOnly.Strings(),
+		Validations:     params.Validations.Strings(),
 		Args:            params.Args,
 		Optional:        !params.Default,
 	}
@@ -1514,13 +1610,17 @@ func convertBuildParams(params BuildParams) blueprint.BuildParams {
 	if params.Implicit != nil {
 		bparams.Implicits = append(bparams.Implicits, params.Implicit.String())
 	}
+	if params.Validation != nil {
+		bparams.Validations = append(bparams.Validations, params.Validation.String())
+	}
 
 	bparams.Outputs = proptools.NinjaEscapeList(bparams.Outputs)
 	bparams.ImplicitOutputs = proptools.NinjaEscapeList(bparams.ImplicitOutputs)
 	bparams.Inputs = proptools.NinjaEscapeList(bparams.Inputs)
 	bparams.Implicits = proptools.NinjaEscapeList(bparams.Implicits)
 	bparams.OrderOnly = proptools.NinjaEscapeList(bparams.OrderOnly)
-	bparams.Depfile = proptools.NinjaEscapeList([]string{bparams.Depfile})[0]
+	bparams.Validations = proptools.NinjaEscapeList(bparams.Validations)
+	bparams.Depfile = proptools.NinjaEscape(bparams.Depfile)
 
 	return bparams
 }
@@ -1574,6 +1674,11 @@ func (m *moduleContext) Build(pctx PackageContext, params BuildParams) {
 
 	m.bp.Build(pctx.PackageContext, convertBuildParams(params))
 }
+
+func (m *moduleContext) Phony(name string, deps ...Path) {
+	addPhony(m.config, name, deps...)
+}
+
 func (m *moduleContext) GetMissingDependencies() []string {
 	var missingDeps []string
 	missingDeps = append(missingDeps, m.Module().base().commonProperties.MissingDeps...)
@@ -1755,7 +1860,7 @@ func (b *baseModuleContext) GetTagPath() []blueprint.DependencyTag {
 
 // A regexp for removing boilerplate from BaseDependencyTag from the string representation of
 // a dependency tag.
-var tagCleaner = regexp.MustCompile(`\QBaseDependencyTag:blueprint.BaseDependencyTag{}\E(, )?`)
+var tagCleaner = regexp.MustCompile(`\QBaseDependencyTag:{}\E(, )?`)
 
 // PrettyPrintTag returns string representation of the tag, but prefers
 // custom String() method if available.
@@ -1766,7 +1871,7 @@ func PrettyPrintTag(tag blueprint.DependencyTag) string {
 	}
 
 	// Otherwise, get a default string representation of the tag's struct.
-	tagString := fmt.Sprintf("%#v", tag)
+	tagString := fmt.Sprintf("%T: %+v", tag, tag)
 
 	// Remove the boilerplate from BaseDependencyTag as it adds no value.
 	tagString = tagCleaner.ReplaceAllString(tagString, "")
@@ -1955,7 +2060,7 @@ func (m *moduleContext) installFile(installPath InstallPath, name string, srcPat
 	rule blueprint.Rule, deps []Path) InstallPath {
 
 	fullInstallPath := installPath.Join(m, name)
-	m.module.base().hooks.runInstallHooks(m, fullInstallPath, false)
+	m.module.base().hooks.runInstallHooks(m, srcPath, fullInstallPath, false)
 
 	if !m.skipInstall(fullInstallPath) {
 
@@ -1989,7 +2094,7 @@ func (m *moduleContext) installFile(installPath InstallPath, name string, srcPat
 
 func (m *moduleContext) InstallSymlink(installPath InstallPath, name string, srcPath InstallPath) InstallPath {
 	fullInstallPath := installPath.Join(m, name)
-	m.module.base().hooks.runInstallHooks(m, fullInstallPath, true)
+	m.module.base().hooks.runInstallHooks(m, srcPath, fullInstallPath, true)
 
 	if !m.skipInstall(fullInstallPath) {
 
@@ -2018,7 +2123,7 @@ func (m *moduleContext) InstallSymlink(installPath InstallPath, name string, src
 // (e.g. /apex/...)
 func (m *moduleContext) InstallAbsoluteSymlink(installPath InstallPath, name string, absPath string) InstallPath {
 	fullInstallPath := installPath.Join(m, name)
-	m.module.base().hooks.runInstallHooks(m, fullInstallPath, true)
+	m.module.base().hooks.runInstallHooks(m, nil, fullInstallPath, true)
 
 	if !m.skipInstall(fullInstallPath) {
 		m.Build(pctx, BuildParams{
@@ -2038,15 +2143,6 @@ func (m *moduleContext) InstallAbsoluteSymlink(installPath InstallPath, name str
 
 func (m *moduleContext) CheckbuildFile(srcPath Path) {
 	m.checkbuildFiles = append(m.checkbuildFiles, srcPath)
-}
-
-func findStringInSlice(str string, slice []string) int {
-	for i, s := range slice {
-		if s == str {
-			return i
-		}
-	}
-	return -1
 }
 
 // SrcIsModule decodes module references in the format ":name" into the module name, or empty string if the input
@@ -2233,9 +2329,8 @@ type buildTargetSingleton struct{}
 func (c *buildTargetSingleton) GenerateBuildActions(ctx SingletonContext) {
 	var checkbuildDeps Paths
 
-	mmTarget := func(dir string) WritablePath {
-		return PathForPhony(ctx,
-			"MODULES-IN-"+strings.Replace(filepath.Clean(dir), "/", "-", -1))
+	mmTarget := func(dir string) string {
+		return "MODULES-IN-" + strings.Replace(filepath.Clean(dir), "/", "-", -1)
 	}
 
 	modulesInDir := make(map[string]Paths)
@@ -2261,11 +2356,7 @@ func (c *buildTargetSingleton) GenerateBuildActions(ctx SingletonContext) {
 	}
 
 	// Create a top-level checkbuild target that depends on all modules
-	ctx.Build(pctx, BuildParams{
-		Rule:      blueprint.Phony,
-		Output:    PathForPhony(ctx, "checkbuild"+suffix),
-		Implicits: checkbuildDeps,
-	})
+	ctx.Phony("checkbuild"+suffix, checkbuildDeps...)
 
 	// Make will generate the MODULES-IN-* targets
 	if ctx.Config().EmbeddedInMake() {
@@ -2289,7 +2380,7 @@ func (c *buildTargetSingleton) GenerateBuildActions(ctx SingletonContext) {
 	for _, dir := range dirs {
 		p := parentDir(dir)
 		if p != "." && p != "/" {
-			modulesInDir[p] = append(modulesInDir[p], mmTarget(dir))
+			modulesInDir[p] = append(modulesInDir[p], PathForPhony(ctx, mmTarget(dir)))
 		}
 	}
 
@@ -2297,14 +2388,7 @@ func (c *buildTargetSingleton) GenerateBuildActions(ctx SingletonContext) {
 	// depends on the MODULES-IN-* targets of all of its subdirectories that contain Android.bp
 	// files.
 	for _, dir := range dirs {
-		ctx.Build(pctx, BuildParams{
-			Rule:      blueprint.Phony,
-			Output:    mmTarget(dir),
-			Implicits: modulesInDir[dir],
-			// HACK: checkbuild should be an optional build, but force it
-			// enabled for now in standalone builds
-			Default: !ctx.Config().EmbeddedInMake(),
-		})
+		ctx.Phony(mmTarget(dir), modulesInDir[dir]...)
 	}
 
 	// Create (host|host-cross|target)-<OS> phony rules to build a reduced checkbuild.
@@ -2331,23 +2415,15 @@ func (c *buildTargetSingleton) GenerateBuildActions(ctx SingletonContext) {
 			continue
 		}
 
-		name := PathForPhony(ctx, className+"-"+os.Name)
-		osClass[className] = append(osClass[className], name)
+		name := className + "-" + os.Name
+		osClass[className] = append(osClass[className], PathForPhony(ctx, name))
 
-		ctx.Build(pctx, BuildParams{
-			Rule:      blueprint.Phony,
-			Output:    name,
-			Implicits: deps,
-		})
+		ctx.Phony(name, deps...)
 	}
 
 	// Wrap those into host|host-cross|target phony rules
 	for _, class := range SortedStringKeys(osClass) {
-		ctx.Build(pctx, BuildParams{
-			Rule:      blueprint.Phony,
-			Output:    PathForPhony(ctx, class),
-			Implicits: osClass[class],
-		})
+		ctx.Phony(class, osClass[class]...)
 	}
 }
 

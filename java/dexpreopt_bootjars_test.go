@@ -48,7 +48,7 @@ func testDexpreoptBoot(t *testing.T, ruleFile string, expectedInputs, expectedOu
 
 	pathCtx := android.PathContextForTesting(config)
 	dexpreoptConfig := dexpreopt.GlobalConfigForTests(pathCtx)
-	dexpreoptConfig.BootJars = []string{"platform:foo", "platform:bar", "platform:baz"}
+	dexpreoptConfig.BootJars = android.CreateConfiguredJarList(pathCtx, []string{"platform:foo", "platform:bar", "platform:baz"})
 	dexpreopt.SetTestGlobalConfig(config, dexpreoptConfig)
 
 	ctx := testContext()
@@ -118,7 +118,7 @@ func TestDexpreoptBootZip(t *testing.T) {
 
 	ctx := android.PathContextForTesting(testConfig(nil, "", nil))
 	expectedInputs := []string{}
-	for _, target := range dexpreoptTargets(ctx) {
+	for _, target := range ctx.Config().Targets[android.Android] {
 		for _, ext := range []string{".art", ".oat", ".vdex"} {
 			for _, jar := range []string{"foo", "bar", "baz"} {
 				expectedInputs = append(expectedInputs,

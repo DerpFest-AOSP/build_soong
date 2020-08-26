@@ -56,6 +56,7 @@ func init() {
 	AddNeverAllowRules(createJavaDeviceForHostRules()...)
 	AddNeverAllowRules(createCcSdkVariantRules()...)
 	AddNeverAllowRules(createUncompressDexRules()...)
+	AddNeverAllowRules(createMakefileGoalRules()...)
 }
 
 // Add a NeverAllow rule to the set of rules to apply.
@@ -145,11 +146,18 @@ func createLibcoreRules() []Rule {
 		"prebuilts",
 	}
 
-	// Core library constraints. The sdk_version: "none" can only be used in core library projects.
+	// Additional whitelisted path only used for ART testing, which needs access to core library
+	// targets. This does not affect the contents of a device image (system, vendor, etc.).
+	var artTests = []string{
+		"art/test",
+	}
+
+	// Core library constraints. The sdk_version: "none" can only be used in core library projects and ART tests.
 	// Access to core library targets is restricted using visibility rules.
 	rules := []Rule{
 		NeverAllow().
 			NotIn(coreLibraryProjects...).
+			NotIn(artTests...).
 			With("sdk_version", "none").
 			WithoutMatcher("name", Regexp("^android_.*stubs_current$")),
 	}
@@ -166,7 +174,7 @@ func createMediaRules() []Rule {
 }
 
 func createJavaDeviceForHostRules() []Rule {
-	javaDeviceForHostProjectsWhitelist := []string{
+	javaDeviceForHostProjectsAllowedList := []string{
 		"external/guava",
 		"external/robolectric-shadows",
 		"framework/layoutlib",
@@ -174,26 +182,26 @@ func createJavaDeviceForHostRules() []Rule {
 
 	return []Rule{
 		NeverAllow().
-			NotIn(javaDeviceForHostProjectsWhitelist...).
+			NotIn(javaDeviceForHostProjectsAllowedList...).
 			ModuleType("java_device_for_host", "java_host_for_device").
-			Because("java_device_for_host can only be used in whitelisted projects"),
+			Because("java_device_for_host can only be used in allowed projects"),
 	}
 }
 
 func createCcSdkVariantRules() []Rule {
-	sdkVersionOnlyWhitelist := []string{
+	sdkVersionOnlyAllowedList := []string{
 		// derive_sdk_prefer32 has stem: "derive_sdk" which conflicts with the derive_sdk.
 		// This sometimes works because the APEX modules that contain derive_sdk and
 		// derive_sdk_prefer32 suppress the platform installation rules, but fails when
 		// the APEX modules contain the SDK variant and the platform variant still exists.
-		"frameworks/base/apex/sdkextensions/derive_sdk",
+		"packages/modules/SdkExtensions/derive_sdk",
 		// These are for apps and shouldn't be used by non-SDK variant modules.
 		"prebuilts/ndk",
 		"tools/test/graphicsbenchmark/apps/sample_app",
 		"tools/test/graphicsbenchmark/functional_tests/java",
 	}
 
-	platformVariantPropertiesWhitelist := []string{
+	platformVariantPropertiesAllowedList := []string{
 		// android_native_app_glue and libRSSupport use native_window.h but target old
 		// sdk versions (minimum and 9 respectively) where libnativewindow didn't exist,
 		// so they can't add libnativewindow to shared_libs to get the header directory
@@ -205,13 +213,13 @@ func createCcSdkVariantRules() []Rule {
 
 	return []Rule{
 		NeverAllow().
-			NotIn(sdkVersionOnlyWhitelist...).
+			NotIn(sdkVersionOnlyAllowedList...).
 			WithMatcher("sdk_variant_only", isSetMatcherInstance).
-			Because("sdk_variant_only can only be used in whitelisted projects"),
+			Because("sdk_variant_only can only be used in allowed projects"),
 		NeverAllow().
-			NotIn(platformVariantPropertiesWhitelist...).
+			NotIn(platformVariantPropertiesAllowedList...).
 			WithMatcher("platform.shared_libs", isSetMatcherInstance).
-			Because("platform variant properties can only be used in whitelisted projects"),
+			Because("platform variant properties can only be used in allowed projects"),
 	}
 }
 
@@ -221,6 +229,15 @@ func createUncompressDexRules() []Rule {
 			NotIn("art").
 			WithMatcher("uncompress_dex", isSetMatcherInstance).
 			Because("uncompress_dex is only allowed for certain jars for test in art."),
+	}
+}
+
+func createMakefileGoalRules() []Rule {
+	return []Rule{
+		NeverAllow().
+			ModuleType("makefile_goal").
+			WithoutMatcher("product_out_path", Regexp("^boot[0-9a-zA-Z.-]*[.]img$")).
+			Because("Only boot images may be imported as a makefile goal."),
 	}
 }
 

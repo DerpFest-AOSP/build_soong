@@ -45,7 +45,7 @@ func (cov *coverage) deps(ctx DepsContext, deps Deps) Deps {
 
 func (cov *coverage) flags(ctx ModuleContext, flags Flags, deps PathDeps) (Flags, PathDeps) {
 
-	if !ctx.DeviceConfig().NativeCoverageEnabled() && !ctx.DeviceConfig().ClangCoverageEnabled() {
+	if !ctx.DeviceConfig().NativeCoverageEnabled() {
 		return flags, deps
 	}
 
@@ -53,7 +53,7 @@ func (cov *coverage) flags(ctx ModuleContext, flags Flags, deps PathDeps) (Flags
 		flags.Coverage = true
 		coverage := ctx.GetDirectDepWithTag(CovLibraryName, cc.CoverageDepTag).(cc.LinkableInterface)
 		flags.RustFlags = append(flags.RustFlags,
-			"-Z profile", "-g", "-C opt-level=0", "-C link-dead-code", "-Z no-landing-pads")
+			"-Z profile", "-g", "-C opt-level=0", "-C link-dead-code")
 		flags.LinkFlags = append(flags.LinkFlags,
 			"--coverage", "-g", coverage.OutputFile().Path().String(), "-Wl,--wrap,getenv")
 		deps.StaticLibs = append(deps.StaticLibs, coverage.OutputFile().Path())
@@ -67,6 +67,6 @@ func (cov *coverage) begin(ctx BaseModuleContext) {
 		// Host coverage not yet supported.
 	} else {
 		// Update useSdk and sdkVersion args if Rust modules become SDK aware.
-		cov.Properties = cc.SetCoverageProperties(ctx, cov.Properties, ctx.nativeCoverage(), false, "")
+		cov.Properties = cc.SetCoverageProperties(ctx, cov.Properties, ctx.RustModule().nativeCoverage(), false, "")
 	}
 }

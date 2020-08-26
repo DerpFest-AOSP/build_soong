@@ -53,7 +53,7 @@ type sdkContext interface {
 
 func UseApiFingerprint(ctx android.BaseModuleContext) bool {
 	if ctx.Config().UnbundledBuild() &&
-		!ctx.Config().UnbundledBuildUsePrebuiltSdks() &&
+		!ctx.Config().AlwaysUsePrebuiltSdks() &&
 		ctx.Config().IsEnvTrue("UNBUNDLED_BUILD_TARGET_SDK_WITH_API_FINGERPRINT") {
 		return true
 	}
@@ -94,9 +94,9 @@ func (k sdkKind) String() string {
 	case sdkCorePlatform:
 		return "core_platform"
 	case sdkModule:
-		return "module"
+		return "module-lib"
 	case sdkSystemServer:
-		return "system_server"
+		return "system-server"
 	default:
 		return "invalid"
 	}
@@ -191,30 +191,13 @@ func (s sdkSpec) prebuiltSdkAvailableForUnbundledBuild() bool {
 	return s.kind != sdkPrivate && s.kind != sdkNone && s.kind != sdkCorePlatform
 }
 
-// forPdkBuild converts this sdkSpec into another sdkSpec that is for the PDK builds.
-func (s sdkSpec) forPdkBuild(ctx android.EarlyModuleContext) sdkSpec {
-	// For PDK builds, use the latest SDK version instead of "current" or ""
-	if s.kind == sdkPrivate || s.kind == sdkPublic {
-		kind := s.kind
-		if kind == sdkPrivate {
-			// We don't have prebuilt SDK for private APIs, so use the public SDK
-			// instead. This looks odd, but that's how it has been done.
-			// TODO(b/148271073): investigate the need for this.
-			kind = sdkPublic
-		}
-		version := sdkVersion(LatestSdkVersionInt(ctx))
-		return sdkSpec{kind, version, s.raw}
-	}
-	return s
-}
-
 // usePrebuilt determines whether prebuilt SDK should be used for this sdkSpec with the given context.
 func (s sdkSpec) usePrebuilt(ctx android.EarlyModuleContext) bool {
 	if s.version.isCurrent() {
 		// "current" can be built from source and be from prebuilt SDK
-		return ctx.Config().UnbundledBuildUsePrebuiltSdks()
+		return ctx.Config().AlwaysUsePrebuiltSdks()
 	} else if s.version.isNumbered() {
-		// sanity check
+		// validation check
 		if s.kind != sdkPublic && s.kind != sdkSystem && s.kind != sdkTest {
 			panic(fmt.Errorf("prebuilt SDK is not not available for sdkKind=%q", s.kind))
 			return false
@@ -232,9 +215,6 @@ func (s sdkSpec) usePrebuilt(ctx android.EarlyModuleContext) bool {
 func (s sdkSpec) effectiveVersion(ctx android.EarlyModuleContext) (sdkVersion, error) {
 	if !s.valid() {
 		return s.version, fmt.Errorf("invalid sdk version %q", s.raw)
-	}
-	if ctx.Config().IsPdkBuild() {
-		s = s.forPdkBuild(ctx)
 	}
 	if s.version.isNumbered() {
 		return s.version, nil
@@ -350,9 +330,6 @@ func decodeSdkDep(ctx android.EarlyModuleContext, sdkContext sdkContext) sdkDep 
 		return sdkDep{}
 	}
 
-	if ctx.Config().IsPdkBuild() {
-		sdkVersion = sdkVersion.forPdkBuild(ctx)
-	}
 	if !sdkVersion.validateSystemSdk(ctx) {
 		return sdkDep{}
 	}
@@ -412,7 +389,10 @@ func decodeSdkDep(ctx android.EarlyModuleContext, sdkContext sdkContext) sdkDep 
 	switch sdkVersion.kind {
 	case sdkPrivate:
 		return sdkDep{
-			useDefaultLibs:     true,
+			useModule:          true,
+			systemModules:      corePlatformSystemModules(ctx),
+			bootclasspath:      corePlatformBootclasspathLibraries(ctx),
+			classpath:          config.FrameworkLibraries,
 			frameworkResModule: "framework-res",
 		}
 	case sdkNone:
@@ -434,9 +414,10 @@ func decodeSdkDep(ctx android.EarlyModuleContext, sdkContext sdkContext) sdkDep 
 		}
 	case sdkCorePlatform:
 		return sdkDep{
-			useDefaultLibs:     true,
-			frameworkResModule: "framework-res",
-			noFrameworksLibs:   true,
+			useModule:        true,
+			systemModules:    corePlatformSystemModules(ctx),
+			bootclasspath:    corePlatformBootclasspathLibraries(ctx),
+			noFrameworksLibs: true,
 		}
 	case sdkPublic:
 		return toModule([]string{"android_stubs_current"}, "framework-res", sdkFrameworkAidlPath(ctx))
@@ -445,7 +426,12 @@ func decodeSdkDep(ctx android.EarlyModuleContext, sdkContext sdkContext) sdkDep 
 	case sdkTest:
 		return toModule([]string{"android_test_stubs_current"}, "framework-res", sdkFrameworkAidlPath(ctx))
 	case sdkCore:
-		return toModule([]string{"core.current.stubs"}, "", nil)
+		return sdkDep{
+			useModule:        true,
+			bootclasspath:    []string{"core.current.stubs", config.DefaultLambdaStubsLibrary},
+			systemModules:    "core-current-stubs-system-modules",
+			noFrameworksLibs: true,
+		}
 	case sdkModule:
 		// TODO(146757305): provide .apk and .aidl that have more APIs for modules
 		return toModule([]string{"android_module_lib_stubs_current"}, "framework-res", nonUpdatableFrameworkAidlPath(ctx))
@@ -502,7 +488,7 @@ func sdkSingletonFactory() android.Singleton {
 type sdkSingleton struct{}
 
 func (sdkSingleton) GenerateBuildActions(ctx android.SingletonContext) {
-	if ctx.Config().UnbundledBuildUsePrebuiltSdks() || ctx.Config().IsPdkBuild() {
+	if ctx.Config().AlwaysUsePrebuiltSdks() {
 		return
 	}
 
@@ -622,10 +608,7 @@ func createAPIFingerprint(ctx android.SingletonContext) {
 
 	if ctx.Config().PlatformSdkCodename() == "REL" {
 		cmd.Text("echo REL >").Output(out)
-	} else if ctx.Config().IsPdkBuild() {
-		// TODO: get this from the PDK artifacts?
-		cmd.Text("echo PDK >").Output(out)
-	} else if !ctx.Config().UnbundledBuildUsePrebuiltSdks() {
+	} else if !ctx.Config().AlwaysUsePrebuiltSdks() {
 		in, err := ctx.GlobWithDeps("frameworks/base/api/*current.txt", nil)
 		if err != nil {
 			ctx.Errorf("error globbing API files: %s", err)
@@ -654,7 +637,7 @@ func ApiFingerprintPath(ctx android.PathContext) android.OutputPath {
 }
 
 func sdkMakeVars(ctx android.MakeVarsContext) {
-	if ctx.Config().UnbundledBuildUsePrebuiltSdks() || ctx.Config().IsPdkBuild() {
+	if ctx.Config().AlwaysUsePrebuiltSdks() {
 		return
 	}
 

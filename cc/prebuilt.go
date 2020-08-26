@@ -26,6 +26,7 @@ func RegisterPrebuiltBuildComponents(ctx android.RegistrationContext) {
 	ctx.RegisterModuleType("cc_prebuilt_library", PrebuiltLibraryFactory)
 	ctx.RegisterModuleType("cc_prebuilt_library_shared", PrebuiltSharedLibraryFactory)
 	ctx.RegisterModuleType("cc_prebuilt_library_static", PrebuiltStaticLibraryFactory)
+	ctx.RegisterModuleType("cc_prebuilt_test_library_shared", PrebuiltSharedTestLibraryFactory)
 	ctx.RegisterModuleType("cc_prebuilt_object", prebuiltObjectFactory)
 	ctx.RegisterModuleType("cc_prebuilt_binary", prebuiltBinaryFactory)
 }
@@ -198,10 +199,6 @@ func (p *prebuiltLibraryLinker) disablePrebuilt() {
 	p.properties.Srcs = nil
 }
 
-func (p *prebuiltLibraryLinker) skipInstall(mod *Module) {
-	mod.ModuleBase.SkipInstall()
-}
-
 func NewPrebuiltLibrary(hod android.HostOrDeviceSupported) (*Module, *libraryDecorator) {
 	module, library := NewLibrary(hod)
 	module.compiler = nil
@@ -210,7 +207,6 @@ func NewPrebuiltLibrary(hod android.HostOrDeviceSupported) (*Module, *libraryDec
 		libraryDecorator: library,
 	}
 	module.linker = prebuilt
-	module.installer = prebuilt
 
 	module.AddProperties(&prebuilt.properties)
 
@@ -240,6 +236,16 @@ func PrebuiltLibraryFactory() android.Module {
 // listed in the srcs property in the device's directory.
 func PrebuiltSharedLibraryFactory() android.Module {
 	module, _ := NewPrebuiltSharedLibrary(android.HostAndDeviceSupported)
+	return module.Init()
+}
+
+// cc_prebuilt_test_library_shared installs a precompiled shared library
+// to be used as a data dependency of a test-related module (such as cc_test, or
+// cc_test_library).
+func PrebuiltSharedTestLibraryFactory() android.Module {
+	module, library := NewPrebuiltLibrary(android.HostAndDeviceSupported)
+	library.BuildOnlyShared()
+	library.baseInstaller = NewTestInstaller()
 	return module.Init()
 }
 

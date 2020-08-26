@@ -742,6 +742,22 @@ func TestRewritePrebuiltEtc(t *testing.T) {
 		}
 		`,
 		},
+		{
+			name: "prebuilt_etc sub_dir",
+			in: `
+			prebuilt_etc {
+			name: "foo",
+			src: "bar",
+			sub_dir: "baz",
+		}
+		`,
+			out: `prebuilt_etc {
+			name: "foo",
+			src: "bar",
+			relative_install_dir: "baz",
+		}
+		`,
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -979,6 +995,64 @@ func TestRemoveSoongConfigBoolVariable(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			runPass(t, test.in, test.out, removeSoongConfigBoolVariable)
+		})
+	}
+}
+
+func TestRemovePdkProperty(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		out  string
+	}{
+		{
+			name: "remove property",
+			in: `
+				cc_library_shared {
+					name: "foo",
+					product_variables: {
+						other: {
+							bar: true,
+						},
+						pdk: {
+							enabled: false,
+						},
+					},
+				}
+			`,
+			out: `
+				cc_library_shared {
+					name: "foo",
+					product_variables: {
+						other: {
+							bar: true,
+						},
+					},
+				}
+			`,
+		},
+		{
+			name: "remove property and empty product_variables",
+			in: `
+				cc_library_shared {
+					name: "foo",
+					product_variables: {
+						pdk: {
+							enabled: false,
+						},
+					},
+				}
+			`,
+			out: `
+				cc_library_shared {
+					name: "foo",
+				}
+			`,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			runPass(t, test.in, test.out, runPatchListMod(removePdkProperty))
 		})
 	}
 }
