@@ -69,12 +69,12 @@ var (
 		&remoteexec.REParams{
 			Labels:          map[string]string{"type": "link", "tool": "clang"},
 			ExecStrategy:    "${config.RECXXLinksExecStrategy}",
-			Inputs:          []string{"${out}.rsp"},
+			Inputs:          []string{"${out}.rsp", "$implicitInputs"},
 			RSPFile:         "${out}.rsp",
 			OutputFiles:     []string{"${out}", "$implicitOutputs"},
 			ToolchainInputs: []string{"$ldCmd"},
 			Platform:        map[string]string{remoteexec.PoolKey: "${config.RECXXLinksPool}"},
-		}, []string{"ldCmd", "crtBegin", "libFlags", "crtEnd", "ldFlags", "extraLibFlags"}, []string{"implicitOutputs"})
+		}, []string{"ldCmd", "crtBegin", "libFlags", "crtEnd", "ldFlags", "extraLibFlags"}, []string{"implicitInputs", "implicitOutputs"})
 
 	partialLd, partialLdRE = remoteexec.StaticRules(pctx, "partialLd",
 		blueprint.RuleParams{
@@ -83,12 +83,13 @@ var (
 			Command:     "$reTemplate$ldCmd -fuse-ld=lld -nostdlib -no-pie -Wl,-r ${in} -o ${out} ${ldFlags}",
 			CommandDeps: []string{"$ldCmd"},
 		}, &remoteexec.REParams{
-			Labels:       map[string]string{"type": "link", "tool": "clang"},
-			ExecStrategy: "${config.RECXXLinksExecStrategy}", Inputs: []string{"$inCommaList"},
+			Labels:          map[string]string{"type": "link", "tool": "clang"},
+			ExecStrategy:    "${config.RECXXLinksExecStrategy}",
+			Inputs:          []string{"$inCommaList", "$implicitInputs"},
 			OutputFiles:     []string{"${out}", "$implicitOutputs"},
 			ToolchainInputs: []string{"$ldCmd"},
 			Platform:        map[string]string{remoteexec.PoolKey: "${config.RECXXLinksPool}"},
-		}, []string{"ldCmd", "ldFlags"}, []string{"inCommaList", "implicitOutputs"})
+		}, []string{"ldCmd", "ldFlags"}, []string{"implicitInputs", "inCommaList", "implicitOutputs"})
 
 	ar = pctx.AndroidStaticRule("ar",
 		blueprint.RuleParams{
@@ -236,12 +237,12 @@ var (
 		}, &remoteexec.REParams{
 			Labels:          map[string]string{"type": "tool", "name": "abi-linker"},
 			ExecStrategy:    "${config.REAbiLinkerExecStrategy}",
-			Inputs:          []string{"$sAbiLinkerLibs", "${out}.rsp", "$implicits"},
+			Inputs:          []string{"$sAbiLinkerLibs", "${out}.rsp", "$implicitInputs"},
 			RSPFile:         "${out}.rsp",
 			OutputFiles:     []string{"$out"},
 			ToolchainInputs: []string{"$sAbiLinker"},
 			Platform:        map[string]string{remoteexec.PoolKey: "${config.RECXXPool}"},
-		}, []string{"symbolFilter", "arch", "exportedHeaderFlags"}, []string{"implicits"})
+		}, []string{"symbolFilter", "arch", "exportedHeaderFlags"}, []string{"implicitInputs"})
 
 	_ = pctx.SourcePathVariable("sAbiDiffer", "prebuilts/clang-tools/${config.HostPrebuiltTag}/bin/header-abi-diff")
 
@@ -349,18 +350,22 @@ type builderFlags struct {
 
 	groupStaticLibs bool
 
-	stripKeepSymbols              bool
-	stripKeepSymbolsList          string
-	stripKeepSymbolsAndDebugFrame bool
-	stripKeepMiniDebugInfo        bool
-	stripAddGnuDebuglink          bool
-	stripUseGnuStrip              bool
-
 	proto            android.ProtoFlags
 	protoC           bool
 	protoOptionsFile bool
 
 	yacc *YaccProperties
+	lex  *LexProperties
+}
+
+type StripFlags struct {
+	Toolchain                     config.Toolchain
+	StripKeepSymbols              bool
+	StripKeepSymbolsList          string
+	StripKeepSymbolsAndDebugFrame bool
+	StripKeepMiniDebugInfo        bool
+	StripAddGnuDebuglink          bool
+	StripUseGnuStrip              bool
 }
 
 type Objects struct {
@@ -743,6 +748,7 @@ func TransformObjToDynamicBinary(ctx android.ModuleContext,
 	if ctx.Config().IsEnvTrue("RBE_CXX_LINKS") {
 		rule = ldRE
 		args["implicitOutputs"] = strings.Join(implicitOutputs.Strings(), ",")
+		args["implicitInputs"] = strings.Join(deps.Strings(), ",")
 	}
 
 	ctx.Build(pctx, android.BuildParams{
@@ -792,7 +798,7 @@ func TransformDumpToLinkedDump(ctx android.ModuleContext, sAbiDumps android.Path
 				rbeImplicits = append(rbeImplicits, p[2:])
 			}
 		}
-		args["implicits"] = strings.Join(rbeImplicits, ",")
+		args["implicitInputs"] = strings.Join(rbeImplicits, ",")
 	}
 	ctx.Build(pctx, android.BuildParams{
 		Rule:        rule,
@@ -909,6 +915,7 @@ func TransformObjsToObj(ctx android.ModuleContext, objFiles android.Paths,
 	if ctx.Config().IsEnvTrue("RBE_CXX_LINKS") {
 		rule = partialLdRE
 		args["inCommaList"] = strings.Join(objFiles.Strings(), ",")
+		args["implicitInputs"] = strings.Join(deps.Strings(), ",")
 	}
 	ctx.Build(pctx, android.BuildParams{
 		Rule:        rule,
@@ -939,26 +946,26 @@ func TransformBinaryPrefixSymbols(ctx android.ModuleContext, prefix string, inpu
 }
 
 func TransformStrip(ctx android.ModuleContext, inputFile android.Path,
-	outputFile android.WritablePath, flags builderFlags) {
+	outputFile android.WritablePath, flags StripFlags) {
 
-	crossCompile := gccCmd(flags.toolchain, "")
+	crossCompile := gccCmd(flags.Toolchain, "")
 	args := ""
-	if flags.stripAddGnuDebuglink {
+	if flags.StripAddGnuDebuglink {
 		args += " --add-gnu-debuglink"
 	}
-	if flags.stripKeepMiniDebugInfo {
+	if flags.StripKeepMiniDebugInfo {
 		args += " --keep-mini-debug-info"
 	}
-	if flags.stripKeepSymbols {
+	if flags.StripKeepSymbols {
 		args += " --keep-symbols"
 	}
-	if flags.stripKeepSymbolsList != "" {
-		args += " -k" + flags.stripKeepSymbolsList
+	if flags.StripKeepSymbolsList != "" {
+		args += " -k" + flags.StripKeepSymbolsList
 	}
-	if flags.stripKeepSymbolsAndDebugFrame {
+	if flags.StripKeepSymbolsAndDebugFrame {
 		args += " --keep-symbols-and-debug-frame"
 	}
-	if flags.stripUseGnuStrip {
+	if flags.StripUseGnuStrip {
 		args += " --use-gnu-strip"
 	}
 

@@ -41,6 +41,9 @@ const (
 	imageApexType     = "image"
 	zipApexType       = "zip"
 	flattenedApexType = "flattened"
+
+	ext4FsType = "ext4"
+	f2fsFsType = "f2fs"
 )
 
 type dependencyTag struct {
@@ -747,18 +750,6 @@ func markPlatformAvailability(mctx android.BottomUpMutatorContext) {
 	if am, ok := mctx.Module().(android.ApexModule); ok {
 		availableToPlatform := am.AvailableFor(android.AvailableToPlatform)
 
-		// In a rare case when a lib is marked as available only to an apex
-		// but the apex doesn't exist. This can happen in a partial manifest branch
-		// like master-art. Currently, libstatssocket in the stats APEX is causing
-		// this problem.
-		// Include the lib in platform because the module SDK that ought to provide
-		// it doesn't exist, so it would otherwise be left out completely.
-		// TODO(b/154888298) remove this by adding those libraries in module SDKS and skipping
-		// this check for libraries provided by SDKs.
-		if !availableToPlatform && !android.InAnyApex(am.Name()) {
-			availableToPlatform = true
-		}
-
 		// If any of the dep is not available to platform, this module is also considered
 		// as being not available to platform even if it has "//apex_available:platform"
 		mctx.VisitDirectDeps(func(child android.Module) {
@@ -1040,6 +1031,10 @@ type apexBundleProperties struct {
 	// Should be only used in non-system apexes (e.g. vendor: true).
 	// Default is false.
 	Use_vndk_as_stable *bool
+
+	// The type of filesystem to use for an image apex. Either 'ext4' or 'f2fs'.
+	// Default 'ext4'.
+	Payload_fs_type *string
 }
 
 type apexTargetBundleProperties struct {
@@ -1247,6 +1242,24 @@ func (af *apexFile) AvailableToPlatform() bool {
 	return false
 }
 
+type fsType int
+
+const (
+	ext4 fsType = iota
+	f2fs
+)
+
+func (f fsType) string() string {
+	switch f {
+	case ext4:
+		return ext4FsType
+	case f2fs:
+		return f2fsFsType
+	default:
+		panic(fmt.Errorf("unknown APEX payload type %d", f))
+	}
+}
+
 type apexBundle struct {
 	android.ModuleBase
 	android.DefaultableModuleBase
@@ -1312,6 +1325,8 @@ type apexBundle struct {
 
 	// Optional list of lint report zip files for apexes that contain java or app modules
 	lintReports android.Paths
+
+	payloadFsType fsType
 }
 
 func addDependenciesForNativeModules(ctx android.BottomUpMutatorContext,
@@ -2283,6 +2298,15 @@ func (a *apexBundle) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 
 	a.installDir = android.PathForModuleInstall(ctx, "apex")
 	a.filesInfo = filesInfo
+
+	switch proptools.StringDefault(a.properties.Payload_fs_type, ext4FsType) {
+	case ext4FsType:
+		a.payloadFsType = ext4
+	case f2fsFsType:
+		a.payloadFsType = f2fs
+	default:
+		ctx.PropertyErrorf("payload_fs_type", "%q is not a valid filesystem for apex [ext4, f2fs]", *a.properties.Payload_fs_type)
+	}
 
 	// Optimization. If we are building bundled APEX, for the files that are gathered due to the
 	// transitive dependencies, don't place them inside the APEX, but place a symlink pointing

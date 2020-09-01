@@ -129,8 +129,9 @@ type baseCompiler struct {
 	location installLocation
 
 	coverageOutputZipFile android.OptionalPath
-	unstrippedOutputFile  android.Path
 	distFile              android.OptionalPath
+	// Stripped output file. If Valid(), this file will be installed instead of outputFile.
+	strippedOutputFile android.OptionalPath
 }
 
 func (compiler *baseCompiler) Disabled() bool {
@@ -143,6 +144,10 @@ func (compiler *baseCompiler) SetDisabled() {
 
 func (compiler *baseCompiler) coverageOutputZipPath() android.OptionalPath {
 	panic("baseCompiler does not implement coverageOutputZipPath()")
+}
+
+func (compiler *baseCompiler) static() bool {
+	return false
 }
 
 var _ compiler = (*baseCompiler)(nil)
@@ -216,7 +221,15 @@ func (compiler *baseCompiler) compilerDeps(ctx DepsContext, deps Deps) Deps {
 				stdlib = stdlib + "_" + ctx.toolchain().RustTriple()
 			}
 
-			deps.Rustlibs = append(deps.Rustlibs, stdlib)
+			// For devices, we always link stdlibs in as dylibs except for ffi static libraries.
+			// (rustc does not support linking libstd as a dylib for ffi static libraries)
+			if ctx.Host() {
+				deps.Rustlibs = append(deps.Rustlibs, stdlib)
+			} else if ctx.RustModule().compiler.static() {
+				deps.Rlibs = append(deps.Rlibs, stdlib)
+			} else {
+				deps.Dylibs = append(deps.Dylibs, stdlib)
+			}
 		}
 	}
 	return deps
@@ -257,8 +270,12 @@ func (compiler *baseCompiler) nativeCoverage() bool {
 	return false
 }
 
-func (compiler *baseCompiler) install(ctx ModuleContext, file android.Path) {
-	compiler.path = ctx.InstallFile(compiler.installDir(ctx), file.Base(), file)
+func (compiler *baseCompiler) install(ctx ModuleContext) {
+	path := ctx.RustModule().outputFile
+	if compiler.strippedOutputFile.Valid() {
+		path = compiler.strippedOutputFile
+	}
+	compiler.path = ctx.InstallFile(compiler.installDir(ctx), path.Path().Base(), path.Path())
 }
 
 func (compiler *baseCompiler) getStem(ctx ModuleContext) string {

@@ -78,6 +78,7 @@ type LibraryMutatedProperties struct {
 type libraryDecorator struct {
 	*baseCompiler
 	*flagExporter
+	stripper Stripper
 
 	Properties        LibraryCompilerProperties
 	MutatedProperties LibraryMutatedProperties
@@ -176,13 +177,13 @@ func (library *libraryDecorator) setStatic() {
 	library.MutatedProperties.VariantIsDylib = false
 }
 
-func (library *libraryDecorator) autoDep() autoDep {
+func (library *libraryDecorator) autoDep(ctx BaseModuleContext) autoDep {
 	if library.rlib() || library.static() {
 		return rlibAutoDep
 	} else if library.dylib() || library.shared() {
 		return dylibAutoDep
 	} else {
-		return rlibAutoDep
+		panic("autoDep called on library" + ctx.ModuleName() + "that has no enabled variants.")
 	}
 }
 
@@ -338,7 +339,8 @@ func NewRustLibrary(hod android.HostOrDeviceSupported) (*Module, *libraryDecorat
 func (library *libraryDecorator) compilerProps() []interface{} {
 	return append(library.baseCompiler.compilerProps(),
 		&library.Properties,
-		&library.MutatedProperties)
+		&library.MutatedProperties,
+		&library.stripper.StripProperties)
 }
 
 func (library *libraryDecorator) compilerDeps(ctx DepsContext, deps Deps) Deps {
@@ -371,7 +373,8 @@ func (library *libraryDecorator) compilerFlags(ctx ModuleContext, flags Flags) F
 }
 
 func (library *libraryDecorator) compile(ctx ModuleContext, flags Flags, deps PathDeps) android.Path {
-	var outputFile android.WritablePath
+	var outputFile android.ModuleOutPath
+	var fileName string
 	var srcPath android.Path
 
 	if library.sourceProvider != nil {
@@ -381,6 +384,7 @@ func (library *libraryDecorator) compile(ctx ModuleContext, flags Flags, deps Pa
 	}
 
 	flags.RustFlags = append(flags.RustFlags, deps.depFlags...)
+	flags.LinkFlags = append(flags.LinkFlags, deps.linkObjects...)
 
 	if library.dylib() {
 		// We need prefer-dynamic for now to avoid linking in the static stdlib. See:
@@ -390,29 +394,35 @@ func (library *libraryDecorator) compile(ctx ModuleContext, flags Flags, deps Pa
 	}
 
 	if library.rlib() {
-		fileName := library.getStem(ctx) + ctx.toolchain().RlibSuffix()
+		fileName = library.getStem(ctx) + ctx.toolchain().RlibSuffix()
 		outputFile = android.PathForModuleOut(ctx, fileName)
 
 		outputs := TransformSrctoRlib(ctx, srcPath, deps, flags, outputFile, deps.linkDirs)
 		library.coverageFile = outputs.coverageFile
 	} else if library.dylib() {
-		fileName := library.getStem(ctx) + ctx.toolchain().DylibSuffix()
+		fileName = library.getStem(ctx) + ctx.toolchain().DylibSuffix()
 		outputFile = android.PathForModuleOut(ctx, fileName)
 
 		outputs := TransformSrctoDylib(ctx, srcPath, deps, flags, outputFile, deps.linkDirs)
 		library.coverageFile = outputs.coverageFile
 	} else if library.static() {
-		fileName := library.getStem(ctx) + ctx.toolchain().StaticLibSuffix()
+		fileName = library.getStem(ctx) + ctx.toolchain().StaticLibSuffix()
 		outputFile = android.PathForModuleOut(ctx, fileName)
 
 		outputs := TransformSrctoStatic(ctx, srcPath, deps, flags, outputFile, deps.linkDirs)
 		library.coverageFile = outputs.coverageFile
 	} else if library.shared() {
-		fileName := library.sharedLibFilename(ctx)
+		fileName = library.sharedLibFilename(ctx)
 		outputFile = android.PathForModuleOut(ctx, fileName)
 
 		outputs := TransformSrctoShared(ctx, srcPath, deps, flags, outputFile, deps.linkDirs)
 		library.coverageFile = outputs.coverageFile
+	}
+
+	if !library.rlib() && library.stripper.NeedsStrip(ctx) {
+		strippedOutputFile := android.PathForModuleOut(ctx, "stripped", fileName)
+		library.stripper.StripExecutableOrSharedLib(ctx, outputFile, strippedOutputFile)
+		library.strippedOutputFile = android.OptionalPathForPath(strippedOutputFile)
 	}
 
 	var coverageFiles android.Paths
@@ -427,8 +437,8 @@ func (library *libraryDecorator) compile(ctx ModuleContext, flags Flags, deps Pa
 	if library.rlib() || library.dylib() {
 		library.exportLinkDirs(deps.linkDirs...)
 		library.exportDepFlags(deps.depFlags...)
+		library.exportLinkObjects(deps.linkObjects...)
 	}
-	library.unstrippedOutputFile = outputFile
 
 	return outputFile
 }

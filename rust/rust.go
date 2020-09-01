@@ -23,6 +23,7 @@ import (
 
 	"android/soong/android"
 	"android/soong/cc"
+	cc_config "android/soong/cc/config"
 	"android/soong/rust/config"
 )
 
@@ -42,7 +43,7 @@ func init() {
 		ctx.BottomUp("rust_begin", BeginMutator).Parallel()
 	})
 	pctx.Import("android/soong/rust/config")
-	pctx.ImportAs("ccConfig", "android/soong/cc/config")
+	pctx.ImportAs("cc_config", "android/soong/cc/config")
 }
 
 type Flags struct {
@@ -244,13 +245,14 @@ type Deps struct {
 }
 
 type PathDeps struct {
-	DyLibs     RustLibraries
-	RLibs      RustLibraries
-	SharedLibs android.Paths
-	StaticLibs android.Paths
-	ProcMacros RustLibraries
-	linkDirs   []string
-	depFlags   []string
+	DyLibs      RustLibraries
+	RLibs       RustLibraries
+	SharedLibs  android.Paths
+	StaticLibs  android.Paths
+	ProcMacros  RustLibraries
+	linkDirs    []string
+	depFlags    []string
+	linkObjects []string
 	//ReexportedDeps android.Paths
 
 	// Used by bindgen modules which call clang
@@ -282,25 +284,30 @@ type compiler interface {
 	crateName() string
 
 	inData() bool
-	install(ctx ModuleContext, path android.Path)
+	install(ctx ModuleContext)
 	relativeInstallPath() string
 
 	nativeCoverage() bool
 
 	Disabled() bool
 	SetDisabled()
+
+	static() bool
 }
 
 type exportedFlagsProducer interface {
 	exportedLinkDirs() []string
 	exportedDepFlags() []string
+	exportedLinkObjects() []string
 	exportLinkDirs(...string)
 	exportDepFlags(...string)
+	exportLinkObjects(...string)
 }
 
 type flagExporter struct {
-	depFlags []string
-	linkDirs []string
+	depFlags    []string
+	linkDirs    []string
+	linkObjects []string
 }
 
 func (flagExporter *flagExporter) exportedLinkDirs() []string {
@@ -311,6 +318,10 @@ func (flagExporter *flagExporter) exportedDepFlags() []string {
 	return flagExporter.depFlags
 }
 
+func (flagExporter *flagExporter) exportedLinkObjects() []string {
+	return flagExporter.linkObjects
+}
+
 func (flagExporter *flagExporter) exportLinkDirs(dirs ...string) {
 	flagExporter.linkDirs = android.FirstUniqueStrings(append(flagExporter.linkDirs, dirs...))
 }
@@ -319,12 +330,17 @@ func (flagExporter *flagExporter) exportDepFlags(flags ...string) {
 	flagExporter.depFlags = android.FirstUniqueStrings(append(flagExporter.depFlags, flags...))
 }
 
+func (flagExporter *flagExporter) exportLinkObjects(flags ...string) {
+	flagExporter.linkObjects = android.FirstUniqueStrings(append(flagExporter.linkObjects, flags...))
+}
+
 var _ exportedFlagsProducer = (*flagExporter)(nil)
 
 func NewFlagExporter() *flagExporter {
 	return &flagExporter{
-		depFlags: []string{},
-		linkDirs: []string{},
+		depFlags:    []string{},
+		linkDirs:    []string{},
+		linkObjects: []string{},
 	}
 }
 
@@ -641,6 +657,10 @@ func (mod *Module) toolchain(ctx android.BaseModuleContext) config.Toolchain {
 	return mod.cachedToolchain
 }
 
+func (mod *Module) ccToolchain(ctx android.BaseModuleContext) cc_config.Toolchain {
+	return cc_config.FindToolchain(ctx.Os(), ctx.Arch())
+}
+
 func (d *Defaults) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 }
 
@@ -684,7 +704,7 @@ func (mod *Module) GenerateAndroidBuildActions(actx android.ModuleContext) {
 
 		mod.outputFile = android.OptionalPathForPath(outputFile)
 		if mod.outputFile.Valid() && !mod.Properties.PreventInstall {
-			mod.compiler.install(ctx, mod.outputFile.Path())
+			mod.compiler.install(ctx)
 		}
 	}
 }
@@ -740,7 +760,7 @@ var (
 )
 
 type autoDeppable interface {
-	autoDep() autoDep
+	autoDep(ctx BaseModuleContext) autoDep
 }
 
 func (mod *Module) begin(ctx BaseModuleContext) {
@@ -811,6 +831,7 @@ func (mod *Module) depsToPaths(ctx android.ModuleContext) PathDeps {
 			if lib, ok := rustDep.compiler.(exportedFlagsProducer); ok && depTag != procMacroDepTag {
 				depPaths.linkDirs = append(depPaths.linkDirs, lib.exportedLinkDirs()...)
 				depPaths.depFlags = append(depPaths.depFlags, lib.exportedDepFlags()...)
+				depPaths.linkObjects = append(depPaths.linkObjects, lib.exportedLinkObjects()...)
 			}
 
 			if depTag == dylibDepTag || depTag == rlibDepTag || depTag == procMacroDepTag {
@@ -838,21 +859,18 @@ func (mod *Module) depsToPaths(ctx android.ModuleContext) PathDeps {
 					return
 				}
 			}
-			linkFile := ccDep.OutputFile()
-			linkPath := linkPathFromFilePath(linkFile.Path())
-			libName := libNameFromFilePath(linkFile.Path())
-			depFlag := "-l" + libName
+			linkObject := ccDep.OutputFile()
+			linkPath := linkPathFromFilePath(linkObject.Path())
 
-			if !linkFile.Valid() {
+			if !linkObject.Valid() {
 				ctx.ModuleErrorf("Invalid output file when adding dep %q to %q", depName, ctx.ModuleName())
 			}
 
 			exportDep := false
 			switch {
 			case cc.IsStaticDepTag(depTag):
-				depFlag = "-lstatic=" + libName
 				depPaths.linkDirs = append(depPaths.linkDirs, linkPath)
-				depPaths.depFlags = append(depPaths.depFlags, depFlag)
+				depPaths.linkObjects = append(depPaths.linkObjects, linkObject.String())
 				depPaths.depIncludePaths = append(depPaths.depIncludePaths, ccDep.IncludeDirs()...)
 				if mod, ok := ccDep.(*cc.Module); ok {
 					depPaths.depSystemIncludePaths = append(depPaths.depSystemIncludePaths, mod.ExportedSystemIncludeDirs()...)
@@ -862,9 +880,8 @@ func (mod *Module) depsToPaths(ctx android.ModuleContext) PathDeps {
 				directStaticLibDeps = append(directStaticLibDeps, ccDep)
 				mod.Properties.AndroidMkStaticLibs = append(mod.Properties.AndroidMkStaticLibs, depName)
 			case cc.IsSharedDepTag(depTag):
-				depFlag = "-ldylib=" + libName
 				depPaths.linkDirs = append(depPaths.linkDirs, linkPath)
-				depPaths.depFlags = append(depPaths.depFlags, depFlag)
+				depPaths.linkObjects = append(depPaths.linkObjects, linkObject.String())
 				depPaths.depIncludePaths = append(depPaths.depIncludePaths, ccDep.IncludeDirs()...)
 				if mod, ok := ccDep.(*cc.Module); ok {
 					depPaths.depSystemIncludePaths = append(depPaths.depSystemIncludePaths, mod.ExportedSystemIncludeDirs()...)
@@ -874,15 +891,15 @@ func (mod *Module) depsToPaths(ctx android.ModuleContext) PathDeps {
 				mod.Properties.AndroidMkSharedLibs = append(mod.Properties.AndroidMkSharedLibs, depName)
 				exportDep = true
 			case depTag == cc.CrtBeginDepTag:
-				depPaths.CrtBegin = linkFile
+				depPaths.CrtBegin = linkObject
 			case depTag == cc.CrtEndDepTag:
-				depPaths.CrtEnd = linkFile
+				depPaths.CrtEnd = linkObject
 			}
 
 			// Make sure these dependencies are propagated
 			if lib, ok := mod.compiler.(exportedFlagsProducer); ok && exportDep {
 				lib.exportLinkDirs(linkPath)
-				lib.exportDepFlags(depFlag)
+				lib.exportLinkObjects(linkObject.String())
 			}
 		}
 
@@ -956,14 +973,6 @@ func linkPathFromFilePath(filepath android.Path) string {
 	return strings.Split(filepath.String(), filepath.Base())[0]
 }
 
-func libNameFromFilePath(filepath android.Path) string {
-	libName := strings.TrimSuffix(filepath.Base(), filepath.Ext())
-	if strings.HasPrefix(libName, "lib") {
-		libName = libName[3:]
-	}
-	return libName
-}
-
 func (mod *Module) DepsMutator(actx android.BottomUpMutatorContext) {
 	ctx := &depsContext{
 		BottomUpMutatorContext: actx,
@@ -988,8 +997,8 @@ func (mod *Module) DepsMutator(actx android.BottomUpMutatorContext) {
 			{Mutator: "rust_libraries", Variation: "dylib"}}...),
 		dylibDepTag, deps.Dylibs...)
 
-	if deps.Rustlibs != nil {
-		autoDep := mod.compiler.(autoDeppable).autoDep()
+	if deps.Rustlibs != nil && !mod.compiler.Disabled() {
+		autoDep := mod.compiler.(autoDeppable).autoDep(ctx)
 		actx.AddVariationDependencies(
 			append(commonDepVariations, []blueprint.Variation{
 				{Mutator: "rust_libraries", Variation: autoDep.variation}}...),

@@ -35,6 +35,7 @@ import (
 
 var Bool = proptools.Bool
 var String = proptools.String
+var StringDefault = proptools.StringDefault
 
 const FutureApiLevel = 10000
 
@@ -958,6 +959,10 @@ func (c *deviceConfig) VndkVersion() string {
 	return String(c.config.productVariables.DeviceVndkVersion)
 }
 
+func (c *deviceConfig) CurrentApiLevelForVendorModules() string {
+	return StringDefault(c.config.productVariables.DeviceCurrentApiLevelForVendorModules, "current")
+}
+
 func (c *deviceConfig) PlatformVndkVersion() string {
 	return String(c.config.productVariables.Platform_vndk_version)
 }
@@ -1393,7 +1398,7 @@ func splitConfiguredJarPair(ctx PathContext, str string) (string, string) {
 	if len(pair) == 2 {
 		return pair[0], pair[1]
 	} else {
-		reportPathErrorf(ctx, "malformed (apex, jar) pair: '%s', expected format: <apex>:<jar>", str)
+		ReportPathErrorf(ctx, "malformed (apex, jar) pair: '%s', expected format: <apex>:<jar>", str)
 		return "error-apex", "error-jar"
 	}
 }
