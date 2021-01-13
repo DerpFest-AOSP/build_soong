@@ -78,8 +78,9 @@ var (
 			"-mcpu=cortex-a75+nodotprod",
 		},
 		"kryo585": []string{
-			// Use cortex-a77 because kryo585 is not supported in GCC/clang.
-			"-mcpu=cortex-a77",
+			// Use cortex-a76 because kryo585 is not supported in GCC/clang.
+			// TODO AOSP Clang not supporting Cortex-A77 yet
+			"-mcpu=cortex-a76",
 		},
 		"exynos-m1": []string{
 			"-mcpu=exynos-m1",
