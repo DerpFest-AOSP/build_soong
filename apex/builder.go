@@ -64,6 +64,7 @@ func init() {
 	pctx.HostBinToolVariable("extract_apks", "extract_apks")
 	pctx.HostBinToolVariable("make_f2fs", "make_f2fs")
 	pctx.HostBinToolVariable("sload_f2fs", "sload_f2fs")
+	pctx.HostBinToolVariable("make_erofs", "make_erofs")
 }
 
 var (
@@ -117,7 +118,7 @@ var (
 			`--payload_type image ` +
 			`--key ${key} ${opt_flags} ${image_dir} ${out} `,
 		CommandDeps: []string{"${apexer}", "${avbtool}", "${e2fsdroid}", "${merge_zips}",
-			"${mke2fs}", "${resize2fs}", "${sefcontext_compile}", "${make_f2fs}", "${sload_f2fs}",
+			"${mke2fs}", "${resize2fs}", "${sefcontext_compile}", "${make_f2fs}", "${sload_f2fs}", "${make_erofs}",
 			"${soong_zip}", "${zipalign}", "${aapt2}", "prebuilts/sdk/current/public/android.jar"},
 		Rspfile:        "${out}.copy_commands",
 		RspfileContent: "${copy_commands}",
