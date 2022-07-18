@@ -1,4 +1,5 @@
 // Copyright 2017 Google Inc. All rights reserved.
+// Copyright 2022 Project Kaleidoscope. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -36,6 +37,8 @@ var (
 	FrameworkLibraries                       = []string{"ext", "framework"}
 	DefaultLambdaStubsLibrary                = "core-lambda-stubs"
 	SdkLambdaStubsPath                       = "prebuilts/sdk/tools/core-lambda-stubs.jar"
+	DataBindingDepClassInfoPath              = "prebuilts/derp/libraries/current/data-binding/class-info"
+	DataBindingDepArtifactsPath              = "prebuilts/derp/libraries/current/data-binding/artifacts"
 
 	DefaultMakeJacocoExcludeFilter = []string{"org.junit.*", "org.jacoco.*", "org.mockito.*"}
 	DefaultJacocoExcludeFilter     = []string{"org.junit.**", "org.jacoco.**", "org.mockito.**"}
@@ -212,6 +215,11 @@ func init() {
 	// TODO(ccross): this should come from the signapk dependencies, but we don't have any way
 	// to express host JNI dependencies yet.
 	hostJNIToolVariableWithSdkToolsPrebuilt("SignapkJniLibrary", "libconscrypt_openjdk_jni")
+
+	pctx.HostBinToolVariable("DataBinderCmd", "data-binder")
+	pctx.HostJavaToolVariable("DataBinderJar", "data-binder.jar")
+	pctx.SourcePathVariable("DataBindingDepClassInfoPath", DataBindingDepClassInfoPath)
+	pctx.SourcePathVariable("DataBindingDepArtifactsPath", DataBindingDepArtifactsPath)
 }
 
 func BazelJavaToolchainVars(config android.Config) string {

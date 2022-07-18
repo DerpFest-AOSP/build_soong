@@ -1,4 +1,5 @@
 // Copyright 2015 Google Inc. All rights reserved.
+// Copyright 2022 Project Kaleidoscope. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -19,6 +20,7 @@ package java
 
 import (
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/google/blueprint"
@@ -28,6 +30,7 @@ import (
 	"android/soong/bazel"
 	"android/soong/cc"
 	"android/soong/dexpreopt"
+	"android/soong/java/config"
 	"android/soong/tradefed"
 )
 
@@ -115,6 +118,12 @@ type appProperties struct {
 	// Prefer using other specific properties if build behaviour must be changed; avoid using this
 	// flag for anything but neverallow rules (unless the behaviour change is invisible to owners).
 	Updatable *bool
+
+	Data_binding struct {
+		Package_name *string
+		Data_binding bool
+		View_binding bool
+	}
 }
 
 // android_app properties that can be overridden by override_android_app
@@ -223,6 +232,7 @@ func (c Certificate) AndroidMkString() string {
 }
 
 func (a *AndroidApp) DepsMutator(ctx android.BottomUpMutatorContext) {
+	a.addDataBindingDeps(ctx)
 	a.Module.deps(ctx)
 
 	if String(a.appProperties.Stl) == "c++_shared" && !a.SdkVersion(ctx).Specified() {
@@ -640,6 +650,9 @@ func (a *AndroidApp) generateAndroidBuildActions(ctx android.ModuleContext) {
 	if Bool(a.appProperties.Enforce_default_target_sdk_version) {
 		a.SetEnforceDefaultTargetSdkVersion(true)
 	}
+
+	// generate data-binding sources
+	a.genDataBindingSources(ctx)
 
 	// Process all building blocks, from AAPT to certificates.
 	a.aaptBuildActions(ctx)
@@ -1577,4 +1590,144 @@ func (a *AndroidApp) ConvertWithBp2build(ctx android.TopDownMutatorContext) {
 		appAttrs,
 	)
 
+}
+
+func (a *AndroidApp) addDataBindingDeps(ctx android.BottomUpMutatorContext) {
+	if a.appProperties.Data_binding.View_binding {
+		a.properties.Static_libs = append(a.properties.Static_libs,
+			"androidx.databinding_viewbinding",
+		)
+	}
+
+	if a.appProperties.Data_binding.Data_binding {
+		a.properties.Plugins = append(a.properties.Plugins,
+			"data-binding-annotation-processor")
+		a.properties.Static_libs = append(a.properties.Static_libs,
+			"androidx.databinding_databinding-adapters",
+		)
+	}
+}
+
+var dataBindingResources = pctx.AndroidStaticRule("databinging_resources",
+	blueprint.RuleParams{
+		Command: "" +
+			"rm -rf ${out} && " +
+			"${config.DataBinderCmd} PROCESS_RESOURCES" +
+			" -enableDataBinding ${enableDataBinding} -enableViewBinding ${enableViewBinding}" +
+			" -package ${packageName} -resInput ${resInput} -resOutput ${resOutput}" +
+			" -layoutInfoOutput ${layoutInfoOutput} -zipLayoutInfo true" +
+			" -useAndroidX true -zipResOutput true",
+		CommandDeps: []string{"${config.DataBinderCmd}"},
+	},
+	"enableDataBinding", "enableViewBinding", "packageName", "resInput", "resOutput", "layoutInfoOutput")
+
+var dataBindingClasses = pctx.AndroidStaticRule("databinging_classes",
+	blueprint.RuleParams{
+		Command: "" +
+			"rm -rf ${out} ${classInfoOut} && " +
+			"${config.DataBinderCmd} GEN_BASE_CLASSES" +
+			" -enableDataBinding ${enableDataBinding} -enableViewBinding ${enableViewBinding}" +
+			" -package ${packageName} -layoutInfoFiles $in -sourceOut $out" +
+			" -classInfoOut ${classInfoOut} -zipSourceOutput true" +
+			" -useAndroidX true -dependencyClassInfoList ${config.DataBindingDepClassInfoPath}",
+		CommandDeps: []string{"${config.DataBinderCmd}"},
+	},
+	"enableDataBinding", "enableViewBinding", "packageName", "classInfoOut")
+
+func (a *AndroidApp) genDataBindingSources(ctx android.ModuleContext) {
+
+	useDataBinding := a.appProperties.Data_binding.Data_binding
+	useViewBinding := a.appProperties.Data_binding.View_binding
+	packageName := a.appProperties.Data_binding.Package_name
+
+	if !useDataBinding && !useViewBinding || packageName == nil {
+		return
+	}
+
+	resourceDirs := android.PathsWithOptionalDefaultForModuleSrc(ctx, a.aaptProperties.Resource_dirs, "res")
+
+	outDir := android.PathForModuleGen(ctx, "databinding")
+	layoutInfoDir := outDir.Join(ctx, "layout-info")
+	classInfoDir := outDir.Join(ctx, "class-info")
+
+	databindingResZips := android.Paths{}
+	databindingSrcJars := android.Paths{}
+
+	for _, dir := range resourceDirs {
+		resName := strings.ReplaceAll(dir.Rel(), "/", "_")
+		resOut := outDir.Join(ctx, resName)
+		resourcesZip := resOut.Join(ctx, "resources.zip")
+
+		layoutInfoFile := layoutInfoDir.Join(ctx, resName+".zip")
+
+		ctx.Build(pctx, android.BuildParams{
+			Rule:        dataBindingResources,
+			Description: "generate data-binding resources",
+			Inputs:      androidResourceGlob(ctx, dir),
+			Outputs:     android.WritablePaths{resourcesZip, layoutInfoFile},
+			Args: map[string]string{
+				"enableDataBinding": strconv.FormatBool(useDataBinding),
+				"enableViewBinding": strconv.FormatBool(useViewBinding),
+				"packageName":       *packageName,
+				"layoutInfoOutput":  layoutInfoFile.String(),
+				"resInput":          dir.String(),
+				"resOutput":         resourcesZip.String(),
+			},
+		})
+		databindingResZips = append(databindingResZips, resourcesZip)
+
+		srcJar := resOut.Join(ctx, "databinding.srcjar")
+		classInfoOut := classInfoDir.Join(ctx, resName)
+
+		ctx.Build(pctx, android.BuildParams{
+			Rule:        dataBindingClasses,
+			Description: "generate data-binding classes",
+			Input:       layoutInfoFile,
+			Output:      srcJar,
+			Args: map[string]string{
+				"enableDataBinding": strconv.FormatBool(useDataBinding),
+				"enableViewBinding": strconv.FormatBool(useViewBinding),
+				"packageName":       *packageName,
+				"classInfoOut":      classInfoOut.String(),
+			},
+		})
+
+		databindingSrcJars = append(databindingSrcJars, srcJar)
+	}
+
+	a.aaptProperties.Resource_dirs = make([]string, 0)
+
+	if a.appProperties.Data_binding.Data_binding {
+
+		aarOutDir := outDir.Join(ctx, "artifacts")
+		apiLevel := a.MinSdkVersion(ctx).FinalOrFutureInt()
+
+		a.properties.Javacflags = append(a.properties.Javacflags,
+			"-Aandroid.databinding.artifactType=APPLICATION",
+			"-Aandroid.databinding.modulePackage="+*packageName,
+			"-Aandroid.databinding.layoutInfoDir="+layoutInfoDir.String(),
+			"-Aandroid.databinding.enableV2=1",
+			"-Aandroid.databinding.classLogDir="+classInfoDir.String(),
+			"-Aandroid.databinding.aarOutDir="+aarOutDir.String(),
+			"-Aandroid.databinding.dependencyArtifactsDir=${config.DataBindingDepArtifactsPath}",
+			"-Aandroid.databinding.minApi="+strconv.Itoa(apiLevel),
+		)
+
+		a.properties.Kotlincflags = append(a.properties.Kotlincflags,
+			"-P plugin:org.jetbrains.kotlin.kapt3:apoptions="+
+				kaptEncodeFlags([][2]string{
+					{"android.databinding.artifactType", "APPLICATION"},
+					{"android.databinding.modulePackage", *packageName},
+					{"android.databinding.layoutInfoDir", layoutInfoDir.String()},
+					{"android.databinding.enableV2", "1"},
+					{"android.databinding.classLogDir", classInfoDir.String()},
+					{"android.databinding.aarOutDir", aarOutDir.String()},
+					{"android.databinding.dependencyArtifactsDir", config.DataBindingDepArtifactsPath},
+					{"android.databinding.minApi", strconv.Itoa(apiLevel)},
+				}),
+		)
+	}
+
+	a.appendSrcJars = append(a.appendSrcJars, databindingSrcJars...)
+	a.appendResourceZips = append(a.appendResourceZips, databindingResZips...)
 }
