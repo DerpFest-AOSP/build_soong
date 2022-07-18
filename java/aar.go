@@ -1,4 +1,5 @@
 // Copyright 2018 Google Inc. All rights reserved.
+// Copyright 2022 Project Kaleidoscope. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -126,6 +127,7 @@ type aapt struct {
 	hasNoCode                          bool
 	LoggingParent                      string
 	resourceFiles                      android.Paths
+	appendResourceZips                 android.Paths
 
 	splitNames []string
 	splits     []split
@@ -428,6 +430,8 @@ func (a *aapt) buildActions(ctx android.ModuleContext, opts aaptBuildActionOptio
 		// sort resources into the right packages in R.class.
 		linkFlags = append(linkFlags, "--no-static-lib-packages")
 	}
+
+	resZips = append(resZips, a.appendResourceZips...)
 
 	packageRes := android.PathForModuleOut(ctx, "package-res.apk")
 	proguardOptionsFile := android.PathForModuleGen(ctx, "proguard.options")

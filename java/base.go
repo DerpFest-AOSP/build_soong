@@ -1,4 +1,5 @@
 // Copyright 2021 Google Inc. All rights reserved.
+// Copyright 2022 Project Kaleidoscope. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -513,6 +514,8 @@ type Module struct {
 
 	// Single aconfig "cache file" merged from this module and all dependencies.
 	mergedAconfigFiles map[string]android.Paths
+
+	appendSrcJars android.Paths
 }
 
 func (j *Module) CheckStableSdkVersion(ctx android.BaseModuleContext) error {
@@ -1110,6 +1113,10 @@ func (j *Module) compile(ctx android.ModuleContext, extraSrcJars, extraClasspath
 	srcJars = append(srcJars, extraSrcJars...)
 	srcJars = append(srcJars, j.properties.Generated_srcjars...)
 	srcFiles = srcFiles.FilterOutByExt(".srcjar")
+
+	if j.appendSrcJars != nil {
+		srcJars = append(srcJars, j.appendSrcJars...)
+	}
 
 	if j.properties.Jarjar_rules != nil {
 		j.expandJarjarRules = android.PathForModuleSrc(ctx, *j.properties.Jarjar_rules)
