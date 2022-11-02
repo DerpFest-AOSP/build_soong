@@ -259,6 +259,9 @@ com\.google\.i18n\.phonenumbers
 org\.chromium\.arc
 org\.chromium\.arc\..*
 
+# Lineage adds
+vendor\.lineage.*
+
 # QC adds
 com.qualcomm.qti
 com.quicinc.tcmiface
