@@ -262,6 +262,10 @@ org\.chromium\.arc\..*
 # Lineage adds
 vendor\.lineage.*
 
+# DerpFest adds
+org\.derpfest
+org\.derpfest\..*
+
 # QC adds
 com.qualcomm.qti
 com.quicinc.tcmiface
