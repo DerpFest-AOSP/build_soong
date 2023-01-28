@@ -258,6 +258,10 @@ org\.chromium\.arc\..*
 # Lineage adds
 vendor\.lineage.*
 
+# DerpFest adds
+org\.derpfest
+org\.derpfest\..*
+
 # NV adds
 com\.nvidia
 com\.nvidia\..*
