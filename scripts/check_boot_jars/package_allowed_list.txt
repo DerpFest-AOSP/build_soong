@@ -266,6 +266,9 @@ org\.derpfest\..*
 com\.nvidia
 com\.nvidia\..*
 
+# OP adds
+com.oplus.os
+
 # QC adds
 com.qualcomm.qti
 com.quicinc.tcmiface
