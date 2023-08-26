@@ -128,6 +128,7 @@ var Configuration = map[string]PathConfig{
 	"tar":     Allowed,
 	"tr":      Allowed,
 	"unzip":   Allowed,
+	"yes":     Allowed,
 	"zip":     Allowed,
 	"arm-linux-androidkernel-as": Allowed,
 	"arm-linux-androidkernel-ld": Allowed,
