@@ -66,6 +66,7 @@ var (
 		"build/bazel":                        Bp2BuildDefaultTrueRecursively,
 		"build/make/target/product/security": Bp2BuildDefaultTrue,
 		"build/make/tools":                   Bp2BuildDefaultTrue,
+		"vendor/derp/signing/keys":           Bp2BuildDefaultTrue,
 		"build/make/tools/protos":            Bp2BuildDefaultTrue,
 		"build/make/tools/releasetools":      Bp2BuildDefaultTrue,
 		"build/make/tools/sbom":              Bp2BuildDefaultTrue,
@@ -489,6 +490,7 @@ var (
 		"build/make/core":/* recursive = */ false,
 		"build/bazel_common_rules":/* recursive = */ true,
 		"build/make/target/product/security":/* recursive = */ false,
+		"vendor/derp/signing/keys":/* recursive = */ false,
 		// build/make/tools/signapk BUILD file is generated, so build/make/tools is not recursive.
 		"build/make/tools":/* recursive = */ false,
 		"build/pesto":/* recursive = */ true,
