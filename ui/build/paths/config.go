@@ -86,6 +86,7 @@ func GetConfig(name string) PathConfig {
 // This list specifies whether a particular binary from $PATH is allowed to be
 // run during the build. For more documentation, see path_interposer.go .
 var Configuration = map[string]PathConfig{
+	"[":              Allowed,
 	"arm-linux-androidkernel-as": Allowed,
 	"arm-linux-androidkernel-ld": Allowed,
 	"bash":           Allowed,
