@@ -154,6 +154,7 @@ func installClean(ctx Context, config Config) {
 		hostCommonOut("obj/PACKAGING"),
 		productOut("*.cpio"),
 		productOut("*Changelog.txt"),
+		productOut("manifest.xml*"),
 		productOut("*.img"),
 		productOut("*.json"),
 		productOut("*.zip"),
