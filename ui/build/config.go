@@ -904,22 +904,8 @@ func (c *configImpl) configureLocale(ctx Context) {
 
 	// gettext uses LANGUAGE, which is passed directly through
 
-	// For LANG and LC_*, only preserve the evaluated version of
-	// LC_MESSAGES
-	userLang := ""
-	if lc_all, ok := c.environ.Get("LC_ALL"); ok {
-		userLang = lc_all
-	} else if lc_messages, ok := c.environ.Get("LC_MESSAGES"); ok {
-		userLang = lc_messages
-	} else if lang, ok := c.environ.Get("LANG"); ok {
-		userLang = lang
-	}
-
 	c.environ.UnsetWithPrefix("LC_")
-
-	if userLang != "" {
-		c.environ.Set("LC_MESSAGES", userLang)
-	}
+	c.environ.Set("LC_MESSAGES", "en_US.UTF-8")
 
 	// The for LANG, use C.UTF-8 if it exists (Debian currently, proposed
 	// for others)
