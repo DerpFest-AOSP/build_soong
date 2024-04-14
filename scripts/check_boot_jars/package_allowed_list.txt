@@ -267,7 +267,7 @@ org\.derpfest
 org\.derpfest\..*
 
 # OP adds
-com.oplus.os
+com.oplus.*
 
 # QC adds
 com.qualcomm.qti
