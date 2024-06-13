@@ -34,6 +34,11 @@ var archVariants = map[ArchType][]string{
 		"broadwell",
 		"goldmont",
 		"goldmont-plus",
+		// Target arch is goldmont, but without supporting SHA and XSAVES.
+		// This ensures efficient execution on a broad range of Intel/AMD CPUs used
+		// in Chromebooks, including those lacking SHA or XSAVES support.
+		// (e.g. Kaby Lake, Gemini Lake, Alder Lake and AMD Zen series)
+		"goldmont-without-sha-xsaves",
 		"haswell",
 		"icelake",
 		"ivybridge",
@@ -52,6 +57,7 @@ var archVariants = map[ArchType][]string{
 		"broadwell",
 		"goldmont",
 		"goldmont-plus",
+		"goldmont-without-sha-xsaves",
 		"haswell",
 		"icelake",
 		"ivybridge",
@@ -193,6 +199,15 @@ var androidArchFeatureMap = map[ArchType]map[string][]string{
 			"movbe",
 		},
 		"goldmont-plus": {
+			"ssse3",
+			"sse4",
+			"sse4_1",
+			"sse4_2",
+			"aes_ni",
+			"popcnt",
+			"movbe",
+		},
+		"goldmont-without-sha-xsaves": {
 			"ssse3",
 			"sse4",
 			"sse4_1",
@@ -355,6 +370,14 @@ var androidArchFeatureMap = map[ArchType]map[string][]string{
 			"popcnt",
 		},
 		"goldmont-plus": {
+			"ssse3",
+			"sse4",
+			"sse4_1",
+			"sse4_2",
+			"aes_ni",
+			"popcnt",
+		},
+		"goldmont-without-sha-xsaves": {
 			"ssse3",
 			"sse4",
 			"sse4_1",
