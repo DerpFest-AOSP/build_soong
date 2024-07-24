@@ -269,6 +269,11 @@ org\.derpfest\..*
 # OP adds
 com.oplus.*
 
+# Oplus adds
+oplus\..*
+com\.oplus\..*
+net\.oneplus\..*
+
 # QC adds
 com.qualcomm.qti
 com.quicinc.tcmiface
