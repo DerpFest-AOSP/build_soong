@@ -523,6 +523,8 @@ type ProductVariables struct {
 	ArtTargetIncludeDebugBuild *bool `json:",omitempty"`
 
 	SystemPropFiles []string `json:",omitempty"`
+
+	EnableUffdGc *string `json:",omitempty"`
 }
 
 type PartitionQualifiedVariablesType struct {
