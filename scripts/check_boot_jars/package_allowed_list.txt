@@ -266,6 +266,9 @@ vendor\.lineage.*
 org\.derpfest
 org\.derpfest\..*
 
+# OPLUS adds
+com\.oplus\..*
+
 # QC adds
 com.qualcomm.qti
 com.quicinc.tcmiface
