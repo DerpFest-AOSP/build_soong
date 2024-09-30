@@ -1027,7 +1027,7 @@ func (c *config) BuildKeys() string {
 	if defaultCert == "" || defaultCert == filepath.Join(testKeyDir, "testkey") {
 		return "test-keys"
 	}
-	return "dev-keys"
+	return "release-keys"
 }
 
 func (c *config) ApexKeyDir(ctx ModuleContext) SourcePath {
