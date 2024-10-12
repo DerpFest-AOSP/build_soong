@@ -61,6 +61,7 @@ func init() {
 	AddNeverAllowRules(createJavaExcludeStaticLibsRule())
 	AddNeverAllowRules(createProhibitHeaderOnlyRule())
 	AddNeverAllowRules(createLimitNdkExportRule()...)
+	AddNeverAllowRules(createKotlinPluginRule()...)
 }
 
 // Add a NeverAllow rule to the set of rules to apply.
@@ -281,6 +282,22 @@ func createLimitNdkExportRule() []Rule {
 		NeverAllow().ModuleType("ndk_library").WithMatcher("export_include_dirs", isSetMatcherInstance).Because(reason),
 		NeverAllow().ModuleType("ndk_library").WithMatcher("export_shared_lib_headers", isSetMatcherInstance).Because(reason),
 		NeverAllow().ModuleType("ndk_library").WithMatcher("export_static_lib_headers", isSetMatcherInstance).Because(reason),
+	}
+}
+
+func createKotlinPluginRule() []Rule {
+	kotlinPluginProjectsAllowedList := []string{
+		// TODO: Migrate compose plugin to the bundled compiler plugin
+		// Actual path prebuilts/sdk/current/androidx/m2repository/androidx/compose/compiler/compiler-hosted
+		"prebuilts/sdk/current/androidx",
+		"external/kotlinc",
+	}
+
+	return []Rule{
+		NeverAllow().
+			NotIn(kotlinPluginProjectsAllowedList...).
+			ModuleType("kotlin_plugin").
+			Because("kotlin_plugin can only be used in allowed projects"),
 	}
 }
 
