@@ -87,6 +87,7 @@ bootstrap_go_package {
         "app_set_test.go",
         "app_test.go",
         "code_metadata_test.go",
+        "container_test.go",
         "bootclasspath_fragment_test.go",
         "device_host_converter_test.go",
         "dex_test.go",
@@ -100,6 +101,7 @@ bootstrap_go_package {
         "hiddenapi_singleton_test.go",
         "jacoco_test.go",
         "java_test.go",
+        "jarjar_test.go",
         "jdeps_test.go",
         "kotlin_test.go",
         "lint_test.go",
@@ -118,4 +120,5 @@ bootstrap_go_package {
         "test_spec_test.go",
     ],
     pluginFor: ["soong_build"],
+    visibility: ["//visibility:public"],
 }

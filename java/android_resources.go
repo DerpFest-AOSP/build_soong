@@ -39,15 +39,6 @@ func androidResourceGlob(ctx android.EarlyModuleContext, dir android.Path) andro
 	return ctx.GlobFiles(filepath.Join(dir.String(), "**/*"), androidResourceIgnoreFilenames)
 }
 
-// androidResourceGlobList creates a rule to write the list of files in the given directory, using
-// the standard exclusion patterns for Android resources, to the given output file.
-func androidResourceGlobList(ctx android.ModuleContext, dir android.Path,
-	fileListFile android.WritablePath) {
-
-	android.GlobToListFileRule(ctx, filepath.Join(dir.String(), "**/*"),
-		androidResourceIgnoreFilenames, fileListFile)
-}
-
 type overlayType int
 
 const (

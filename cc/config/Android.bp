@@ -35,4 +35,8 @@ bootstrap_go_package {
     testSrcs: [
         "tidy_test.go",
     ],
+    visibility: [
+        "//build/soong:__subpackages__",
+        "//prebuilts/clang/host/linux-x86/soong",
+    ],
 }

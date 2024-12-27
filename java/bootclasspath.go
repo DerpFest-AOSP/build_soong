@@ -196,7 +196,7 @@ var platformBootclasspathDepTag = bootclasspathDependencyTag{name: "platform"}
 type BootclasspathNestedAPIProperties struct {
 	// java_library or preferably, java_sdk_library modules providing stub classes that define the
 	// APIs provided by this bootclasspath_fragment.
-	Stub_libs []string
+	Stub_libs proptools.Configurable[[]string]
 }
 
 // BootclasspathAPIProperties defines properties for defining the API provided by parts of the
@@ -229,11 +229,11 @@ type BootclasspathAPIProperties struct {
 
 // apiScopeToStubLibs calculates the stub library modules for each relevant *HiddenAPIScope from the
 // Stub_libs properties.
-func (p BootclasspathAPIProperties) apiScopeToStubLibs() map[*HiddenAPIScope][]string {
+func (p BootclasspathAPIProperties) apiScopeToStubLibs(ctx android.BaseModuleContext) map[*HiddenAPIScope][]string {
 	m := map[*HiddenAPIScope][]string{}
 	for _, apiScope := range hiddenAPISdkLibrarySupportedScopes {
-		m[apiScope] = p.Api.Stub_libs
+		m[apiScope] = p.Api.Stub_libs.GetOrDefault(ctx, nil)
 	}
-	m[CorePlatformHiddenAPIScope] = p.Core_platform_api.Stub_libs
+	m[CorePlatformHiddenAPIScope] = p.Core_platform_api.Stub_libs.GetOrDefault(ctx, nil)
 	return m
 }

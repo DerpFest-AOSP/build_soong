@@ -1,0 +1,22 @@
+package {
+    default_applicable_licenses: ["Android-Apache-2.0"],
+}
+
+bootstrap_go_package {
+    name: "soong-golang",
+    pkgPath: "android/soong/golang",
+    deps: [
+        "blueprint",
+        "blueprint-pathtools",
+        "blueprint-bootstrap",
+        "soong",
+        "soong-android",
+    ],
+    srcs: [
+        "golang.go",
+    ],
+    testSrcs: [
+        "golang_test.go",
+    ],
+    pluginFor: ["soong_build"],
+}

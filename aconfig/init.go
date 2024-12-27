@@ -44,7 +44,7 @@ var (
 	// For create-device-config-sysprops: Generate aconfig flag value map text file
 	aconfigTextRule = pctx.AndroidStaticRule("aconfig_text",
 		blueprint.RuleParams{
-			Command: `${aconfig} dump-cache --dedup --format='{fully_qualified_name}={state:bool}'` +
+			Command: `${aconfig} dump-cache --dedup --format='{fully_qualified_name}:{permission}={state:bool}'` +
 				` --cache ${in}` +
 				` --out ${out}.tmp` +
 				` && ( if cmp -s ${out}.tmp ${out} ; then rm ${out}.tmp ; else mv ${out}.tmp ${out} ; fi )`,

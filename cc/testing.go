@@ -20,7 +20,6 @@ import (
 
 	"android/soong/android"
 	"android/soong/genrule"
-	"android/soong/multitree"
 )
 
 func RegisterRequiredBuildComponentsForTest(ctx android.RegistrationContext) {
@@ -29,17 +28,12 @@ func RegisterRequiredBuildComponentsForTest(ctx android.RegistrationContext) {
 	RegisterBinaryBuildComponents(ctx)
 	RegisterLibraryBuildComponents(ctx)
 	RegisterLibraryHeadersBuildComponents(ctx)
-	RegisterLibraryStubBuildComponents(ctx)
-
-	multitree.RegisterApiImportsModule(ctx)
 
 	ctx.RegisterModuleType("prebuilt_build_tool", android.NewPrebuiltBuildTool)
 	ctx.RegisterModuleType("cc_benchmark", BenchmarkFactory)
 	ctx.RegisterModuleType("cc_cmake_snapshot", CmakeSnapshotFactory)
 	ctx.RegisterModuleType("cc_object", ObjectFactory)
 	ctx.RegisterModuleType("cc_genrule", GenRuleFactory)
-	ctx.RegisterModuleType("ndk_prebuilt_shared_stl", NdkPrebuiltSharedStlFactory)
-	ctx.RegisterModuleType("ndk_prebuilt_static_stl", NdkPrebuiltStaticStlFactory)
 	ctx.RegisterModuleType("ndk_library", NdkLibraryFactory)
 	ctx.RegisterModuleType("ndk_headers", NdkHeadersFactory)
 }
@@ -312,6 +306,25 @@ func commonDefaultModules() string {
 			],
 		}
 		cc_library {
+			name: "ndk_libc++_shared",
+			export_include_dirs: ["ndk_libc++_shared_include_dirs"],
+			no_libcrt: true,
+			nocrt: true,
+			system_shared_libs: [],
+			stl: "none",
+			vendor_available: true,
+			vendor_ramdisk_available: true,
+			product_available: true,
+			recovery_available: true,
+			host_supported: false,
+			sdk_version: "minimum",
+			double_loadable: true,
+			apex_available: [
+				"//apex_available:platform",
+				"//apex_available:anyapex",
+			],
+		}
+		cc_library {
 			name: "libc++demangle",
 			no_libcrt: true,
 			nocrt: true,
@@ -397,13 +410,6 @@ func commonDefaultModules() string {
 			name: "libprotobuf-cpp-lite",
 		}
 
-		cc_library {
-			name: "ndk_libunwind",
-			sdk_version: "minimum",
-			stl: "none",
-			system_shared_libs: [],
-		}
-
 		ndk_library {
 			name: "libc",
 			first_version: "minimum",
@@ -420,11 +426,6 @@ func commonDefaultModules() string {
 			name: "libdl",
 			first_version: "minimum",
 			symbol_file: "libdl.map.txt",
-		}
-
-		ndk_prebuilt_shared_stl {
-			name: "ndk_libc++_shared",
-			export_include_dirs: ["ndk_libc++_shared"],
 		}
 
 		cc_library_static {
@@ -557,13 +558,6 @@ var PrepareForTestWithCcBuildComponents = android.GroupFixturePreparers(
 
 		RegisterLlndkLibraryTxtType(ctx)
 	}),
-
-	// Additional files needed in tests that disallow non-existent source files.
-	// This includes files that are needed by all, or at least most, instances of a cc module type.
-	android.MockFS{
-		// Needed for ndk_prebuilt_(shared|static)_stl.
-		"defaults/cc/common/current/sources/cxx-stl/llvm-libc++/libs": nil,
-	}.AddToFixture(),
 )
 
 // Preparer that will define default cc modules, e.g. standard prebuilt modules.
@@ -572,17 +566,17 @@ var PrepareForTestWithCcDefaultModules = android.GroupFixturePreparers(
 
 	// Additional files needed in tests that disallow non-existent source.
 	android.MockFS{
-		"defaults/cc/common/libc.map.txt":                nil,
-		"defaults/cc/common/libdl.map.txt":               nil,
-		"defaults/cc/common/libft2.map.txt":              nil,
-		"defaults/cc/common/libm.map.txt":                nil,
-		"defaults/cc/common/ndk_libc++_shared":           nil,
-		"defaults/cc/common/crtbegin_so.c":               nil,
-		"defaults/cc/common/crtbegin.c":                  nil,
-		"defaults/cc/common/crtend_so.c":                 nil,
-		"defaults/cc/common/crtend.c":                    nil,
-		"defaults/cc/common/crtbrand.c":                  nil,
-		"external/compiler-rt/lib/cfi/cfi_blocklist.txt": nil,
+		"defaults/cc/common/libc.map.txt":                   nil,
+		"defaults/cc/common/libdl.map.txt":                  nil,
+		"defaults/cc/common/libft2.map.txt":                 nil,
+		"defaults/cc/common/libm.map.txt":                   nil,
+		"defaults/cc/common/ndk_libc++_shared_include_dirs": nil,
+		"defaults/cc/common/crtbegin_so.c":                  nil,
+		"defaults/cc/common/crtbegin.c":                     nil,
+		"defaults/cc/common/crtend_so.c":                    nil,
+		"defaults/cc/common/crtend.c":                       nil,
+		"defaults/cc/common/crtbrand.c":                     nil,
+		"external/compiler-rt/lib/cfi/cfi_blocklist.txt":    nil,
 
 		"defaults/cc/common/libclang_rt.ubsan_minimal.android_arm64.a": nil,
 		"defaults/cc/common/libclang_rt.ubsan_minimal.android_arm.a":   nil,
@@ -715,7 +709,7 @@ func CreateTestContext(config android.Config) *android.TestContext {
 func checkSnapshotIncludeExclude(t *testing.T, ctx *android.TestContext, singleton android.TestingSingleton, moduleName, snapshotFilename, subDir, variant string, include bool, fake bool) {
 	t.Helper()
 	mod := ctx.ModuleForTests(moduleName, variant)
-	outputFiles := mod.OutputFiles(t, "")
+	outputFiles := mod.OutputFiles(ctx, t, "")
 	if len(outputFiles) != 1 {
 		t.Errorf("%q must have single output\n", moduleName)
 		return

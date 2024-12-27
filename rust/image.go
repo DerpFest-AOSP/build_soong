@@ -77,6 +77,14 @@ func (mod *Module) SetCoreVariantNeeded(b bool) {
 	mod.Properties.CoreVariantNeeded = b
 }
 
+func (mod *Module) SetProductVariantNeeded(b bool) {
+	mod.Properties.ProductVariantNeeded = b
+}
+
+func (mod *Module) SetVendorVariantNeeded(b bool) {
+	mod.Properties.VendorVariantNeeded = b
+}
+
 func (mod *Module) SnapshotVersion(mctx android.BaseModuleContext) string {
 	if snapshot, ok := mod.compiler.(cc.SnapshotInterface); ok {
 		return snapshot.Version()
@@ -84,6 +92,14 @@ func (mod *Module) SnapshotVersion(mctx android.BaseModuleContext) string {
 		mctx.ModuleErrorf("version is unknown for snapshot prebuilt")
 		return ""
 	}
+}
+
+func (mod *Module) VendorVariantNeeded(ctx android.BaseModuleContext) bool {
+	return mod.Properties.VendorVariantNeeded
+}
+
+func (mod *Module) ProductVariantNeeded(ctx android.BaseModuleContext) bool {
+	return mod.Properties.ProductVariantNeeded
 }
 
 func (mod *Module) VendorRamdiskVariantNeeded(ctx android.BaseModuleContext) bool {
@@ -184,12 +200,12 @@ func (mod *Module) HasNonSystemVariants() bool {
 }
 
 func (mod *Module) InProduct() bool {
-	return mod.Properties.ImageVariation == cc.ProductVariation
+	return mod.Properties.ImageVariation == android.ProductVariation
 }
 
 // Returns true if the module is "vendor" variant. Usually these modules are installed in /vendor
 func (mod *Module) InVendor() bool {
-	return mod.Properties.ImageVariation == cc.VendorVariation
+	return mod.Properties.ImageVariation == android.VendorVariation
 }
 
 // Returns true if the module is "vendor" or "product" variant.
@@ -202,13 +218,13 @@ func (mod *Module) SetImageVariation(ctx android.BaseModuleContext, variant stri
 		mod.MakeAsPlatform()
 	} else if variant == android.RecoveryVariation {
 		mod.MakeAsPlatform()
-	} else if strings.HasPrefix(variant, cc.VendorVariation) {
-		mod.Properties.ImageVariation = cc.VendorVariation
+	} else if strings.HasPrefix(variant, android.VendorVariation) {
+		mod.Properties.ImageVariation = android.VendorVariation
 		if strings.HasPrefix(variant, cc.VendorVariationPrefix) {
 			mod.Properties.VndkVersion = strings.TrimPrefix(variant, cc.VendorVariationPrefix)
 		}
-	} else if strings.HasPrefix(variant, cc.ProductVariation) {
-		mod.Properties.ImageVariation = cc.ProductVariation
+	} else if strings.HasPrefix(variant, android.ProductVariation) {
+		mod.Properties.ImageVariation = android.ProductVariation
 		if strings.HasPrefix(variant, cc.ProductVariationPrefix) {
 			mod.Properties.VndkVersion = strings.TrimPrefix(variant, cc.ProductVariationPrefix)
 		}

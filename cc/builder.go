@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -156,11 +157,17 @@ var (
 		"args")
 
 	// Rule to invoke `strip` (to discard symbols and data from object files) on darwin architecture.
-	darwinStrip = pctx.AndroidStaticRule("darwinStrip",
-		blueprint.RuleParams{
-			Command:     "${config.MacStripPath} -u -r -o $out $in",
-			CommandDeps: []string{"${config.MacStripPath}"},
-		})
+	darwinStrip = func() blueprint.Rule {
+		if runtime.GOOS == "darwin" {
+			return pctx.AndroidStaticRule("darwinStrip",
+				blueprint.RuleParams{
+					Command:     "${config.MacStripPath} -u -r -o $out $in",
+					CommandDeps: []string{"${config.MacStripPath}"},
+				})
+		} else {
+			return nil
+		}
+	}()
 
 	// b/132822437: objcopy uses a file descriptor per .o file when called on .a files, which runs the system out of
 	// file descriptors on darwin.  Limit concurrent calls to 5 on darwin.
@@ -174,11 +181,17 @@ var (
 		}
 	}()
 
-	darwinLipo = pctx.AndroidStaticRule("darwinLipo",
-		blueprint.RuleParams{
-			Command:     "${config.MacLipoPath} -create -output $out $in",
-			CommandDeps: []string{"${config.MacLipoPath}"},
-		})
+	darwinLipo = func() blueprint.Rule {
+		if runtime.GOOS == "darwin" {
+			return pctx.AndroidStaticRule("darwinLipo",
+				blueprint.RuleParams{
+					Command:     "${config.MacLipoPath} -create -output $out $in",
+					CommandDeps: []string{"${config.MacLipoPath}"},
+				})
+		} else {
+			return nil
+		}
+	}()
 
 	_ = pctx.SourcePathVariable("archiveRepackPath", "build/soong/scripts/archive_repack.sh")
 
@@ -798,9 +811,12 @@ func transformObjToStaticLib(ctx android.ModuleContext,
 // Generate a Rust staticlib from a list of rlibDeps. Returns nil if TransformRlibstoStaticlib is nil or rlibDeps is empty.
 func generateRustStaticlib(ctx android.ModuleContext, rlibDeps []RustRlibDep) android.Path {
 	if TransformRlibstoStaticlib == nil && len(rlibDeps) > 0 {
-		// This should only be reachable if a module defines static_rlibs and
+		// This should only be reachable if a module defines Rust deps in static_libs and
 		// soong-rust hasn't been loaded alongside soong-cc (e.g. in soong-cc tests).
-		panic(fmt.Errorf("TransformRlibstoStaticlib is not set and static_rlibs is defined in %s", ctx.ModuleName()))
+		panic(fmt.Errorf(
+			"TransformRlibstoStaticlib is not set and rust deps are defined in static_libs for %s",
+			ctx.ModuleName()))
+
 	} else if len(rlibDeps) == 0 {
 		return nil
 	}
@@ -829,6 +845,7 @@ func generateRustStaticlib(ctx android.ModuleContext, rlibDeps []RustRlibDep) an
 func genRustStaticlibSrcFile(crateNames []string) string {
 	lines := []string{
 		"// @Soong generated Source",
+		"#![no_std]", // pre-emptively set no_std to support both std and no_std.
 	}
 	for _, crate := range crateNames {
 		lines = append(lines, fmt.Sprintf("extern crate %s;", crate))
@@ -894,6 +911,16 @@ func transformObjToDynamicBinary(ctx android.ModuleContext,
 		"ldFlags":       flags.globalLdFlags + " " + flags.localLdFlags,
 		"crtEnd":        strings.Join(crtEnd.Strings(), " "),
 	}
+
+	// On Windows, we always generate a PDB file
+	// --strip-debug is needed to also keep COFF symbols which are needed when
+	// we patch binaries with symbol_inject.
+	if ctx.Windows() {
+		pdb := outputFile.ReplaceExtension(ctx, "pdb")
+		args["ldFlags"] = args["ldFlags"] + " -Wl,--strip-debug -Wl,--pdb=" + pdb.String() + " "
+		implicitOutputs = append(slices.Clone(implicitOutputs), pdb)
+	}
+
 	if ctx.Config().UseRBE() && ctx.Config().IsEnvTrue("RBE_CXX_LINKS") {
 		rule = ldRE
 		args["implicitOutputs"] = strings.Join(implicitOutputs.Strings(), ",")

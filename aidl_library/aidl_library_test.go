@@ -15,8 +15,9 @@
 package aidl_library
 
 import (
-	"android/soong/android"
 	"testing"
+
+	"android/soong/android"
 )
 
 func TestAidlLibrary(t *testing.T) {
@@ -46,7 +47,7 @@ func TestAidlLibrary(t *testing.T) {
 	).RunTest(t).TestContext
 
 	foo := ctx.ModuleForTests("foo", "").Module().(*AidlLibrary)
-	actualInfo, _ := android.SingletonModuleProvider(ctx, foo, AidlLibraryProvider)
+	actualInfo, _ := android.OtherModuleProvider(ctx, foo, AidlLibraryProvider)
 
 	android.AssertArrayString(
 		t,
@@ -95,7 +96,7 @@ func TestAidlLibraryWithoutStripImportPrefix(t *testing.T) {
 	).RunTest(t).TestContext
 
 	foo := ctx.ModuleForTests("foo", "").Module().(*AidlLibrary)
-	actualInfo, _ := android.SingletonModuleProvider(ctx, foo, AidlLibraryProvider)
+	actualInfo, _ := android.OtherModuleProvider(ctx, foo, AidlLibraryProvider)
 
 	android.AssertArrayString(
 		t,

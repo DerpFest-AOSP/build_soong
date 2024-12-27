@@ -81,6 +81,40 @@ func TestMutatorAddMissingDependencies(t *testing.T) {
 	AssertDeepEquals(t, "foo missing deps", []string{"added_missing_dep", "regular_missing_dep"}, foo.missingDeps)
 }
 
+type testTransitionMutator struct {
+	split              func(ctx BaseModuleContext) []string
+	outgoingTransition func(ctx OutgoingTransitionContext, sourceVariation string) string
+	incomingTransition func(ctx IncomingTransitionContext, incomingVariation string) string
+	mutate             func(ctx BottomUpMutatorContext, variation string)
+}
+
+func (t *testTransitionMutator) Split(ctx BaseModuleContext) []string {
+	if t.split != nil {
+		return t.split(ctx)
+	}
+	return []string{""}
+}
+
+func (t *testTransitionMutator) OutgoingTransition(ctx OutgoingTransitionContext, sourceVariation string) string {
+	if t.outgoingTransition != nil {
+		return t.outgoingTransition(ctx, sourceVariation)
+	}
+	return sourceVariation
+}
+
+func (t *testTransitionMutator) IncomingTransition(ctx IncomingTransitionContext, incomingVariation string) string {
+	if t.incomingTransition != nil {
+		return t.incomingTransition(ctx, incomingVariation)
+	}
+	return incomingVariation
+}
+
+func (t *testTransitionMutator) Mutate(ctx BottomUpMutatorContext, variation string) {
+	if t.mutate != nil {
+		t.mutate(ctx, variation)
+	}
+}
+
 func TestModuleString(t *testing.T) {
 	bp := `
 		test {
@@ -94,9 +128,11 @@ func TestModuleString(t *testing.T) {
 		FixtureRegisterWithContext(func(ctx RegistrationContext) {
 
 			ctx.PreArchMutators(func(ctx RegisterMutatorsContext) {
-				ctx.BottomUp("pre_arch", func(ctx BottomUpMutatorContext) {
-					moduleStrings = append(moduleStrings, ctx.Module().String())
-					ctx.CreateVariations("a", "b")
+				ctx.Transition("pre_arch", &testTransitionMutator{
+					split: func(ctx BaseModuleContext) []string {
+						moduleStrings = append(moduleStrings, ctx.Module().String())
+						return []string{"a", "b"}
+					},
 				})
 				ctx.TopDown("rename_top_down", func(ctx TopDownMutatorContext) {
 					moduleStrings = append(moduleStrings, ctx.Module().String())
@@ -105,16 +141,23 @@ func TestModuleString(t *testing.T) {
 			})
 
 			ctx.PreDepsMutators(func(ctx RegisterMutatorsContext) {
-				ctx.BottomUp("pre_deps", func(ctx BottomUpMutatorContext) {
-					moduleStrings = append(moduleStrings, ctx.Module().String())
-					ctx.CreateVariations("c", "d")
+				ctx.Transition("pre_deps", &testTransitionMutator{
+					split: func(ctx BaseModuleContext) []string {
+						moduleStrings = append(moduleStrings, ctx.Module().String())
+						return []string{"c", "d"}
+					},
 				})
 			})
 
 			ctx.PostDepsMutators(func(ctx RegisterMutatorsContext) {
-				ctx.BottomUp("post_deps", func(ctx BottomUpMutatorContext) {
-					moduleStrings = append(moduleStrings, ctx.Module().String())
-					ctx.CreateLocalVariations("e", "f")
+				ctx.Transition("post_deps", &testTransitionMutator{
+					split: func(ctx BaseModuleContext) []string {
+						moduleStrings = append(moduleStrings, ctx.Module().String())
+						return []string{"e", "f"}
+					},
+					outgoingTransition: func(ctx OutgoingTransitionContext, sourceVariation string) string {
+						return ""
+					},
 				})
 				ctx.BottomUp("rename_bottom_up", func(ctx BottomUpMutatorContext) {
 					moduleStrings = append(moduleStrings, ctx.Module().String())
@@ -138,15 +181,15 @@ func TestModuleString(t *testing.T) {
 		"foo{pre_arch:b}",
 		"foo{pre_arch:a}",
 
-		// After rename_top_down.
-		"foo_renamed1{pre_arch:a}",
+		// After rename_top_down (reversed because pre_deps TransitionMutator.Split is TopDown).
 		"foo_renamed1{pre_arch:b}",
+		"foo_renamed1{pre_arch:a}",
 
-		// After pre_deps.
-		"foo_renamed1{pre_arch:a,pre_deps:c}",
-		"foo_renamed1{pre_arch:a,pre_deps:d}",
-		"foo_renamed1{pre_arch:b,pre_deps:c}",
+		// After pre_deps (reversed because post_deps TransitionMutator.Split is TopDown).
 		"foo_renamed1{pre_arch:b,pre_deps:d}",
+		"foo_renamed1{pre_arch:b,pre_deps:c}",
+		"foo_renamed1{pre_arch:a,pre_deps:d}",
+		"foo_renamed1{pre_arch:a,pre_deps:c}",
 
 		// After post_deps.
 		"foo_renamed1{pre_arch:a,pre_deps:c,post_deps:e}",
@@ -202,8 +245,10 @@ func TestFinalDepsPhase(t *testing.T) {
 						ctx.AddFarVariationDependencies([]blueprint.Variation{}, dep1Tag, "common_dep_1")
 					}
 				})
-				ctx.BottomUp("variant", func(ctx BottomUpMutatorContext) {
-					ctx.CreateLocalVariations("a", "b")
+				ctx.Transition("variant", &testTransitionMutator{
+					split: func(ctx BaseModuleContext) []string {
+						return []string{"a", "b"}
+					},
 				})
 			})
 
@@ -243,27 +288,20 @@ func TestFinalDepsPhase(t *testing.T) {
 }
 
 func TestNoCreateVariationsInFinalDeps(t *testing.T) {
-	checkErr := func() {
-		if err := recover(); err == nil || !strings.Contains(fmt.Sprintf("%s", err), "not allowed in FinalDepsMutators") {
-			panic("Expected FinalDepsMutators consistency check to fail")
-		}
-	}
-
 	GroupFixturePreparers(
 		FixtureRegisterWithContext(func(ctx RegistrationContext) {
 			ctx.FinalDepsMutators(func(ctx RegisterMutatorsContext) {
-				ctx.BottomUp("vars", func(ctx BottomUpMutatorContext) {
-					defer checkErr()
-					ctx.CreateVariations("a", "b")
-				})
-				ctx.BottomUp("local_vars", func(ctx BottomUpMutatorContext) {
-					defer checkErr()
-					ctx.CreateLocalVariations("a", "b")
+				ctx.Transition("vars", &testTransitionMutator{
+					split: func(ctx BaseModuleContext) []string {
+						return []string{"a", "b"}
+					},
 				})
 			})
 
 			ctx.RegisterModuleType("test", mutatorTestModuleFactory)
 		}),
 		FixtureWithRootAndroidBp(`test {name: "foo"}`),
-	).RunTest(t)
+	).
+		ExtendWithErrorHandler(FixtureExpectsOneErrorPattern("not allowed in FinalDepsMutators")).
+		RunTest(t)
 }

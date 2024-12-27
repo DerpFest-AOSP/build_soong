@@ -48,7 +48,9 @@ var (
 	}
 )
 
-const nsjailPath = "prebuilts/build-tools/linux-x86/bin/nsjail"
+const (
+	nsjailPath = "prebuilts/build-tools/linux-x86/bin/nsjail"
+)
 
 var sandboxConfig struct {
 	once sync.Once
@@ -145,10 +147,81 @@ func (c *Cmd) sandboxSupported() bool {
 	return sandboxConfig.working
 }
 
-func (c *Cmd) wrapSandbox() {
-	wd, _ := os.Getwd()
+// Assumes input path is absolute, clean, and if applicable, an evaluated
+// symlink. If path is not a subdirectory of src dir or relative path
+// cannot be determined, return the input untouched.
+func (c *Cmd) relFromSrcDir(path string) string {
+	if !strings.HasPrefix(path, sandboxConfig.srcDir) {
+		return path
+	}
 
-	sandboxArgs := []string{
+	rel, err := filepath.Rel(sandboxConfig.srcDir, path)
+	if err != nil {
+		return path
+	}
+
+	return rel
+}
+
+func (c *Cmd) dirArg(path string) string {
+	if !c.config.UseABFS() {
+		return path
+	}
+
+	rel := c.relFromSrcDir(path)
+
+	return path + ":" + filepath.Join(abfsSrcDir, rel)
+}
+
+func (c *Cmd) srcDirArg() string {
+	return c.dirArg(sandboxConfig.srcDir)
+}
+
+func (c *Cmd) outDirArg() string {
+	return c.dirArg(sandboxConfig.outDir)
+}
+
+func (c *Cmd) distDirArg() string {
+	return c.dirArg(sandboxConfig.distDir)
+}
+
+// When configured to use ABFS, we need to allow the creation of the /src
+// directory. Therefore, we cannot mount the root "/" directory as read-only.
+// Instead, we individually mount the children of "/" as RO.
+func (c *Cmd) readMountArgs() []string {
+	if !c.config.UseABFS() {
+		// For now, just map everything. Make most things readonly.
+		return []string{"-R", "/"}
+	}
+
+	entries, err := os.ReadDir("/")
+	if err != nil {
+		// If we can't read "/", just use the default non-ABFS behavior.
+		return []string{"-R", "/"}
+	}
+
+	args := make([]string, 0, 2*len(entries))
+	for _, ent := range entries {
+		args = append(args, "-R", "/"+ent.Name())
+	}
+
+	return args
+}
+
+func (c *Cmd) workDir() string {
+	if !c.config.UseABFS() {
+		wd, _ := os.Getwd()
+		return wd
+	}
+
+	return abfsSrcDir
+}
+
+func (c *Cmd) wrapSandbox() {
+	wd := c.workDir()
+
+	var sandboxArgs []string
+	sandboxArgs = append(sandboxArgs,
 		// The executable to run
 		"-x", c.Path,
 
@@ -180,18 +253,21 @@ func (c *Cmd) wrapSandbox() {
 		"--rlimit_cpu", "soft",
 		"--rlimit_fsize", "soft",
 		"--rlimit_nofile", "soft",
+	)
 
-		// For now, just map everything. Make most things readonly.
-		"-R", "/",
+	sandboxArgs = append(sandboxArgs,
+		c.readMountArgs()...,
+	)
 
+	sandboxArgs = append(sandboxArgs,
 		// Mount a writable tmp dir
 		"-B", "/tmp",
 
 		// Mount source
-		c.config.sandboxConfig.SrcDirMountFlag(), sandboxConfig.srcDir,
+		c.config.sandboxConfig.SrcDirMountFlag(), c.srcDirArg(),
 
 		//Mount out dir as read-write
-		"-B", sandboxConfig.outDir,
+		"-B", c.outDirArg(),
 
 		// Disable newcgroup for now, since it may require newer kernels
 		// TODO: try out cgroups
@@ -199,6 +275,9 @@ func (c *Cmd) wrapSandbox() {
 
 		// Only log important warnings / errors
 		"-q",
+	)
+	if c.config.UseABFS() {
+		sandboxArgs = append(sandboxArgs, "-B", "{ABFS_DIR}")
 	}
 
 	// Mount srcDir RW allowlists as Read-Write
@@ -215,7 +294,7 @@ func (c *Cmd) wrapSandbox() {
 
 	if _, err := os.Stat(sandboxConfig.distDir); !os.IsNotExist(err) {
 		//Mount dist dir as read-write if it already exists
-		sandboxArgs = append(sandboxArgs, "-B", sandboxConfig.distDir)
+		sandboxArgs = append(sandboxArgs, "-B", c.distDirArg())
 	}
 
 	if c.Sandbox.AllowBuildBrokenUsesNetwork && c.config.BuildBrokenUsesNetwork() {

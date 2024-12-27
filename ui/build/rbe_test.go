@@ -19,6 +19,7 @@ import (
 	"io/ioutil"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -26,6 +27,10 @@ import (
 )
 
 func TestDumpRBEMetrics(t *testing.T) {
+	// RBE is only supported on linux.
+	if runtime.GOOS != "linux" {
+		t.Skip("RBE is only supported on linux")
+	}
 	ctx := testContext()
 	tests := []struct {
 		description string
@@ -82,6 +87,10 @@ func TestDumpRBEMetrics(t *testing.T) {
 }
 
 func TestDumpRBEMetricsErrors(t *testing.T) {
+	// RBE is only supported on linux.
+	if runtime.GOOS != "linux" {
+		t.Skip("RBE is only supported on linux")
+	}
 	ctx := testContext()
 	tests := []struct {
 		description      string

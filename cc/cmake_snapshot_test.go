@@ -38,7 +38,9 @@ func TestEmptyCmakeSnapshot(t *testing.T) {
 	result := PrepareForIntegrationTestWithCc.RunTestWithBp(t, `
 		cc_cmake_snapshot {
 			name: "foo",
-			modules: [],
+			modules_host: [],
+			modules_system: [],
+			modules_vendor: [],
 			prebuilts: ["libc++"],
 			include_sources: true,
 		}`)
@@ -65,7 +67,7 @@ func TestCmakeSnapshotWithBinary(t *testing.T) {
 	result := android.GroupFixturePreparers(PrepareForIntegrationTestWithCc, xtra).RunTestWithBp(t, `
 		cc_cmake_snapshot {
 			name: "foo",
-			modules: [
+			modules_system: [
 				"foo_binary",
 			],
 			include_sources: true,
@@ -99,7 +101,7 @@ func TestCmakeSnapshotAsTestData(t *testing.T) {
 
 		cc_cmake_snapshot {
 			name: "foo",
-			modules: [],
+			modules_system: [],
 			prebuilts: ["libc++"],
 			include_sources: true,
 		}`)

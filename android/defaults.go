@@ -28,7 +28,7 @@ type defaultsDependencyTag struct {
 var DefaultsDepTag defaultsDependencyTag
 
 type defaultsProperties struct {
-	Defaults proptools.Configurable[[]string]
+	Defaults []string
 }
 
 type DefaultableModuleBase struct {
@@ -69,7 +69,7 @@ type Defaultable interface {
 
 	// Apply defaults from the supplied Defaults to the property structures supplied to
 	// setProperties(...).
-	applyDefaults(TopDownMutatorContext, []Defaults)
+	applyDefaults(BottomUpMutatorContext, []Defaults)
 
 	// Set the hook to be called after any defaults have been applied.
 	//
@@ -101,6 +101,7 @@ func InitDefaultableModule(module DefaultableModule) {
 // A restricted subset of context methods, similar to LoadHookContext.
 type DefaultableHookContext interface {
 	EarlyModuleContext
+	OtherModuleProviderContext
 
 	CreateModule(ModuleFactory, ...interface{}) Module
 	AddMissingDependencies(missingDeps []string)
@@ -209,7 +210,7 @@ func InitDefaultsModule(module DefaultsModule) {
 
 var _ Defaults = (*DefaultsModuleBase)(nil)
 
-func (defaultable *DefaultableModuleBase) applyDefaults(ctx TopDownMutatorContext,
+func (defaultable *DefaultableModuleBase) applyDefaults(ctx BottomUpMutatorContext,
 	defaultsList []Defaults) {
 
 	for _, defaults := range defaultsList {
@@ -226,7 +227,7 @@ func (defaultable *DefaultableModuleBase) applyDefaults(ctx TopDownMutatorContex
 // Product variable properties need special handling, the type of the filtered product variable
 // property struct may not be identical between the defaults module and the defaultable module.
 // Use PrependMatchingProperties to apply whichever properties match.
-func (defaultable *DefaultableModuleBase) applyDefaultVariableProperties(ctx TopDownMutatorContext,
+func (defaultable *DefaultableModuleBase) applyDefaultVariableProperties(ctx BottomUpMutatorContext,
 	defaults Defaults, defaultableProp interface{}) {
 	if defaultableProp == nil {
 		return
@@ -254,7 +255,7 @@ func (defaultable *DefaultableModuleBase) applyDefaultVariableProperties(ctx Top
 	}
 }
 
-func (defaultable *DefaultableModuleBase) applyDefaultProperties(ctx TopDownMutatorContext,
+func (defaultable *DefaultableModuleBase) applyDefaultProperties(ctx BottomUpMutatorContext,
 	defaults Defaults, defaultableProp interface{}) {
 
 	for _, def := range defaults.properties() {
@@ -273,18 +274,22 @@ func (defaultable *DefaultableModuleBase) applyDefaultProperties(ctx TopDownMuta
 
 func RegisterDefaultsPreArchMutators(ctx RegisterMutatorsContext) {
 	ctx.BottomUp("defaults_deps", defaultsDepsMutator).Parallel()
-	ctx.TopDown("defaults", defaultsMutator).Parallel()
+	ctx.BottomUp("defaults", defaultsMutator).Parallel()
 }
 
 func defaultsDepsMutator(ctx BottomUpMutatorContext) {
 	if defaultable, ok := ctx.Module().(Defaultable); ok {
-		ctx.AddDependency(ctx.Module(), DefaultsDepTag, defaultable.defaults().Defaults.GetOrDefault(ctx, nil)...)
+		ctx.AddDependency(ctx.Module(), DefaultsDepTag, defaultable.defaults().Defaults...)
 	}
 }
 
-func defaultsMutator(ctx TopDownMutatorContext) {
+func defaultsMutator(ctx BottomUpMutatorContext) {
 	if defaultable, ok := ctx.Module().(Defaultable); ok {
-		defaults := defaultable.defaults().Defaults.GetOrDefault(ctx, nil)
+		if _, isDefaultsModule := ctx.Module().(Defaults); isDefaultsModule {
+			// Don't squash transitive defaults into defaults modules
+			return
+		}
+		defaults := defaultable.defaults().Defaults
 		if len(defaults) > 0 {
 			var defaultsList []Defaults
 			seen := make(map[Defaults]bool)
@@ -295,7 +300,7 @@ func defaultsMutator(ctx TopDownMutatorContext) {
 						if !seen[defaults] {
 							seen[defaults] = true
 							defaultsList = append(defaultsList, defaults)
-							return len(defaults.defaults().Defaults.GetOrDefault(ctx, nil)) > 0
+							return len(defaults.defaults().Defaults) > 0
 						}
 					} else {
 						ctx.PropertyErrorf("defaults", "module %s is not an defaults module",

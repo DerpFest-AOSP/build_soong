@@ -65,6 +65,11 @@ func TestCompilationOutputFiles(t *testing.T) {
 			crate_name: "rust_ffi",
 			srcs: ["lib.rs"],
 		}
+		rust_ffi_static {
+			name: "librust_ffi_static",
+			crate_name: "rust_ffi",
+			srcs: ["lib.rs"],
+		}
 	`)
 	testcases := []struct {
 		testName      string
@@ -118,14 +123,14 @@ func TestCompilationOutputFiles(t *testing.T) {
 			},
 		},
 		{
-			testName:   "rust_ffi static",
-			moduleName: "librust_ffi",
-			variant:    "android_arm64_armv8-a_static",
+			testName:   "rust_ffi_static rlib",
+			moduleName: "librust_ffi_static",
+			variant:    "android_arm64_armv8-a_rlib_rlib-std",
 			expectedFiles: []string{
-				"out/soong/.intermediates/librust_ffi/android_arm64_armv8-a_static/librust_ffi.a",
-				"out/soong/.intermediates/librust_ffi/android_arm64_armv8-a_static/librust_ffi.a.clippy",
-				"out/soong/.intermediates/librust_ffi/android_arm64_armv8-a_static/meta_lic",
-				"out/soong/.intermediates/librust_ffi/android_arm64_armv8-a_static/rustdoc.timestamp",
+				"out/soong/.intermediates/librust_ffi_static/android_arm64_armv8-a_rlib_rlib-std/librust_ffi_static.rlib",
+				"out/soong/.intermediates/librust_ffi_static/android_arm64_armv8-a_rlib_rlib-std/librust_ffi_static.rlib.clippy",
+				"out/soong/.intermediates/librust_ffi_static/android_arm64_armv8-a_rlib_rlib-std/meta_lic",
+				"out/soong/.intermediates/librust_ffi_static/android_arm64_armv8-a_rlib_rlib-std/rustdoc.timestamp",
 			},
 		},
 		{
@@ -148,6 +153,7 @@ func TestCompilationOutputFiles(t *testing.T) {
 				"out/soong/.intermediates/librust_ffi/android_arm64_armv8-a_shared/unstripped/librust_ffi.so",
 				"out/soong/.intermediates/librust_ffi/android_arm64_armv8-a_shared/unstripped/librust_ffi.so.toc",
 				"out/soong/.intermediates/librust_ffi/android_arm64_armv8-a_shared/meta_lic",
+				"out/soong/.intermediates/librust_ffi/android_arm64_armv8-a_shared/rustdoc.timestamp",
 				"out/soong/target/product/test_device/system/lib64/librust_ffi.so",
 			},
 		},

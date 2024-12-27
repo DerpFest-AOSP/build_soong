@@ -31,8 +31,9 @@ import (
 )
 
 var (
-	disableWarnings    bool
-	containerRegexp, _ = regexp.Compile("^[a-z][a-z0-9]*([._][a-z][a-z0-9]*)*$")
+	disableWarnings        bool
+	containerRegexp, _     = regexp.Compile("^[a-z][a-z0-9]*([._][a-z][a-z0-9]*)*$")
+	releaseConfigRegexp, _ = regexp.Compile("^[a-z][a-z0-9]*([._][a-z0-9]*)*$")
 )
 
 type StringList []string
@@ -177,6 +178,10 @@ func SortedMapKeys(inputMap map[string]bool) []string {
 
 func validContainer(container string) bool {
 	return containerRegexp.MatchString(container)
+}
+
+func validReleaseConfigName(name string) bool {
+	return releaseConfigRegexp.MatchString(name)
 }
 
 // Returns the default value for release config artifacts.

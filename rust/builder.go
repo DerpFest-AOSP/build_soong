@@ -520,6 +520,9 @@ func Rustdoc(ctx ModuleContext, main android.Path, deps PathDeps,
 	// this flag.
 	rustdocFlags = append(rustdocFlags, "-Z", "unstable-options", "--enable-index-page")
 
+	// Ensure we use any special-case code-paths for Soong.
+	rustdocFlags = append(rustdocFlags, "--cfg", "soong")
+
 	targetTriple := ctx.toolchain().RustTriple()
 
 	// Collect rustc flags

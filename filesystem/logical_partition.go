@@ -146,9 +146,16 @@ func (l *logicalPartition) GenerateAndroidBuildActions(ctx android.ModuleContext
 				partitionNames[pName] = true
 			}
 			// Get size of the partition by reading the -size.txt file
-			pSize := fmt.Sprintf("$(cat %s)", sparseImageSizes[pName])
+			var pSize string
+			if size, hasSize := sparseImageSizes[pName]; hasSize {
+				pSize = fmt.Sprintf("$(cat %s)", size)
+			} else {
+				pSize = "0"
+			}
 			cmd.FlagWithArg("--partition=", fmt.Sprintf("%s:readonly:%s:%s", pName, pSize, gName))
-			cmd.FlagWithInput("--image="+pName+"=", sparseImages[pName])
+			if image, hasImage := sparseImages[pName]; hasImage {
+				cmd.FlagWithInput("--image="+pName+"=", image)
+			}
 		}
 	}
 
@@ -192,6 +199,9 @@ func (l *logicalPartition) GenerateAndroidBuildActions(ctx android.ModuleContext
 // Add a rule that converts the filesystem for the given partition to the given rule builder. The
 // path to the sparse file and the text file having the size of the partition are returned.
 func sparseFilesystem(ctx android.ModuleContext, p partitionProperties, builder *android.RuleBuilder) (sparseImg android.OutputPath, sizeTxt android.OutputPath) {
+	if p.Filesystem == nil {
+		return
+	}
 	img := android.PathForModuleSrc(ctx, proptools.String(p.Filesystem))
 	name := proptools.String(p.Name)
 	sparseImg = android.PathForModuleOut(ctx, name+".img").OutputPath

@@ -25,10 +25,7 @@ import subprocess
 import sys
 from xml.dom import minidom
 
-from manifest import android_ns
-from manifest import get_children_with_tag
-from manifest import parse_manifest
-from manifest import write_xml
+from manifest import *
 
 
 class ManifestMismatchError(Exception):
@@ -122,7 +119,7 @@ def enforce_uses_libraries(manifest, required, optional, missing_optional, relax
     # handles module names specified in Android.bp properties. However not all
     # <uses-library> entries in the manifest correspond to real modules: some of
     # the optional libraries may be missing at build time. Therefor this script
-    # accepts raw module names as spelled in Android.bp/Amdroid.mk and trims the
+    # accepts raw module names as spelled in Android.bp/Android.mk and trims the
     # optional namespace part manually.
     required = trim_namespace_parts(required)
     optional = trim_namespace_parts(optional)
@@ -205,15 +202,9 @@ def extract_uses_libs_xml(xml):
     """Extract <uses-library> tags from the manifest."""
 
     manifest = parse_manifest(xml)
-    elems = get_children_with_tag(manifest, 'application')
-    if len(elems) > 1:
-        raise RuntimeError('found multiple <application> tags')
-    if not elems:
-        return [], [], []
-
-    application = elems[0]
-
-    libs = get_children_with_tag(application, 'uses-library')
+    libs = [child
+            for application in get_or_create_applications(xml, manifest)
+            for child in get_children_with_tag(application, 'uses-library')]
 
     required = [uses_library_name(x) for x in libs if uses_library_required(x)]
     optional = [
@@ -266,7 +257,7 @@ def extract_target_sdk_version(manifest, is_apk=False):
     manifest: manifest (either parsed XML or aapt dump of APK)
     is_apk:   if the manifest comes from an APK or an XML file
     """
-    if is_apk: #pylint: disable=no-else-return
+    if is_apk:  #pylint: disable=no-else-return
         return extract_target_sdk_version_apk(manifest)
     else:
         return extract_target_sdk_version_xml(manifest)
@@ -376,7 +367,7 @@ def main():
 
             # Create a status file that is empty on success, or contains an
             # error message on failure. When exceptions are suppressed,
-            # dexpreopt command command will check file size to determine if
+            # dexpreopt command will check file size to determine if
             # the check has failed.
             if args.enforce_uses_libraries_status:
                 with open(args.enforce_uses_libraries_status, 'w') as f:
@@ -386,7 +377,7 @@ def main():
         if args.extract_target_sdk_version:
             try:
                 print(extract_target_sdk_version(manifest, is_apk))
-            except: #pylint: disable=bare-except
+            except:  #pylint: disable=bare-except
                 # Failed; don't crash, return "any" SDK version. This will
                 # result in dexpreopt not adding any compatibility libraries.
                 print(10000)

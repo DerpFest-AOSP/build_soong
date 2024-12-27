@@ -20,7 +20,11 @@ option go_package = "android/soong/release_config/release_config_proto";
 // This protobuf file defines common messages used in the rest of the build flag
 // protos.
 
-enum workflow {
+enum Workflow {
+  option allow_alias = true;
+  WORKFLOW_UNSPECIFIED = 0;
+
+  // Deprecated.  Use WORKFLOW_UNSPECIFIED instead.
   Workflow_Unspecified = 0;
 
   // Boolean value flags that progress from false to true.

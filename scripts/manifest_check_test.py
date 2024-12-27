@@ -44,8 +44,8 @@ def required_apk(value):
 class EnforceUsesLibrariesTest(unittest.TestCase):
     """Unit tests for add_extract_native_libs function."""
 
-    def run_test(self, xml, apk, uses_libraries=[], optional_uses_libraries=[],
-                 missing_optional_uses_libraries=[]): #pylint: disable=dangerous-default-value
+    def run_test(self, xml, apk, uses_libraries=(), optional_uses_libraries=(),
+                 missing_optional_uses_libraries=()):  #pylint: disable=dangerous-default-value
         doc = minidom.parseString(xml)
         try:
             relax = False
@@ -114,14 +114,14 @@ class EnforceUsesLibrariesTest(unittest.TestCase):
         self.assertFalse(matches)
 
     def test_missing_uses_library(self):
-        xml = self.xml_tmpl % ('')
-        apk = self.apk_tmpl % ('')
+        xml = self.xml_tmpl % ''
+        apk = self.apk_tmpl % ''
         matches = self.run_test(xml, apk, uses_libraries=['foo'])
         self.assertFalse(matches)
 
     def test_missing_optional_uses_library(self):
-        xml = self.xml_tmpl % ('')
-        apk = self.apk_tmpl % ('')
+        xml = self.xml_tmpl % ''
+        apk = self.apk_tmpl % ''
         matches = self.run_test(xml, apk, optional_uses_libraries=['foo'])
         self.assertFalse(matches)
 
@@ -234,6 +234,32 @@ class EnforceUsesLibrariesTest(unittest.TestCase):
             optional_uses_libraries=['//x/y/z:bar'])
         self.assertTrue(matches)
 
+    def test_multiple_applications(self):
+        xml = """<?xml version="1.0" encoding="utf-8"?>
+            <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+                <application android:featureFlag="foo">
+                    <uses-library android:name="foo" />
+                    <uses-library android:name="bar" android:required="false" />
+                </application>
+                <application android:featureFlag="!foo">
+                    <uses-library android:name="foo" />
+                    <uses-library android:name="qux" android:required="false" />
+                </application>
+            </manifest>
+        """
+        apk = self.apk_tmpl % ('\n'.join([
+            uses_library_apk('foo'),
+            uses_library_apk('bar', required_apk(False)),
+            uses_library_apk('foo'),
+            uses_library_apk('qux', required_apk(False))
+        ]))
+        matches = self.run_test(
+            xml,
+            apk,
+            uses_libraries=['//x/y/z:foo'],
+            optional_uses_libraries=['//x/y/z:bar', '//x/y/z:qux'])
+        self.assertTrue(matches)
+
 
 class ExtractTargetSdkVersionTest(unittest.TestCase):
 
@@ -256,12 +282,12 @@ class ExtractTargetSdkVersionTest(unittest.TestCase):
         "targetSdkVersion:'%s'\n"
         "uses-permission: name='android.permission.ACCESS_NETWORK_STATE'\n")
 
-    def test_targert_sdk_version_28(self):
+    def test_target_sdk_version_28(self):
         xml = self.xml_tmpl % '28'
         apk = self.apk_tmpl % '28'
         self.run_test(xml, apk, '28')
 
-    def test_targert_sdk_version_29(self):
+    def test_target_sdk_version_29(self):
         xml = self.xml_tmpl % '29'
         apk = self.apk_tmpl % '29'
         self.run_test(xml, apk, '29')

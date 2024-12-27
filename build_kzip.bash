@@ -40,6 +40,7 @@ kzip_targets=(
   merge_zips
   xref_cxx
   xref_java
+  xref_kotlin
   # TODO: b/286390153 - reenable rust
   # xref_rust
 )

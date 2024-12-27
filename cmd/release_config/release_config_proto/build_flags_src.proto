@@ -44,7 +44,7 @@ import "build_flags_common.proto";
 //      com.android.mypackage is a valid name while com.android.myPackage,
 //      com.android.1mypackage are invalid
 
-message value {
+message Value {
   oneof val {
     bool unspecified_value = 200;
     string string_value = 201;
@@ -55,7 +55,7 @@ message value {
 }
 
 // The proto used in the source tree.
-message flag_declaration {
+message FlagDeclaration {
   // The name of the flag.
   // See # name for format detail
   optional string name = 1;
@@ -71,10 +71,10 @@ message flag_declaration {
   reserved 4;
 
   // Value for the flag
-  optional value value = 201;
+  optional Value value = 201;
 
   // Workflow for this flag.
-  optional workflow workflow = 205;
+  optional Workflow workflow = 205;
 
   // The container for this flag.  This overrides any default container given
   // in the release_config_map message.
@@ -85,13 +85,13 @@ message flag_declaration {
   reserved 207;
 }
 
-message flag_value {
+message FlagValue {
   // Name of the flag.
   // See # name for format detail
   optional string name = 2;
 
   // Value for the flag
-  optional value value = 201;
+  optional Value value = 201;
 
   // If true, the flag is completely removed from the release config as if
   // never declared.
@@ -99,7 +99,7 @@ message flag_value {
 }
 
 // This replaces $(call declare-release-config).
-message release_config {
+message ReleaseConfig {
   // The name of the release config.
   // See # name for format detail
   optional string name = 1;
@@ -120,7 +120,7 @@ message release_config {
 }
 
 // Any aliases.  These are used for continuous integration builder config.
-message release_alias {
+message ReleaseAlias {
   // The name of the alias.
   optional string name = 1;
 
@@ -129,9 +129,9 @@ message release_alias {
 }
 
 // This provides the data from release_config_map.mk
-message release_config_map {
+message ReleaseConfigMap {
   // Any aliases.
-  repeated release_alias aliases = 1;
+  repeated ReleaseAlias aliases = 1;
 
   // Description of this map and its intended use.
   optional string description = 2;

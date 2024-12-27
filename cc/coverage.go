@@ -23,26 +23,26 @@ import (
 )
 
 var (
- 	clangCoverageHostLdFlags = []string{
- 		"-Wl,--no-as-needed",
- 		"-Wl,--wrap,open",
- 	}
- 	clangContinuousCoverageFlags = []string{
- 		"-mllvm",
- 		"-runtime-counter-relocation",
- 	}
- 	clangCoverageCFlags = []string{
- 		"-Wno-frame-larger-than=",
- 	}
- 	clangCoverageCommonFlags = []string{
- 		"-fcoverage-mapping",
- 		"-Wno-pass-failed",
- 		"-D__ANDROID_CLANG_COVERAGE__",
- 	}
- 	clangCoverageHWASanFlags = []string{
- 		"-mllvm",
- 		"-hwasan-globals=0",
- 	}
+	clangCoverageHostLdFlags = []string{
+		"-Wl,--no-as-needed",
+		"-Wl,--wrap,open",
+	}
+	clangContinuousCoverageFlags = []string{
+		"-mllvm",
+		"-runtime-counter-relocation",
+	}
+	clangCoverageCFlags = []string{
+		"-Wno-frame-larger-than=",
+	}
+	clangCoverageCommonFlags = []string{
+		"-fcoverage-mapping",
+		"-Wno-pass-failed",
+		"-D__ANDROID_CLANG_COVERAGE__",
+	}
+	clangCoverageHWASanFlags = []string{
+		"-mllvm",
+		"-hwasan-globals=0",
+	}
 )
 
 const profileInstrFlag = "-fprofile-instr-generate=/data/misc/trace/clang-%p-%m.profraw"
@@ -247,9 +247,19 @@ func SetCoverageProperties(ctx android.BaseModuleContext, properties CoveragePro
 	return properties
 }
 
+type IsNativeCoverageNeededContext interface {
+	Config() android.Config
+	DeviceConfig() android.DeviceConfig
+	Device() bool
+}
+
+var _ IsNativeCoverageNeededContext = android.IncomingTransitionContext(nil)
+var _ IsNativeCoverageNeededContext = android.BaseModuleContext(nil)
+var _ IsNativeCoverageNeededContext = android.BottomUpMutatorContext(nil)
+
 type UseCoverage interface {
 	android.Module
-	IsNativeCoverageNeeded(ctx android.IncomingTransitionContext) bool
+	IsNativeCoverageNeeded(ctx IsNativeCoverageNeededContext) bool
 }
 
 // Coverage is an interface for non-CC modules to implement to be mutated for coverage

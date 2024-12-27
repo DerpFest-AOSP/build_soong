@@ -15,7 +15,6 @@ bootstrap_go_package {
         "soong-cc",
         "soong-filesystem",
         "soong-java",
-        "soong-multitree",
         "soong-provenance",
         "soong-python",
         "soong-rust",
@@ -37,9 +36,12 @@ bootstrap_go_package {
         "apex_test.go",
         "bootclasspath_fragment_test.go",
         "classpath_element_test.go",
+        "container_test.go",
         "dexpreopt_bootjars_test.go",
         "platform_bootclasspath_test.go",
         "systemserver_classpath_fragment_test.go",
     ],
     pluginFor: ["soong_build"],
+    // Used by plugins
+    visibility: ["//visibility:public"],
 }

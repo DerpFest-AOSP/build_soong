@@ -18,10 +18,21 @@ import (
 	rc_proto "android/soong/cmd/release_config/release_config_proto"
 )
 
+var (
+	// Allowlist: these flags may have duplicate (identical) declarations
+	// without generating an error.  This will be removed once all such
+	// declarations have been fixed.
+	DuplicateDeclarationAllowlist = map[string]bool{}
+)
+
 func FlagDeclarationFactory(protoPath string) (fd *rc_proto.FlagDeclaration) {
 	fd = &rc_proto.FlagDeclaration{}
 	if protoPath != "" {
 		LoadMessage(protoPath, fd)
+	}
+	// If the input didn't specify a value, create one (== UnspecifiedValue).
+	if fd.Value == nil {
+		fd.Value = &rc_proto.Value{Val: &rc_proto.Value_UnspecifiedValue{false}}
 	}
 	return fd
 }

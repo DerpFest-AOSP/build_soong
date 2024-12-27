@@ -68,4 +68,36 @@ func TestProto(t *testing.T) {
 		}
 	})
 
+	t.Run("grpc-cpp-plugin", func(t *testing.T) {
+		ctx := testCc(t, `
+                cc_binary_host {
+                        name: "protoc-gen-grpc-cpp-plugin",
+                        stl: "none",
+                }
+
+                cc_library_shared {
+                        name: "libgrpc",
+                        srcs: ["a.proto"],
+                        proto: {
+                                plugin: "grpc-cpp-plugin",
+                        },
+                }`)
+
+		buildOS := ctx.Config().BuildOS.String()
+
+		proto := ctx.ModuleForTests("libgrpc", "android_arm_armv7-a-neon_shared").Output("proto/a.grpc.pb.cc")
+		grpcCppPlugin := ctx.ModuleForTests("protoc-gen-grpc-cpp-plugin", buildOS+"_x86_64")
+
+		cmd := proto.RuleParams.Command
+		if w := "--grpc-cpp-plugin_out="; !strings.Contains(cmd, w) {
+			t.Errorf("expected %q in %q", w, cmd)
+		}
+
+		grpcCppPluginPath := grpcCppPlugin.Module().(android.HostToolProvider).HostToolPath().RelativeToTop().String()
+
+		if w := "--plugin=protoc-gen-grpc-cpp-plugin=" + grpcCppPluginPath; !strings.Contains(cmd, w) {
+			t.Errorf("expected %q in %q", w, cmd)
+		}
+	})
+
 }

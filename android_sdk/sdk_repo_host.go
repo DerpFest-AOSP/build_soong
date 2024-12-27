@@ -46,6 +46,9 @@ type sdkRepoHost struct {
 
 	outputBaseName string
 	outputFile     android.OptionalPath
+
+	// TODO(b/357908583): Temp field, remove this once we support Android Mk providers
+	installFile android.InstallPath
 }
 
 type remapProperties struct {
@@ -234,14 +237,18 @@ func (s *sdkRepoHost) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 
 	s.outputBaseName = name
 	s.outputFile = android.OptionalPathForPath(outputZipFile)
-	ctx.InstallFile(android.PathForModuleInstall(ctx, "sdk-repo"), name+".zip", outputZipFile)
+	installPath := android.PathForModuleInstall(ctx, "sdk-repo")
+	name = name + ".zip"
+	ctx.InstallFile(installPath, name, outputZipFile)
+	// TODO(b/357908583): Temp field, remove this once we support Android Mk providers
+	s.installFile = installPath.Join(ctx, name)
 }
 
 func (s *sdkRepoHost) AndroidMk() android.AndroidMkData {
 	return android.AndroidMkData{
 		Custom: func(w io.Writer, name, prefix, moduleDir string, data android.AndroidMkData) {
 			fmt.Fprintln(w, ".PHONY:", name, "sdk_repo", "sdk-repo-"+name)
-			fmt.Fprintln(w, "sdk_repo", "sdk-repo-"+name+":", strings.Join(s.FilesToInstall().Strings(), " "))
+			fmt.Fprintln(w, "sdk_repo", "sdk-repo-"+name+":", s.installFile.String())
 
 			fmt.Fprintf(w, "$(call dist-for-goals,sdk_repo sdk-repo-%s,%s:%s-FILE_NAME_TAG_PLACEHOLDER.zip)\n\n", s.BaseModuleName(), s.outputFile.String(), s.outputBaseName)
 		},

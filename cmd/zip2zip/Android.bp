@@ -27,4 +27,6 @@ blueprint_go_binary {
         "zip2zip.go",
     ],
     testSrcs: ["zip2zip_test.go"],
+    // Used by genrules
+    visibility: ["//visibility:public"],
 }

@@ -39,9 +39,6 @@ type BaseLinkerProperties struct {
 	// the dependency's .a file will be linked into this module using -Wl,--whole-archive.
 	Whole_static_libs proptools.Configurable[[]string] `android:"arch_variant,variant_prepend"`
 
-	// list of Rust libs that should be statically linked into this module.
-	Static_rlibs []string `android:"arch_variant"`
-
 	// list of modules that should be statically linked into this module.
 	Static_libs proptools.Configurable[[]string] `android:"arch_variant,variant_prepend"`
 
@@ -127,10 +124,6 @@ type BaseLinkerProperties struct {
 			// variant of the C/C++ module.
 			Header_libs []string
 
-			// list of Rust libs that should be statically linked to build vendor or product
-			// variant.
-			Static_rlibs []string
-
 			// list of shared libs that should not be used to build vendor or
 			// product variant of the C/C++ module.
 			Exclude_shared_libs []string
@@ -159,10 +152,6 @@ type BaseLinkerProperties struct {
 			// variant of the C/C++ module.
 			Static_libs []string
 
-			// list of Rust libs that should be statically linked to build the recovery
-			// variant.
-			Static_rlibs []string
-
 			// list of shared libs that should not be used to build
 			// the recovery variant of the C/C++ module.
 			Exclude_shared_libs []string
@@ -184,10 +173,6 @@ type BaseLinkerProperties struct {
 			// variant of the C/C++ module.
 			Static_libs []string
 
-			// list of Rust libs that should be statically linked to build the ramdisk
-			// variant.
-			Static_rlibs []string
-
 			// list of shared libs that should not be used to build
 			// the ramdisk variant of the C/C++ module.
 			Exclude_shared_libs []string
@@ -205,10 +190,6 @@ type BaseLinkerProperties struct {
 			// the vendor ramdisk variant of the C/C++ module.
 			Exclude_shared_libs []string
 
-			// list of Rust libs that should be statically linked to build the vendor ramdisk
-			// variant.
-			Static_rlibs []string
-
 			// list of static libs that should not be used to build
 			// the vendor ramdisk variant of the C/C++ module.
 			Exclude_static_libs []string
@@ -223,10 +204,6 @@ type BaseLinkerProperties struct {
 			// in most cases the same libraries are available for the SDK and platform
 			// variants.
 			Shared_libs []string
-
-			// list of Rust libs that should be statically linked to build the vendor ramdisk
-			// variant.
-			Static_rlibs []string
 
 			// list of ehader libs that only should be used to build platform variant of
 			// the C/C++ module.
@@ -322,7 +299,6 @@ func (linker *baseLinker) linkerDeps(ctx DepsContext, deps Deps) Deps {
 	deps.WholeStaticLibs = append(deps.WholeStaticLibs, linker.Properties.Whole_static_libs.GetOrDefault(ctx, nil)...)
 	deps.HeaderLibs = append(deps.HeaderLibs, linker.Properties.Header_libs.GetOrDefault(ctx, nil)...)
 	deps.StaticLibs = append(deps.StaticLibs, linker.Properties.Static_libs.GetOrDefault(ctx, nil)...)
-	deps.Rlibs = append(deps.Rlibs, linker.Properties.Static_rlibs...)
 	deps.SharedLibs = append(deps.SharedLibs, linker.Properties.Shared_libs.GetOrDefault(ctx, nil)...)
 	deps.RuntimeLibs = append(deps.RuntimeLibs, linker.Properties.Runtime_libs...)
 
@@ -366,7 +342,6 @@ func (linker *baseLinker) linkerDeps(ctx DepsContext, deps Deps) Deps {
 		deps.ReexportStaticLibHeaders = removeListFromList(deps.ReexportStaticLibHeaders, linker.Properties.Target.Vendor.Exclude_static_libs)
 		deps.WholeStaticLibs = removeListFromList(deps.WholeStaticLibs, linker.Properties.Target.Vendor.Exclude_static_libs)
 		deps.RuntimeLibs = removeListFromList(deps.RuntimeLibs, linker.Properties.Target.Vendor.Exclude_runtime_libs)
-		deps.Rlibs = append(deps.Rlibs, linker.Properties.Target.Vendor.Static_rlibs...)
 	}
 
 	if ctx.inProduct() {
@@ -380,7 +355,6 @@ func (linker *baseLinker) linkerDeps(ctx DepsContext, deps Deps) Deps {
 		deps.ReexportStaticLibHeaders = removeListFromList(deps.ReexportStaticLibHeaders, linker.Properties.Target.Product.Exclude_static_libs)
 		deps.WholeStaticLibs = removeListFromList(deps.WholeStaticLibs, linker.Properties.Target.Product.Exclude_static_libs)
 		deps.RuntimeLibs = removeListFromList(deps.RuntimeLibs, linker.Properties.Target.Product.Exclude_runtime_libs)
-		deps.Rlibs = append(deps.Rlibs, linker.Properties.Target.Product.Static_rlibs...)
 	}
 
 	if ctx.inRecovery() {
@@ -394,7 +368,6 @@ func (linker *baseLinker) linkerDeps(ctx DepsContext, deps Deps) Deps {
 		deps.ReexportStaticLibHeaders = removeListFromList(deps.ReexportStaticLibHeaders, linker.Properties.Target.Recovery.Exclude_static_libs)
 		deps.WholeStaticLibs = removeListFromList(deps.WholeStaticLibs, linker.Properties.Target.Recovery.Exclude_static_libs)
 		deps.RuntimeLibs = removeListFromList(deps.RuntimeLibs, linker.Properties.Target.Recovery.Exclude_runtime_libs)
-		deps.Rlibs = append(deps.Rlibs, linker.Properties.Target.Recovery.Static_rlibs...)
 	}
 
 	if ctx.inRamdisk() {
@@ -405,7 +378,6 @@ func (linker *baseLinker) linkerDeps(ctx DepsContext, deps Deps) Deps {
 		deps.ReexportStaticLibHeaders = removeListFromList(deps.ReexportStaticLibHeaders, linker.Properties.Target.Ramdisk.Exclude_static_libs)
 		deps.WholeStaticLibs = removeListFromList(deps.WholeStaticLibs, linker.Properties.Target.Ramdisk.Exclude_static_libs)
 		deps.RuntimeLibs = removeListFromList(deps.RuntimeLibs, linker.Properties.Target.Ramdisk.Exclude_runtime_libs)
-		deps.Rlibs = append(deps.Rlibs, linker.Properties.Target.Ramdisk.Static_rlibs...)
 	}
 
 	if ctx.inVendorRamdisk() {
@@ -415,7 +387,6 @@ func (linker *baseLinker) linkerDeps(ctx DepsContext, deps Deps) Deps {
 		deps.ReexportStaticLibHeaders = removeListFromList(deps.ReexportStaticLibHeaders, linker.Properties.Target.Vendor_ramdisk.Exclude_static_libs)
 		deps.WholeStaticLibs = removeListFromList(deps.WholeStaticLibs, linker.Properties.Target.Vendor_ramdisk.Exclude_static_libs)
 		deps.RuntimeLibs = removeListFromList(deps.RuntimeLibs, linker.Properties.Target.Vendor_ramdisk.Exclude_runtime_libs)
-		deps.Rlibs = append(deps.Rlibs, linker.Properties.Target.Vendor_ramdisk.Static_rlibs...)
 	}
 
 	if !ctx.useSdk() {
@@ -674,7 +645,7 @@ func (linker *baseLinker) link(ctx ModuleContext,
 	panic(fmt.Errorf("baseLinker doesn't know how to link"))
 }
 
-func (linker *baseLinker) linkerSpecifiedDeps(ctx android.ConfigAndErrorContext, module *Module, specifiedDeps specifiedDeps) specifiedDeps {
+func (linker *baseLinker) linkerSpecifiedDeps(ctx android.ConfigurableEvaluatorContext, module *Module, specifiedDeps specifiedDeps) specifiedDeps {
 	eval := module.ConfigurableEvaluator(ctx)
 	specifiedDeps.sharedLibs = append(specifiedDeps.sharedLibs, linker.Properties.Shared_libs.GetOrDefault(eval, nil)...)
 

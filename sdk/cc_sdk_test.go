@@ -148,6 +148,9 @@ cc_prebuilt_library_shared {
             srcs: ["linux_glibc/x86_64/lib/sdkmember.so"],
         },
     },
+    strip: {
+        none: true,
+    },
 }
 `),
 		checkAllCopyRules(`
@@ -368,6 +371,9 @@ cc_prebuilt_library_shared {
             srcs: ["arm/lib/mynativelib.so"],
         },
     },
+    strip: {
+        none: true,
+    },
 }
 `),
 		checkAllCopyRules(`
@@ -454,6 +460,9 @@ cc_prebuilt_library_shared {
                 integer_overflow: true,
             },
         },
+    },
+    strip: {
+        none: true,
     },
 }
 `),
@@ -697,6 +706,9 @@ cc_prebuilt_library_shared {
             srcs: ["x86_64/lib/mynativelib.so"],
         },
     },
+    strip: {
+        none: true,
+    },
 }
 `),
 		checkAllCopyRules(`
@@ -824,6 +836,9 @@ cc_prebuilt_library_shared {
             export_include_dirs: ["arm/include_gen/mynativelib/android_arm_armv7-a-neon_shared/gen/aidl"],
         },
     },
+    strip: {
+        none: true,
+    },
 }
 `),
 		checkAllCopyRules(`
@@ -932,6 +947,9 @@ cc_prebuilt_library_shared {
             srcs: ["arm/lib/mynativelib.so"],
         },
     },
+    strip: {
+        none: true,
+    },
 }
 
 cc_prebuilt_library_shared {
@@ -950,6 +968,9 @@ cc_prebuilt_library_shared {
             srcs: ["arm/lib/myothernativelib.so"],
         },
     },
+    strip: {
+        none: true,
+    },
 }
 
 cc_prebuilt_library_shared {
@@ -966,6 +987,9 @@ cc_prebuilt_library_shared {
         arm: {
             srcs: ["arm/lib/mysystemnativelib.so"],
         },
+    },
+    strip: {
+        none: true,
     },
 }
 `),
@@ -1040,6 +1064,9 @@ cc_prebuilt_library_shared {
             srcs: ["x86/lib/mynativelib.so"],
             export_include_dirs: ["x86/include_gen/mynativelib/linux_glibc_x86_shared/gen/aidl"],
         },
+    },
+    strip: {
+        none: true,
     },
 }
 `),
@@ -1126,6 +1153,9 @@ cc_prebuilt_library_shared {
             enabled: true,
             srcs: ["windows/x86_64/lib/mynativelib.dll"],
         },
+    },
+    strip: {
+        none: true,
     },
 }
 `),
@@ -2021,6 +2051,9 @@ cc_prebuilt_library_shared {
             srcs: ["arm/lib/sslnil.so"],
         },
     },
+    strip: {
+        none: true,
+    },
 }
 
 cc_prebuilt_library_shared {
@@ -2038,6 +2071,9 @@ cc_prebuilt_library_shared {
             srcs: ["arm/lib/sslempty.so"],
         },
     },
+    strip: {
+        none: true,
+    },
 }
 
 cc_prebuilt_library_shared {
@@ -2054,6 +2090,9 @@ cc_prebuilt_library_shared {
         arm: {
             srcs: ["arm/lib/sslnonempty.so"],
         },
+    },
+    strip: {
+        none: true,
     },
 }
 `))
@@ -2114,6 +2153,9 @@ cc_prebuilt_library_shared {
             srcs: ["linux_glibc/x86/lib/sslvariants.so"],
         },
     },
+    strip: {
+        none: true,
+    },
 }
 `),
 	)
@@ -2154,6 +2196,7 @@ cc_prebuilt_library_shared {
     prefer: false,
     visibility: ["//visibility:public"],
     apex_available: ["//apex_available:platform"],
+    stl: "none",
     compile_multilib: "both",
     stubs: {
         versions: [
@@ -2162,6 +2205,7 @@ cc_prebuilt_library_shared {
             "3",
             "current",
         ],
+        symbol_file: "stubslib.map.txt",
     },
     arch: {
         arm64: {
@@ -2170,6 +2214,9 @@ cc_prebuilt_library_shared {
         arm: {
             srcs: ["arm/lib/stubslib.so"],
         },
+    },
+    strip: {
+        none: true,
     },
 }
 `))
@@ -2222,6 +2269,7 @@ cc_prebuilt_library_shared {
             "3",
             "current",
         ],
+        symbol_file: "stubslib.map.txt",
     },
     target: {
         host: {
@@ -2241,6 +2289,9 @@ cc_prebuilt_library_shared {
             enabled: true,
             srcs: ["linux_glibc/x86/lib/stubslib.so"],
         },
+    },
+    strip: {
+        none: true,
     },
 }
 `),
@@ -2298,6 +2349,9 @@ cc_prebuilt_library_shared {
             srcs: ["linux_glibc/x86/lib/mylib-host.so"],
         },
     },
+    strip: {
+        none: true,
+    },
 }
 `),
 		checkAllCopyRules(`
@@ -2354,6 +2408,9 @@ cc_prebuilt_library_shared {
         arm: {
             srcs: ["arm/lib/mynativelib.so"],
         },
+    },
+    strip: {
+        none: true,
     },
 }
 `),

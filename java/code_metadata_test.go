@@ -29,7 +29,7 @@ func TestCodeMetadata(t *testing.T) {
 	module := result.ModuleForTests("module-name", "")
 
 	// Check that the provider has the right contents
-	data, _ := android.SingletonModuleProvider(result, module.Module(), soongTesting.CodeMetadataProviderKey)
+	data, _ := android.OtherModuleProvider(result, module.Module(), soongTesting.CodeMetadataProviderKey)
 	if !strings.HasSuffix(
 		data.IntermediatePath.String(), "/intermediateCodeMetadata.pb",
 	) {

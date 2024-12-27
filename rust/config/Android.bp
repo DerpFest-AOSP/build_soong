@@ -24,4 +24,8 @@ bootstrap_go_package {
         "x86_64_device.go",
         "arm64_linux_host.go",
     ],
+    visibility: [
+        "//build/soong:__subpackages__",
+        "//prebuilts/rust/soong",
+    ],
 }

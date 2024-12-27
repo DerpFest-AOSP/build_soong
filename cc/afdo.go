@@ -47,6 +47,10 @@ func (afdo *afdo) begin(ctx BaseModuleContext) {
 	if ctx.Config().Eng() {
 		afdo.Properties.Afdo = false
 	}
+	// Disable for native coverage builds.
+	if ctx.DeviceConfig().NativeCoverageEnabled() {
+		afdo.Properties.Afdo = false
+	}
 }
 
 // afdoEnabled returns true for binaries and shared libraries
@@ -76,6 +80,8 @@ func (afdo *afdo) flags(ctx ModuleContext, flags Flags) Flags {
 	}
 
 	if afdo.Properties.Afdo || afdo.Properties.AfdoDep {
+		// Emit additional debug info for AutoFDO
+		flags.Local.CFlags = append([]string{"-fdebug-info-for-profiling"}, flags.Local.CFlags...)
 		// We use `-funique-internal-linkage-names` to associate profiles to the right internal
 		// functions. This option should be used before generating a profile. Because a profile
 		// generated for a binary without unique names doesn't work well building a binary with
@@ -176,6 +182,9 @@ func (a *afdoTransitionMutator) IncomingTransition(ctx android.IncomingTransitio
 
 func (a *afdoTransitionMutator) Mutate(ctx android.BottomUpMutatorContext, variation string) {
 	if m, ok := ctx.Module().(*Module); ok && m.afdo != nil {
+		if !m.Enabled(ctx) {
+			return
+		}
 		if variation == "" {
 			// The empty variation is either a module that has enabled AFDO for itself, or the non-AFDO
 			// variant of a dependency.

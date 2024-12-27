@@ -818,3 +818,100 @@ func TestReverseSlice(t *testing.T) {
 		})
 	}
 }
+
+var hasIntersectionTestCases = []struct {
+	name     string
+	l1       []string
+	l2       []string
+	expected bool
+}{
+	{
+		name:     "empty",
+		l1:       []string{"a", "b", "c"},
+		l2:       []string{},
+		expected: false,
+	},
+	{
+		name:     "both empty",
+		l1:       []string{},
+		l2:       []string{},
+		expected: false,
+	},
+	{
+		name:     "identical",
+		l1:       []string{"a", "b", "c"},
+		l2:       []string{"a", "b", "c"},
+		expected: true,
+	},
+	{
+		name:     "duplicates",
+		l1:       []string{"a", "a", "a"},
+		l2:       []string{"a", "b", "c"},
+		expected: true,
+	},
+	{
+		name:     "duplicates with no intersection",
+		l1:       []string{"d", "d", "d", "d"},
+		l2:       []string{"a", "b", "c"},
+		expected: false,
+	},
+}
+
+func TestHasIntersection(t *testing.T) {
+	for _, testCase := range hasIntersectionTestCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			hasIntersection := HasIntersection(testCase.l1, testCase.l2)
+			if !reflect.DeepEqual(hasIntersection, testCase.expected) {
+				t.Errorf("expected %#v, got %#v", testCase.expected, hasIntersection)
+			}
+		})
+	}
+}
+
+var prettyConcatTestCases = []struct {
+	name          string
+	list          []string
+	quote         bool
+	lastSeparator string
+	expected      string
+}{
+	{
+		name:          "empty",
+		list:          []string{},
+		quote:         false,
+		lastSeparator: "and",
+		expected:      ``,
+	},
+	{
+		name:          "single",
+		list:          []string{"a"},
+		quote:         true,
+		lastSeparator: "and",
+		expected:      `"a"`,
+	},
+	{
+		name:          "with separator",
+		list:          []string{"a", "b", "c"},
+		quote:         true,
+		lastSeparator: "or",
+		expected:      `"a", "b", or "c"`,
+	},
+	{
+		name:          "without separator",
+		list:          []string{"a", "b", "c"},
+		quote:         false,
+		lastSeparator: "",
+		expected:      `a, b, c`,
+	},
+}
+
+func TestPrettyConcat(t *testing.T) {
+	for _, testCase := range prettyConcatTestCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			concatString := PrettyConcat(testCase.list, testCase.quote, testCase.lastSeparator)
+			if !reflect.DeepEqual(concatString, testCase.expected) {
+				t.Errorf("expected %#v, got %#v", testCase.expected, concatString)
+			}
+		})
+	}
+}

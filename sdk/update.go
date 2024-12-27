@@ -22,7 +22,6 @@ import (
 	"sort"
 	"strings"
 
-	"android/soong/apex"
 	"android/soong/cc"
 	"android/soong/java"
 
@@ -434,6 +433,14 @@ be unnecessary as every module in the sdk already has its own licenses property.
 		prebuiltModule := memberType.AddPrebuiltModule(memberCtx, member)
 		s.createMemberSnapshot(memberCtx, member, prebuiltModule.(*bpModule))
 
+		// Set stripper to none to skip stripping for generated snapshots.
+		// Mainline prebuilts (cc_prebuilt_library_shared) are not strippable in older platforms.
+		// Thus, stripping should be skipped when being used as prebuilts.
+		if memberType.DisablesStrip() {
+			stripPropertySet := prebuiltModule.(*bpModule).AddPropertySet("strip")
+			stripPropertySet.AddProperty("none", true)
+		}
+
 		if member.memberType != android.LicenseModuleSdkMemberType && !builder.isInternalMember(member.name) {
 			// More exceptions
 			// 1. Skip BCP and SCCP fragments
@@ -555,11 +562,11 @@ be unnecessary as every module in the sdk already has its own licenses property.
 	}
 	builder.infoContents = string(output)
 	android.WriteFileRuleVerbatim(ctx, info, builder.infoContents)
-	installedInfo := ctx.InstallFile(android.PathForMainlineSdksInstall(ctx), info.Base(), info)
+	installedInfo := ctx.InstallFileWithoutCheckbuild(android.PathForMainlineSdksInstall(ctx), info.Base(), info)
 	s.infoFile = android.OptionalPathForPath(installedInfo)
 
 	// Install the zip, making sure that the info file has been installed as well.
-	installedZip := ctx.InstallFile(android.PathForMainlineSdksInstall(ctx), outputZipFile.Base(), outputZipFile, installedInfo)
+	installedZip := ctx.InstallFileWithoutCheckbuild(android.PathForMainlineSdksInstall(ctx), outputZipFile.Base(), outputZipFile, installedInfo)
 	s.snapshotFile = android.OptionalPathForPath(installedZip)
 }
 
@@ -1101,20 +1108,24 @@ func (s *snapshotBuilder) AddPrebuiltModule(member android.SdkMember, moduleType
 		// same package so can be marked as private.
 		m.AddProperty("visibility", []string{"//visibility:private"})
 	} else {
-		// Extract visibility information from a member variant. All variants have the same
-		// visibility so it doesn't matter which one is used.
-		visibilityRules := android.EffectiveVisibilityRules(s.ctx, variant)
-
-		// Add any additional visibility rules needed for the prebuilts to reference each other.
-		err := visibilityRules.Widen(s.sdk.properties.Prebuilt_visibility)
-		if err != nil {
-			s.ctx.PropertyErrorf("prebuilt_visibility", "%s", err)
-		}
-
-		visibility := visibilityRules.Strings()
-		if len(visibility) != 0 {
-			m.AddProperty("visibility", visibility)
-		}
+		// Change the visibility of the module SDK prebuilts to public.
+		// This includes
+		// 1. Stub libraries of `sdk` modules
+		// 2. Binaries and libraries of `module_exports` modules
+		//
+		// This is a workaround to improve maintainlibility of the module SDK.
+		// Since module sdks are generated from release branches and dropped to development
+		// branches, there might be a visibility skew between the sources and prebuilts
+		// of a specific module.
+		// To reconcile this potential skew, change the visibility to public.
+		//
+		// This means dependencies can bypass visibility restrictions when prebuilts are used, so we rely
+		// on source builds in CI to check them.
+		//
+		// TODO (b/361303067): This special case for category (2) can be removed if existing usages
+		// of host/test prebuilts of modules like conscrypt,tzdata,i18n are switched to source builds.
+		// It will also require ART switching to full manifests.
+		m.AddProperty("visibility", []string{"//visibility:public"})
 	}
 
 	// Where available copy apex_available properties from the member.
@@ -1124,9 +1135,6 @@ func (s *snapshotBuilder) AddPrebuiltModule(member android.SdkMember, moduleType
 			// //apex_available:platform is the default.
 			apexAvailable = []string{android.AvailableToPlatform}
 		}
-
-		// Add in any baseline apex available settings.
-		apexAvailable = append(apexAvailable, apex.BaselineApexAvailable(member.Name())...)
 
 		// Remove duplicates and sort.
 		apexAvailable = android.FirstUniqueStrings(apexAvailable)
@@ -1979,14 +1987,6 @@ func (m *memberContext) RequiresTrait(trait android.SdkMemberTrait) bool {
 
 func (m *memberContext) IsTargetBuildBeforeTiramisu() bool {
 	return m.builder.targetBuildRelease.EarlierThan(buildReleaseT)
-}
-
-func (m *memberContext) Config() android.Config {
-	return m.sdkMemberContext.Config()
-}
-
-func (m *memberContext) OtherModulePropertyErrorf(module android.Module, property string, fmt string, args ...interface{}) {
-	m.sdkMemberContext.OtherModulePropertyErrorf(module, property, fmt, args)
 }
 
 var _ android.SdkMemberContext = (*memberContext)(nil)

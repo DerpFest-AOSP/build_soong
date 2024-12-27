@@ -145,19 +145,8 @@ EOF
   run_soong
   local -r ninja_mtime1=$(stat -c "%y" out/soong/build."${target_product}".ninja)
 
-  local glob_deps_file=out/soong/globs/"${target_product}"/0.d
-
   run_soong
   local -r ninja_mtime2=$(stat -c "%y" out/soong/build."${target_product}".ninja)
-
-  # There is an ineffiencency in glob that requires bpglob to rerun once for each glob to update
-  # the entry in the .ninja_log.  It doesn't update the output file, but we can detect the rerun
-  # by checking if the deps file was created.
-  if [ ! -e "$glob_deps_file" ]; then
-    fail "Glob deps file missing after second build"
-  fi
-
-  local -r glob_deps_mtime2=$(stat -c "%y" "$glob_deps_file")
 
   if [[ "$ninja_mtime1" != "$ninja_mtime2" ]]; then
     fail "Ninja file rewritten on null incremental build"
@@ -165,15 +154,9 @@ EOF
 
   run_soong
   local -r ninja_mtime3=$(stat -c "%y" out/soong/build."${target_product}".ninja)
-  local -r glob_deps_mtime3=$(stat -c "%y" "$glob_deps_file")
 
   if [[ "$ninja_mtime2" != "$ninja_mtime3" ]]; then
     fail "Ninja file rewritten on null incremental build"
-  fi
-
-  # The bpglob commands should not rerun after the first incremental build.
-  if [[ "$glob_deps_mtime2" != "$glob_deps_mtime3" ]]; then
-    fail "Glob deps file rewritten on second null incremental build"
   fi
 }
 

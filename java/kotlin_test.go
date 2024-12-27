@@ -15,6 +15,7 @@
 package java
 
 import (
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -23,10 +24,11 @@ import (
 )
 
 func TestKotlin(t *testing.T) {
-	ctx, _ := testJava(t, `
+	bp := `
 		java_library {
 			name: "foo",
 			srcs: ["a.java", "b.kt"],
+			static_libs: ["quz"],
 		}
 
 		java_library {
@@ -39,85 +41,236 @@ func TestKotlin(t *testing.T) {
 		java_library {
 			name: "baz",
 			srcs: ["c.java"],
+			static_libs: ["quz"],
 		}
-		`)
 
-	kotlinStdlib := ctx.ModuleForTests("kotlin-stdlib", "android_common").
-		Output("turbine-combined/kotlin-stdlib.jar").Output
-	kotlinStdlibJdk7 := ctx.ModuleForTests("kotlin-stdlib-jdk7", "android_common").
-		Output("turbine-combined/kotlin-stdlib-jdk7.jar").Output
-	kotlinStdlibJdk8 := ctx.ModuleForTests("kotlin-stdlib-jdk8", "android_common").
-		Output("turbine-combined/kotlin-stdlib-jdk8.jar").Output
-	kotlinAnnotations := ctx.ModuleForTests("kotlin-annotations", "android_common").
-		Output("turbine-combined/kotlin-annotations.jar").Output
+		java_library {
+			name: "quz",
+			srcs: ["d.kt"],
+		}`
 
-	fooKotlinc := ctx.ModuleForTests("foo", "android_common").Rule("kotlinc")
-	fooJavac := ctx.ModuleForTests("foo", "android_common").Rule("javac")
-	fooJar := ctx.ModuleForTests("foo", "android_common").Output("combined/foo.jar")
-	fooHeaderJar := ctx.ModuleForTests("foo", "android_common").Output("turbine-combined/foo.jar")
-
-	fooKotlincClasses := fooKotlinc.Output
-	fooKotlincHeaderClasses := fooKotlinc.ImplicitOutput
-
-	if len(fooKotlinc.Inputs) != 2 || fooKotlinc.Inputs[0].String() != "a.java" ||
-		fooKotlinc.Inputs[1].String() != "b.kt" {
-		t.Errorf(`foo kotlinc inputs %v != ["a.java", "b.kt"]`, fooKotlinc.Inputs)
+	kotlinStdlibTurbineCombinedJars := []string{
+		"out/soong/.intermediates/default/java/kotlin-stdlib/android_common/turbine-combined/kotlin-stdlib.jar",
+		"out/soong/.intermediates/default/java/kotlin-stdlib-jdk7/android_common/turbine-combined/kotlin-stdlib-jdk7.jar",
+		"out/soong/.intermediates/default/java/kotlin-stdlib-jdk8/android_common/turbine-combined/kotlin-stdlib-jdk8.jar",
+		"out/soong/.intermediates/default/java/kotlin-annotations/android_common/turbine-combined/kotlin-annotations.jar",
 	}
 
-	if len(fooJavac.Inputs) != 1 || fooJavac.Inputs[0].String() != "a.java" {
-		t.Errorf(`foo inputs %v != ["a.java"]`, fooJavac.Inputs)
+	kotlinStdlibTurbineJars := []string{
+		"out/soong/.intermediates/default/java/kotlin-stdlib/android_common/turbine/kotlin-stdlib.jar",
+		"out/soong/.intermediates/default/java/kotlin-stdlib-jdk7/android_common/turbine/kotlin-stdlib-jdk7.jar",
+		"out/soong/.intermediates/default/java/kotlin-stdlib-jdk8/android_common/turbine/kotlin-stdlib-jdk8.jar",
+		"out/soong/.intermediates/default/java/kotlin-annotations/android_common/turbine/kotlin-annotations.jar",
 	}
 
-	if !strings.Contains(fooJavac.Args["classpath"], fooKotlincHeaderClasses.String()) {
-		t.Errorf("foo classpath %v does not contain %q",
-			fooJavac.Args["classpath"], fooKotlincHeaderClasses.String())
+	kotlinStdlibJavacJars := []string{
+		"out/soong/.intermediates/default/java/kotlin-stdlib/android_common/javac/kotlin-stdlib.jar",
+		"out/soong/.intermediates/default/java/kotlin-stdlib-jdk7/android_common/javac/kotlin-stdlib-jdk7.jar",
+		"out/soong/.intermediates/default/java/kotlin-stdlib-jdk8/android_common/javac/kotlin-stdlib-jdk8.jar",
+		"out/soong/.intermediates/default/java/kotlin-annotations/android_common/javac/kotlin-annotations.jar",
 	}
 
-	if !inList(fooKotlincClasses.String(), fooJar.Inputs.Strings()) {
-		t.Errorf("foo jar inputs %v does not contain %q",
-			fooJar.Inputs.Strings(), fooKotlincClasses.String())
+	bootclasspathTurbineCombinedJars := []string{
+		"out/soong/.intermediates/default/java/stable.core.platform.api.stubs/android_common/turbine-combined/stable.core.platform.api.stubs.jar",
+		"out/soong/.intermediates/default/java/core-lambda-stubs/android_common/turbine-combined/core-lambda-stubs.jar",
 	}
 
-	if !inList(kotlinStdlib.String(), fooJar.Inputs.Strings()) {
-		t.Errorf("foo jar inputs %v does not contain %v",
-			fooJar.Inputs.Strings(), kotlinStdlib.String())
+	bootclasspathTurbineJars := []string{
+		"out/soong/.intermediates/default/java/stable.core.platform.api.stubs/android_common/turbine/stable.core.platform.api.stubs.jar",
+		"out/soong/.intermediates/default/java/core-lambda-stubs/android_common/turbine/core-lambda-stubs.jar",
 	}
 
-	if !inList(kotlinStdlibJdk7.String(), fooJar.Inputs.Strings()) {
-		t.Errorf("foo jar inputs %v does not contain %v",
-			fooJar.Inputs.Strings(), kotlinStdlibJdk7.String())
+	frameworkTurbineCombinedJars := []string{
+		"out/soong/.intermediates/default/java/ext/android_common/turbine-combined/ext.jar",
+		"out/soong/.intermediates/default/java/framework/android_common/turbine-combined/framework.jar",
 	}
 
-	if !inList(kotlinStdlibJdk8.String(), fooJar.Inputs.Strings()) {
-		t.Errorf("foo jar inputs %v does not contain %v",
-			fooJar.Inputs.Strings(), kotlinStdlibJdk8.String())
+	frameworkTurbineJars := []string{
+		"out/soong/.intermediates/default/java/ext/android_common/turbine/ext.jar",
+		"out/soong/.intermediates/default/java/framework/android_common/turbine/framework.jar",
 	}
 
-	if !inList(kotlinAnnotations.String(), fooJar.Inputs.Strings()) {
-		t.Errorf("foo jar inputs %v does not contain %v",
-			fooJar.Inputs.Strings(), kotlinAnnotations.String())
+	testCases := []struct {
+		name string
+
+		preparer android.FixturePreparer
+
+		fooKotlincInputs        []string
+		fooJavacInputs          []string
+		fooKotlincClasspath     []string
+		fooJavacClasspath       []string
+		fooCombinedInputs       []string
+		fooHeaderCombinedInputs []string
+
+		barKotlincInputs        []string
+		barKotlincClasspath     []string
+		barCombinedInputs       []string
+		barHeaderCombinedInputs []string
+	}{
+		{
+			name:             "normal",
+			preparer:         android.NullFixturePreparer,
+			fooKotlincInputs: []string{"a.java", "b.kt"},
+			fooJavacInputs:   []string{"a.java"},
+			fooKotlincClasspath: slices.Concat(
+				bootclasspathTurbineCombinedJars,
+				frameworkTurbineCombinedJars,
+				[]string{"out/soong/.intermediates/quz/android_common/turbine-combined/quz.jar"},
+				kotlinStdlibTurbineCombinedJars,
+			),
+			fooJavacClasspath: slices.Concat(
+				[]string{"out/soong/.intermediates/foo/android_common/kotlin_headers/foo.jar"},
+				frameworkTurbineCombinedJars,
+				[]string{"out/soong/.intermediates/quz/android_common/turbine-combined/quz.jar"},
+				kotlinStdlibTurbineCombinedJars,
+			),
+			fooCombinedInputs: slices.Concat(
+				[]string{
+					"out/soong/.intermediates/foo/android_common/kotlin/foo.jar",
+					"out/soong/.intermediates/foo/android_common/javac/foo.jar",
+					"out/soong/.intermediates/quz/android_common/combined/quz.jar",
+				},
+				kotlinStdlibJavacJars,
+			),
+			fooHeaderCombinedInputs: slices.Concat(
+				[]string{
+					"out/soong/.intermediates/foo/android_common/turbine/foo.jar",
+					"out/soong/.intermediates/foo/android_common/kotlin_headers/foo.jar",
+					"out/soong/.intermediates/quz/android_common/turbine-combined/quz.jar",
+				},
+				kotlinStdlibTurbineCombinedJars,
+			),
+
+			barKotlincInputs: []string{"b.kt"},
+			barKotlincClasspath: slices.Concat(
+				bootclasspathTurbineCombinedJars,
+				frameworkTurbineCombinedJars,
+				[]string{
+					"out/soong/.intermediates/foo/android_common/turbine-combined/foo.jar",
+					"out/soong/.intermediates/baz/android_common/turbine-combined/baz.jar",
+				},
+				kotlinStdlibTurbineCombinedJars,
+			),
+			barCombinedInputs: slices.Concat(
+				[]string{
+					"out/soong/.intermediates/bar/android_common/kotlin/bar.jar",
+					"out/soong/.intermediates/baz/android_common/combined/baz.jar",
+				},
+				kotlinStdlibJavacJars,
+				[]string{},
+			),
+			barHeaderCombinedInputs: slices.Concat(
+				[]string{
+					"out/soong/.intermediates/bar/android_common/kotlin_headers/bar.jar",
+					"out/soong/.intermediates/baz/android_common/turbine-combined/baz.jar",
+				},
+				kotlinStdlibTurbineCombinedJars,
+			),
+		},
+		{
+			name:             "transitive classpath",
+			preparer:         PrepareForTestWithTransitiveClasspathEnabled,
+			fooKotlincInputs: []string{"a.java", "b.kt"},
+			fooJavacInputs:   []string{"a.java"},
+			fooKotlincClasspath: slices.Concat(
+				bootclasspathTurbineJars,
+				frameworkTurbineJars,
+				[]string{"out/soong/.intermediates/quz/android_common/kotlin_headers/quz.jar"},
+				kotlinStdlibTurbineJars,
+			),
+			fooJavacClasspath: slices.Concat(
+				[]string{"out/soong/.intermediates/foo/android_common/kotlin_headers/foo.jar"},
+				frameworkTurbineJars,
+				[]string{"out/soong/.intermediates/quz/android_common/kotlin_headers/quz.jar"},
+				kotlinStdlibTurbineJars,
+			),
+			fooCombinedInputs: slices.Concat(
+				[]string{
+					"out/soong/.intermediates/foo/android_common/kotlin/foo.jar",
+					"out/soong/.intermediates/foo/android_common/javac/foo.jar",
+					"out/soong/.intermediates/quz/android_common/kotlin/quz.jar",
+				},
+				kotlinStdlibJavacJars,
+			),
+			fooHeaderCombinedInputs: slices.Concat(
+				[]string{
+					"out/soong/.intermediates/foo/android_common/turbine/foo.jar",
+					"out/soong/.intermediates/foo/android_common/kotlin_headers/foo.jar",
+					"out/soong/.intermediates/quz/android_common/kotlin_headers/quz.jar",
+				},
+				kotlinStdlibTurbineJars,
+			),
+
+			barKotlincInputs: []string{"b.kt"},
+			barKotlincClasspath: slices.Concat(
+				bootclasspathTurbineJars,
+				frameworkTurbineJars,
+				[]string{
+					"out/soong/.intermediates/foo/android_common/turbine/foo.jar",
+					"out/soong/.intermediates/foo/android_common/kotlin_headers/foo.jar",
+					"out/soong/.intermediates/quz/android_common/kotlin_headers/quz.jar",
+				},
+				kotlinStdlibTurbineJars,
+				[]string{"out/soong/.intermediates/baz/android_common/turbine/baz.jar"},
+			),
+			barCombinedInputs: slices.Concat(
+				[]string{
+					"out/soong/.intermediates/bar/android_common/kotlin/bar.jar",
+					"out/soong/.intermediates/baz/android_common/javac/baz.jar",
+					"out/soong/.intermediates/quz/android_common/kotlin/quz.jar",
+				},
+				kotlinStdlibJavacJars,
+			),
+			barHeaderCombinedInputs: slices.Concat(
+				[]string{
+					"out/soong/.intermediates/bar/android_common/kotlin_headers/bar.jar",
+					"out/soong/.intermediates/baz/android_common/turbine/baz.jar",
+					"out/soong/.intermediates/quz/android_common/kotlin_headers/quz.jar",
+				},
+				kotlinStdlibTurbineJars,
+			),
+		},
 	}
 
-	if !inList(fooKotlincHeaderClasses.String(), fooHeaderJar.Inputs.Strings()) {
-		t.Errorf("foo header jar inputs %v does not contain %q",
-			fooHeaderJar.Inputs.Strings(), fooKotlincHeaderClasses.String())
-	}
+	for _, tt := range testCases {
+		t.Run(tt.name, func(t *testing.T) {
+			result := android.GroupFixturePreparers(
+				PrepareForTestWithJavaDefaultModules,
+				tt.preparer,
+			).RunTestWithBp(t, bp)
+			foo := result.ModuleForTests("foo", "android_common")
+			fooKotlinc := foo.Rule("kotlinc")
+			android.AssertPathsRelativeToTopEquals(t, "foo kotlinc inputs", tt.fooKotlincInputs, fooKotlinc.Inputs)
 
-	bazHeaderJar := ctx.ModuleForTests("baz", "android_common").Output("turbine-combined/baz.jar")
-	barKotlinc := ctx.ModuleForTests("bar", "android_common").Rule("kotlinc")
+			fooKotlincClasspath := android.ContentFromFileRuleForTests(t, result.TestContext, foo.Output("kotlinc/classpath.rsp"))
+			android.AssertStringPathsRelativeToTopEquals(t, "foo kotlinc classpath", result.Config, tt.fooKotlincClasspath, strings.Fields(fooKotlincClasspath))
 
-	if len(barKotlinc.Inputs) != 1 || barKotlinc.Inputs[0].String() != "b.kt" {
-		t.Errorf(`bar kotlinc inputs %v != ["b.kt"]`, barKotlinc.Inputs)
-	}
+			fooJavac := foo.Rule("javac")
+			android.AssertPathsRelativeToTopEquals(t, "foo javac inputs", tt.fooJavacInputs, fooJavac.Inputs)
 
-	if !inList(fooHeaderJar.Output.String(), barKotlinc.Implicits.Strings()) {
-		t.Errorf(`expected %q in bar implicits %v`,
-			fooHeaderJar.Output.String(), barKotlinc.Implicits.Strings())
-	}
+			fooJavacClasspath := fooJavac.Args["classpath"]
+			android.AssertStringPathsRelativeToTopEquals(t, "foo javac classpath", result.Config, tt.fooJavacClasspath,
+				strings.Split(strings.TrimPrefix(fooJavacClasspath, "-classpath "), ":"))
 
-	if !inList(bazHeaderJar.Output.String(), barKotlinc.Implicits.Strings()) {
-		t.Errorf(`expected %q in bar implicits %v`,
-			bazHeaderJar.Output.String(), barKotlinc.Implicits.Strings())
+			fooCombinedJar := foo.Output("combined/foo.jar")
+			android.AssertPathsRelativeToTopEquals(t, "foo combined inputs", tt.fooCombinedInputs, fooCombinedJar.Inputs)
+
+			fooCombinedHeaderJar := foo.Output("turbine-combined/foo.jar")
+			android.AssertPathsRelativeToTopEquals(t, "foo header combined inputs", tt.fooHeaderCombinedInputs, fooCombinedHeaderJar.Inputs)
+
+			bar := result.ModuleForTests("bar", "android_common")
+			barKotlinc := bar.Rule("kotlinc")
+			android.AssertPathsRelativeToTopEquals(t, "bar kotlinc inputs", tt.barKotlincInputs, barKotlinc.Inputs)
+
+			barKotlincClasspath := android.ContentFromFileRuleForTests(t, result.TestContext, bar.Output("kotlinc/classpath.rsp"))
+			android.AssertStringPathsRelativeToTopEquals(t, "bar kotlinc classpath", result.Config, tt.barKotlincClasspath, strings.Fields(barKotlincClasspath))
+
+			barCombinedJar := bar.Output("combined/bar.jar")
+			android.AssertPathsRelativeToTopEquals(t, "bar combined inputs", tt.barCombinedInputs, barCombinedJar.Inputs)
+
+			barCombinedHeaderJar := bar.Output("turbine-combined/bar.jar")
+			android.AssertPathsRelativeToTopEquals(t, "bar header combined inputs", tt.barHeaderCombinedInputs, barCombinedHeaderJar.Inputs)
+		})
 	}
 }
 

@@ -15,19 +15,23 @@
 package build
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"android/soong/ui/tracer"
 
-	"android/soong/bazel"
 	"android/soong/ui/metrics"
 	"android/soong/ui/metrics/metrics_proto"
 	"android/soong/ui/status"
@@ -53,7 +57,7 @@ const (
 
 	// bootstrapEpoch is used to determine if an incremental build is incompatible with the current
 	// version of bootstrap and needs cleaning before continuing the build.  Increment this for
-	// incompatible changes, for example when moving the location of the bpglob binary that is
+	// incompatible changes, for example when moving the location of a microfactory binary that is
 	// executed during bootstrap before the primary builder has had a chance to update the path.
 	bootstrapEpoch = 1
 )
@@ -227,10 +231,6 @@ func (pb PrimaryBuilderFactory) primaryBuilderInvocation(config Config) bootstra
 
 	var allArgs []string
 	allArgs = append(allArgs, pb.specificArgs...)
-	globPathName := getGlobPathNameFromPrimaryBuilderFactory(config, pb)
-	allArgs = append(allArgs,
-		"--globListDir", globPathName,
-		"--globFile", pb.config.NamedGlobFile(globPathName))
 
 	allArgs = append(allArgs, commonArgs...)
 	allArgs = append(allArgs, environmentArgs(pb.config, pb.name)...)
@@ -242,11 +242,8 @@ func (pb PrimaryBuilderFactory) primaryBuilderInvocation(config Config) bootstra
 	}
 	allArgs = append(allArgs, "Android.bp")
 
-	globfiles := bootstrap.GlobFileListFiles(bootstrap.GlobDirectory(config.SoongOutDir(), globPathName))
-
 	return bootstrap.PrimaryBuilderInvocation{
-		Inputs:      []string{"Android.bp"},
-		Implicits:   globfiles,
+		Implicits:   []string{pb.output + ".glob_results"},
 		Outputs:     []string{pb.output},
 		Args:        allArgs,
 		Description: pb.description,
@@ -278,21 +275,12 @@ func bootstrapEpochCleanup(ctx Context, config Config) {
 				os.Remove(file)
 			}
 		}
-		for _, globFile := range bootstrapGlobFileList(config) {
-			os.Remove(globFile)
-		}
+		os.Remove(soongNinjaFile + ".globs")
+		os.Remove(soongNinjaFile + ".globs_time")
+		os.Remove(soongNinjaFile + ".glob_results")
 
 		// Mark the tree as up to date with the current epoch by writing the epoch marker file.
 		writeEmptyFile(ctx, epochPath)
-	}
-}
-
-func bootstrapGlobFileList(config Config) []string {
-	return []string{
-		config.NamedGlobFile(getGlobPathName(config)),
-		config.NamedGlobFile(jsonModuleGraphTag),
-		config.NamedGlobFile(queryviewTag),
-		config.NamedGlobFile(soongDocsTag),
 	}
 }
 
@@ -314,6 +302,9 @@ func bootstrapBlueprint(ctx Context, config Config) {
 	}
 	if config.ensureAllowlistIntegrity {
 		mainSoongBuildExtraArgs = append(mainSoongBuildExtraArgs, "--ensure-allowlist-integrity")
+	}
+	if config.incrementalBuildActions {
+		mainSoongBuildExtraArgs = append(mainSoongBuildExtraArgs, "--incremental-build-actions")
 	}
 
 	queryviewDir := filepath.Join(config.SoongOutDir(), "queryview")
@@ -410,30 +401,7 @@ func bootstrapBlueprint(ctx Context, config Config) {
 		runGoTests:  !config.skipSoongTests,
 		// If we want to debug soong_build, we need to compile it for debugging
 		debugCompilation:          delvePort != "",
-		subninjas:                 bootstrapGlobFileList(config),
 		primaryBuilderInvocations: invocations,
-	}
-
-	// The glob ninja files are generated during the main build phase. However, the
-	// primary buildifer invocation depends on all of its glob files, even before
-	// it's been run. Generate a "empty" glob ninja file on the first run,
-	// so that the files can be there to satisfy the dependency.
-	for _, pb := range pbfs {
-		globPathName := getGlobPathNameFromPrimaryBuilderFactory(config, pb)
-		globNinjaFile := config.NamedGlobFile(globPathName)
-		if _, err := os.Stat(globNinjaFile); os.IsNotExist(err) {
-			err := bootstrap.WriteBuildGlobsNinjaFile(&bootstrap.GlobSingleton{
-				GlobLister: func() pathtools.MultipleGlobResults { return nil },
-				GlobFile:   globNinjaFile,
-				GlobDir:    bootstrap.GlobDirectory(config.SoongOutDir(), globPathName),
-				SrcDir:     ".",
-			}, blueprintConfig)
-			if err != nil {
-				ctx.Fatal(err)
-			}
-		} else if err != nil {
-			ctx.Fatal(err)
-		}
 	}
 
 	// since `bootstrap.ninja` is regenerated unconditionally, we ignore the deps, i.e. little
@@ -600,10 +568,6 @@ func runSoong(ctx Context, config Config) {
 
 		checkEnvironmentFile(ctx, soongBuildEnv, config.UsedEnvFile(soongBuildTag))
 
-		// Remove bazel files in the event that bazel is disabled for the build.
-		// These files may have been left over from a previous bazel-enabled build.
-		cleanBazelFiles(config)
-
 		if config.JsonModuleGraph() {
 			checkEnvironmentFile(ctx, soongBuildEnv, config.UsedEnvFile(jsonModuleGraphTag))
 		}
@@ -617,9 +581,6 @@ func runSoong(ctx Context, config Config) {
 		}
 	}()
 
-	runMicrofactory(ctx, config, "bpglob", "github.com/google/blueprint/bootstrap/bpglob",
-		map[string]string{"github.com/google/blueprint": "build/blueprint"})
-
 	ninja := func(targets ...string) {
 		ctx.BeginTrace(metrics.RunSoong, "bootstrap")
 		defer ctx.EndTrace()
@@ -628,17 +589,58 @@ func runSoong(ctx Context, config Config) {
 		nr := status.NewNinjaReader(ctx, ctx.Status.StartTool(), fifo)
 		defer nr.Close()
 
-		ninjaArgs := []string{
-			"-d", "keepdepfile",
-			"-d", "stats",
-			"-o", "usesphonyoutputs=yes",
-			"-o", "preremoveoutputs=yes",
-			"-w", "dupbuild=err",
-			"-w", "outputdir=err",
-			"-w", "missingoutfile=err",
-			"-j", strconv.Itoa(config.Parallel()),
-			"--frontend_file", fifo,
-			"-f", filepath.Join(config.SoongOutDir(), "bootstrap.ninja"),
+		var ninjaCmd string
+		var ninjaArgs []string
+		switch config.ninjaCommand {
+		case NINJA_N2:
+			ninjaCmd = config.N2Bin()
+			ninjaArgs = []string{
+				// TODO: implement these features, or remove them.
+				//"-d", "keepdepfile",
+				//"-d", "stats",
+				//"-o", "usesphonyoutputs=yes",
+				//"-o", "preremoveoutputs=yes",
+				//"-w", "dupbuild=err",
+				//"-w", "outputdir=err",
+				//"-w", "missingoutfile=err",
+				"-v",
+				"-j", strconv.Itoa(config.Parallel()),
+				"--frontend-file", fifo,
+				"-f", filepath.Join(config.SoongOutDir(), "bootstrap.ninja"),
+			}
+		case NINJA_SISO:
+			ninjaCmd = config.SisoBin()
+			ninjaArgs = []string{
+				"ninja",
+				// TODO: implement these features, or remove them.
+				//"-d", "keepdepfile",
+				//"-d", "stats",
+				//"-o", "usesphonyoutputs=yes",
+				//"-o", "preremoveoutputs=yes",
+				//"-w", "dupbuild=err",
+				//"-w", "outputdir=err",
+				//"-w", "missingoutfile=err",
+				"-v",
+				"-j", strconv.Itoa(config.Parallel()),
+				//"--frontend-file", fifo,
+				"--log_dir", config.SoongOutDir(),
+				"-f", filepath.Join(config.SoongOutDir(), "bootstrap.ninja"),
+			}
+		default:
+			// NINJA_NINJA is the default.
+			ninjaCmd = config.NinjaBin()
+			ninjaArgs = []string{
+				"-d", "keepdepfile",
+				"-d", "stats",
+				"-o", "usesphonyoutputs=yes",
+				"-o", "preremoveoutputs=yes",
+				"-w", "dupbuild=err",
+				"-w", "outputdir=err",
+				"-w", "missingoutfile=err",
+				"-j", strconv.Itoa(config.Parallel()),
+				"--frontend_file", fifo,
+				"-f", filepath.Join(config.SoongOutDir(), "bootstrap.ninja"),
+			}
 		}
 
 		if extra, ok := config.Environment().Get("SOONG_UI_NINJA_ARGS"); ok {
@@ -647,8 +649,9 @@ func runSoong(ctx Context, config Config) {
 		}
 
 		ninjaArgs = append(ninjaArgs, targets...)
+
 		cmd := Command(ctx, config, "soong bootstrap",
-			config.PrebuiltBuildTool("ninja"), ninjaArgs...)
+			ninjaCmd, ninjaArgs...)
 
 		var ninjaEnv Environment
 
@@ -680,6 +683,12 @@ func runSoong(ctx Context, config Config) {
 		targets = append(targets, config.SoongNinjaFile())
 	}
 
+	for _, target := range targets {
+		if err := checkGlobs(ctx, target); err != nil {
+			ctx.Fatalf("Error checking globs: %s", err.Error())
+		}
+	}
+
 	beforeSoongTimestamp := time.Now()
 
 	ninja(targets...)
@@ -704,6 +713,160 @@ func runSoong(ctx Context, config Config) {
 	if config.JsonModuleGraph() {
 		distGzipFile(ctx, config, config.ModuleGraphFile(), "soong")
 	}
+}
+
+// checkGlobs manages the globs that cause soong to rerun.
+//
+// When soong_build runs, it will run globs. It will write all the globs
+// it ran into the "{finalOutFile}.globs" file. Then every build,
+// soong_ui will check that file, rerun the globs, and if they changed
+// from the results that soong_build got, update the ".glob_results"
+// file, causing soong_build to rerun. The ".glob_results" file will
+// be empty on the first run of soong_build, because we don't know
+// what the globs are yet, but also remain empty until the globs change
+// so that we don't run soong_build a second time unnecessarily.
+// Both soong_build and soong_ui will also update a ".globs_time" file
+// with the time that they ran at every build. When soong_ui checks
+// globs, it only reruns globs whose dependencies are newer than the
+// time in the ".globs_time" file.
+func checkGlobs(ctx Context, finalOutFile string) error {
+	ctx.BeginTrace(metrics.RunSoong, "check_globs")
+	defer ctx.EndTrace()
+	st := ctx.Status.StartTool()
+	st.Status("Running globs...")
+	defer st.Finish()
+
+	globsFile, err := os.Open(finalOutFile + ".globs")
+	if errors.Is(err, fs.ErrNotExist) {
+		// if the glob file doesn't exist, make sure the glob_results file exists and is empty.
+		if err := os.MkdirAll(filepath.Dir(finalOutFile), 0777); err != nil {
+			return err
+		}
+		f, err := os.Create(finalOutFile + ".glob_results")
+		if err != nil {
+			return err
+		}
+		return f.Close()
+	} else if err != nil {
+		return err
+	}
+	defer globsFile.Close()
+	globsFileDecoder := json.NewDecoder(globsFile)
+
+	globsTimeBytes, err := os.ReadFile(finalOutFile + ".globs_time")
+	if err != nil {
+		return err
+	}
+	globsTimeMicros, err := strconv.ParseInt(strings.TrimSpace(string(globsTimeBytes)), 10, 64)
+	if err != nil {
+		return err
+	}
+	globCheckStartTime := time.Now().UnixMicro()
+
+	globsChan := make(chan pathtools.GlobResult)
+	errorsChan := make(chan error)
+	wg := sync.WaitGroup{}
+	hasChangedGlobs := false
+	for i := 0; i < runtime.NumCPU()*2; i++ {
+		wg.Add(1)
+		go func() {
+			for cachedGlob := range globsChan {
+				// If we've already determined we have changed globs, just finish consuming
+				// the channel without doing any more checks.
+				if hasChangedGlobs {
+					continue
+				}
+				// First, check if any of the deps are newer than the last time globs were checked.
+				// If not, we don't need to rerun the glob.
+				hasNewDep := false
+				for _, dep := range cachedGlob.Deps {
+					info, err := os.Stat(dep)
+					if errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ENOTDIR) {
+						hasNewDep = true
+						break
+					} else if err != nil {
+						errorsChan <- err
+						continue
+					}
+					if info.ModTime().UnixMicro() > globsTimeMicros {
+						hasNewDep = true
+						break
+					}
+				}
+				if !hasNewDep {
+					continue
+				}
+
+				// Then rerun the glob and check if we got the same result as before.
+				result, err := pathtools.Glob(cachedGlob.Pattern, cachedGlob.Excludes, pathtools.FollowSymlinks)
+				if err != nil {
+					errorsChan <- err
+				} else {
+					if !slices.Equal(result.Matches, cachedGlob.Matches) {
+						hasChangedGlobs = true
+					}
+				}
+			}
+			wg.Done()
+		}()
+	}
+	go func() {
+		wg.Wait()
+		close(errorsChan)
+	}()
+
+	errorsWg := sync.WaitGroup{}
+	errorsWg.Add(1)
+	var errFromGoRoutines error
+	go func() {
+		for result := range errorsChan {
+			if errFromGoRoutines == nil {
+				errFromGoRoutines = result
+			}
+		}
+		errorsWg.Done()
+	}()
+
+	var cachedGlob pathtools.GlobResult
+	for globsFileDecoder.More() {
+		if err := globsFileDecoder.Decode(&cachedGlob); err != nil {
+			return err
+		}
+		// Need to clone the GlobResult because the json decoder will
+		// reuse the same slice allocations.
+		globsChan <- cachedGlob.Clone()
+	}
+	close(globsChan)
+	errorsWg.Wait()
+	if errFromGoRoutines != nil {
+		return errFromGoRoutines
+	}
+
+	// Update the globs_time file whether or not we found changed globs,
+	// so that we don't rerun globs in the future that we just saw didn't change.
+	err = os.WriteFile(
+		finalOutFile+".globs_time",
+		[]byte(fmt.Sprintf("%d\n", globCheckStartTime)),
+		0666,
+	)
+	if err != nil {
+		return err
+	}
+
+	if hasChangedGlobs {
+		fmt.Fprintf(os.Stdout, "Globs changed, rerunning soong...\n")
+		// Write the current time to the glob_results file. We just need
+		// some unique value to trigger a rerun, it doesn't matter what it is.
+		err = os.WriteFile(
+			finalOutFile+".glob_results",
+			[]byte(fmt.Sprintf("%d\n", globCheckStartTime)),
+			0666,
+		)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // loadSoongBuildMetrics reads out/soong_build_metrics.pb if it was generated by soong_build and copies the
@@ -752,18 +915,6 @@ func loadSoongBuildMetrics(ctx Context, config Config, oldTimestamp time.Time) {
 			}
 			ctx.Tracer.CountersAtTime(group.GetName(), ctx.Thread, timestamp, counters)
 		}
-	}
-}
-
-func cleanBazelFiles(config Config) {
-	files := []string{
-		shared.JoinPath(config.SoongOutDir(), "bp2build"),
-		shared.JoinPath(config.SoongOutDir(), "workspace"),
-		shared.JoinPath(config.SoongOutDir(), bazel.SoongInjectionDirName),
-		shared.JoinPath(config.OutDir(), "bazel")}
-
-	for _, f := range files {
-		os.RemoveAll(f)
 	}
 }
 

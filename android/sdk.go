@@ -513,6 +513,9 @@ type SdkMemberType interface {
 	// SupportedLinkages returns the names of the linkage variants supported by this module.
 	SupportedLinkages() []string
 
+	// DisablesStrip returns true if the stripping needs to be disabled for this module.
+	DisablesStrip() bool
+
 	// ArePrebuiltsRequired returns true if prebuilts are required in the sdk snapshot, false
 	// otherwise.
 	ArePrebuiltsRequired() bool
@@ -618,6 +621,9 @@ type SdkMemberTypeBase struct {
 	// The names of linkage variants supported by this module.
 	SupportedLinkageNames []string
 
+	// StripDisabled returns true if the stripping needs to be disabled for this module.
+	StripDisabled bool
+
 	// When set to true BpPropertyNotRequired indicates that the member type does not require the
 	// property to be specifiable in an Android.bp file.
 	BpPropertyNotRequired bool
@@ -687,6 +693,10 @@ func (b *SdkMemberTypeBase) Overrides(other SdkMemberType) bool {
 
 func (b *SdkMemberTypeBase) SupportedLinkages() []string {
 	return b.SupportedLinkageNames
+}
+
+func (b *SdkMemberTypeBase) DisablesStrip() bool {
+	return b.StripDisabled
 }
 
 // registeredModuleExportsMemberTypes is the set of registered SdkMemberTypes for module_exports
@@ -803,8 +813,6 @@ type SdkMemberProperties interface {
 
 // SdkMemberContext provides access to information common to a specific member.
 type SdkMemberContext interface {
-	ConfigAndErrorContext
-
 	// SdkModuleContext returns the module context of the sdk common os variant which is creating the
 	// snapshot.
 	//

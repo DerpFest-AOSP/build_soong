@@ -21,7 +21,6 @@ import (
 	"strings"
 
 	"android/soong/android"
-	"android/soong/multitree"
 )
 
 var (
@@ -351,9 +350,6 @@ func (test *testBinary) AndroidMkEntries(ctx AndroidMkContext, entries *android.
 	ctx.subAndroidMk(entries, test.testDecorator)
 
 	entries.Class = "NATIVE_TESTS"
-	if Bool(test.Properties.Test_per_src) {
-		entries.SubName = "_" + String(test.binaryDecorator.Properties.Stem)
-	}
 	entries.ExtraEntries = append(entries.ExtraEntries, func(ctx android.AndroidMkExtraEntriesContext, entries *android.AndroidMkEntries) {
 		if test.testConfig != nil {
 			entries.SetString("LOCAL_FULL_TEST_CONFIG", test.testConfig.String())
@@ -454,10 +450,6 @@ func (c *vndkPrebuiltLibraryDecorator) AndroidMkEntries(ctx AndroidMkContext, en
 	})
 }
 
-func (c *ndkPrebuiltStlLinker) AndroidMkEntries(ctx AndroidMkContext, entries *android.AndroidMkEntries) {
-	entries.Class = "SHARED_LIBRARIES"
-}
-
 func (p *prebuiltLinker) AndroidMkEntries(ctx AndroidMkContext, entries *android.AndroidMkEntries) {
 	entries.ExtraEntries = append(entries.ExtraEntries, func(ctx android.AndroidMkExtraEntriesContext, entries *android.AndroidMkEntries) {
 		if p.properties.Check_elf_files != nil {
@@ -484,34 +476,6 @@ func (p *prebuiltBinaryLinker) AndroidMkEntries(ctx AndroidMkContext, entries *a
 	ctx.subAndroidMk(entries, p.binaryDecorator)
 	ctx.subAndroidMk(entries, &p.prebuiltLinker)
 	androidMkWritePrebuiltOptions(p.baseLinker, entries)
-}
-
-func (a *apiLibraryDecorator) AndroidMkEntries(ctx AndroidMkContext, entries *android.AndroidMkEntries) {
-	entries.Class = "SHARED_LIBRARIES"
-	entries.SubName += multitree.GetApiImportSuffix()
-
-	entries.ExtraEntries = append(entries.ExtraEntries, func(_ android.AndroidMkExtraEntriesContext, entries *android.AndroidMkEntries) {
-		a.libraryDecorator.androidMkWriteExportedFlags(entries)
-		src := *a.properties.Src
-		path, file := filepath.Split(src)
-		stem, suffix, ext := android.SplitFileExt(file)
-		entries.SetString("LOCAL_BUILT_MODULE_STEM", "$(LOCAL_MODULE)"+ext)
-		entries.SetString("LOCAL_MODULE_SUFFIX", suffix)
-		entries.SetString("LOCAL_MODULE_STEM", stem)
-		entries.SetString("LOCAL_MODULE_PATH", path)
-		entries.SetBool("LOCAL_UNINSTALLABLE_MODULE", true)
-		entries.SetString("LOCAL_SOONG_TOC", a.toc().String())
-	})
-}
-
-func (a *apiHeadersDecorator) AndroidMkEntries(ctx AndroidMkContext, entries *android.AndroidMkEntries) {
-	entries.Class = "HEADER_LIBRARIES"
-	entries.SubName += multitree.GetApiImportSuffix()
-
-	entries.ExtraEntries = append(entries.ExtraEntries, func(_ android.AndroidMkExtraEntriesContext, entries *android.AndroidMkEntries) {
-		a.libraryDecorator.androidMkWriteExportedFlags(entries)
-		entries.SetBool("LOCAL_UNINSTALLABLE_MODULE", true)
-	})
 }
 
 func androidMkWritePrebuiltOptions(linker *baseLinker, entries *android.AndroidMkEntries) {

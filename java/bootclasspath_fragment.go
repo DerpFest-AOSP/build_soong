@@ -414,6 +414,12 @@ func (b *BootclasspathFragmentModule) DepIsInSameApex(ctx android.BaseModuleCont
 		// Cross-cutting metadata dependencies are metadata.
 		return false
 	}
+	// Dependency to the bootclasspath fragment of another apex
+	// e.g. concsrypt-bootclasspath-fragment --> art-bootclasspath-fragment
+	if tag == bootclasspathFragmentDepTag {
+		return false
+
+	}
 	panic(fmt.Errorf("boot_image module %q should not have a dependency on %q via tag %s", b, dep, android.PrettyPrintTag(tag)))
 }
 
@@ -445,7 +451,7 @@ func (b *BootclasspathFragmentModule) ComponentDepsMutator(ctx android.BottomUpM
 func (b *BootclasspathFragmentModule) DepsMutator(ctx android.BottomUpMutatorContext) {
 	// Add dependencies onto all the modules that provide the API stubs for classes on this
 	// bootclasspath fragment.
-	hiddenAPIAddStubLibDependencies(ctx, b.properties.apiScopeToStubLibs())
+	hiddenAPIAddStubLibDependencies(ctx, b.properties.apiScopeToStubLibs(ctx))
 
 	for _, additionalStubModule := range b.properties.Additional_stubs {
 		for _, apiScope := range hiddenAPISdkLibrarySupportedScopes {
@@ -463,6 +469,12 @@ func (b *BootclasspathFragmentModule) DepsMutator(ctx android.BottomUpMutatorCon
 	// Add a dependency onto the dex2oat tool which is needed for creating the boot image. The
 	// path is retrieved from the dependency by GetGlobalSoongConfig(ctx).
 	dexpreopt.RegisterToolDeps(ctx)
+
+	// Add a dependency to `all_apex_contributions` to determine if prebuilts are active.
+	// If prebuilts are active, `contents` validation on the source bootclasspath fragment should be disabled.
+	if _, isPrebuiltModule := ctx.Module().(*PrebuiltBootclasspathFragmentModule); !isPrebuiltModule {
+		ctx.AddDependency(b, android.AcDepTag, "all_apex_contributions")
+	}
 }
 
 func (b *BootclasspathFragmentModule) BootclasspathDepsMutator(ctx android.BottomUpMutatorContext) {
@@ -836,7 +848,7 @@ func (b *BootclasspathFragmentModule) getProfilePath() android.Path {
 }
 
 // Collect information for opening IDE project files in java/jdeps.go.
-func (b *BootclasspathFragmentModule) IDEInfo(dpInfo *android.IdeInfo) {
+func (b *BootclasspathFragmentModule) IDEInfo(ctx android.BaseModuleContext, dpInfo *android.IdeInfo) {
 	dpInfo.Deps = append(dpInfo.Deps, b.properties.Contents...)
 }
 
@@ -933,8 +945,8 @@ func (b *bootclasspathFragmentSdkMemberProperties) PopulateFromVariant(ctx andro
 	b.Filtered_flags_path = android.OptionalPathForPath(hiddenAPIInfo.FilteredFlagsPath)
 
 	// Copy stub_libs properties.
-	b.Stub_libs = module.properties.Api.Stub_libs
-	b.Core_platform_stub_libs = module.properties.Core_platform_api.Stub_libs
+	b.Stub_libs = module.properties.Api.Stub_libs.GetOrDefault(mctx, nil)
+	b.Core_platform_stub_libs = module.properties.Core_platform_api.Stub_libs.GetOrDefault(mctx, nil)
 
 	// Copy fragment properties.
 	b.Fragments = module.properties.Fragments
@@ -1093,22 +1105,10 @@ func (module *PrebuiltBootclasspathFragmentModule) produceHiddenAPIOutput(ctx an
 	return &output
 }
 
+// DEPRECATED: this information is now generated in the context of the top level prebuilt apex.
 // produceBootImageProfile extracts the boot image profile from the APEX if available.
 func (module *PrebuiltBootclasspathFragmentModule) produceBootImageProfile(ctx android.ModuleContext) android.WritablePath {
-	// This module does not provide a boot image profile.
-	if module.getProfileProviderApex(ctx) == "" {
-		return nil
-	}
-
-	di, err := android.FindDeapexerProviderForModule(ctx)
-	if err != nil {
-		// An error was found, possibly due to multiple apexes in the tree that export this library
-		// Defer the error till a client tries to call getProfilePath
-		module.profilePathErr = err
-		return nil // An error has been reported by FindDeapexerProviderForModule.
-	}
-
-	return di.PrebuiltExportPath(ProfileInstallPathInApex)
+	return android.PathForModuleInstall(ctx, "intentionally_no_longer_supported")
 }
 
 func (b *PrebuiltBootclasspathFragmentModule) getProfilePath() android.Path {

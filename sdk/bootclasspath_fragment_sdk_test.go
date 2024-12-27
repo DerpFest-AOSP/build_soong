@@ -204,7 +204,19 @@ java_import {
 .intermediates/mysdk/common_os/empty -> java_boot_libs/snapshot/jars/are/invalid/core1.jar
 .intermediates/mysdk/common_os/empty -> java_boot_libs/snapshot/jars/are/invalid/core2.jar
 		`),
-		snapshotTestPreparer(checkSnapshotWithoutSource, preparerForSnapshot),
+		snapshotTestPreparer(checkSnapshotWithoutSource, android.GroupFixturePreparers(
+			preparerForSnapshot,
+			// Flag ART prebuilts
+			android.FixtureMergeMockFs(android.MockFS{
+				"apex_contributions/Android.bp": []byte(`
+				apex_contributions {
+					name: "prebuilt_art_contributions",
+					contents: ["prebuilt_com.android.art"],
+					api_domain: "com.android.art",
+				}
+			`)}),
+			android.PrepareForTestWithBuildFlag("RELEASE_APEX_CONTRIBUTIONS_ART", "prebuilt_art_contributions"),
+		)),
 
 		// Check the behavior of the snapshot without the source.
 		snapshotTestChecker(checkSnapshotWithoutSource, func(t *testing.T, result *android.TestResult) {
@@ -212,8 +224,8 @@ java_import {
 			checkBootJarsPackageCheckRule(t, result,
 				append(
 					[]string{
-						"out/soong/.intermediates/prebuilts/apex/prebuilt_com.android.art.deapexer/android_common/deapexer/javalib/core1.jar",
-						"out/soong/.intermediates/prebuilts/apex/prebuilt_com.android.art.deapexer/android_common/deapexer/javalib/core2.jar",
+						"out/soong/.intermediates/prebuilts/apex/com.android.art/android_common_com.android.art/deapexer/javalib/core1.jar",
+						"out/soong/.intermediates/prebuilts/apex/com.android.art/android_common_com.android.art/deapexer/javalib/core2.jar",
 						"out/soong/.intermediates/default/java/framework/android_common/aligned/framework.jar",
 					},
 					java.ApexBootJarDexJarPaths...,
@@ -276,11 +288,7 @@ func testSnapshotWithBootClasspathFragment_Contents(t *testing.T, sdk string, co
 		// Add a platform_bootclasspath that depends on the fragment.
 		fixtureAddPlatformBootclasspathForBootclasspathFragment("myapex", "mybootclasspathfragment"),
 
-		android.FixtureModifyProductVariables(func(variables android.FixtureProductVariables) {
-			variables.BuildFlags = map[string]string{
-				"RELEASE_HIDDEN_API_EXPORTABLE_STUBS": "true",
-			}
-		}),
+		android.PrepareForTestWithBuildFlag("RELEASE_HIDDEN_API_EXPORTABLE_STUBS", "true"),
 		// Make sure that we have atleast one platform library so that we can check the monolithic hiddenapi
 		// file creation.
 		java.FixtureConfigureBootJars("platform:foo"),
@@ -342,6 +350,7 @@ func testSnapshotWithBootClasspathFragment_Contents(t *testing.T, sdk string, co
 				shared_library: false,
 				public: {enabled: true},
 				min_sdk_version: "2",
+				sdk_version: "current",
 			}
 
 			java_sdk_library {
@@ -352,6 +361,7 @@ func testSnapshotWithBootClasspathFragment_Contents(t *testing.T, sdk string, co
 				public: {enabled: true},
 				min_sdk_version: "2",
 				permitted_packages: ["myothersdklibrary"],
+				sdk_version: "current",
 			}
 
 			java_sdk_library {
@@ -361,6 +371,7 @@ func testSnapshotWithBootClasspathFragment_Contents(t *testing.T, sdk string, co
 				compile_dex: true,
 				public: {enabled: true},
 				min_sdk_version: "2",
+				sdk_version: "current",
 			}
 		`),
 	).RunTest(t)
@@ -628,6 +639,7 @@ func TestSnapshotWithBootClasspathFragment_Fragments(t *testing.T) {
 				min_sdk_version: "2",
 				permitted_packages: ["myothersdklibrary"],
 				compile_dex: true,
+				sdk_version: "current",
 			}
 		`),
 
@@ -659,6 +671,7 @@ func TestSnapshotWithBootClasspathFragment_Fragments(t *testing.T) {
 				shared_library: false,
 				public: {enabled: true},
 				min_sdk_version: "2",
+				sdk_version: "current",
 			}
 		`),
 	).RunTest(t)
@@ -799,11 +812,7 @@ func TestSnapshotWithBootclasspathFragment_HiddenAPI(t *testing.T) {
 		// Add a platform_bootclasspath that depends on the fragment.
 		fixtureAddPlatformBootclasspathForBootclasspathFragment("myapex", "mybootclasspathfragment"),
 
-		android.FixtureModifyProductVariables(func(variables android.FixtureProductVariables) {
-			variables.BuildFlags = map[string]string{
-				"RELEASE_HIDDEN_API_EXPORTABLE_STUBS": "true",
-			}
-		}),
+		android.PrepareForTestWithBuildFlag("RELEASE_HIDDEN_API_EXPORTABLE_STUBS", "true"),
 
 		android.MockFS{
 			"my-blocked.txt":                   nil,
@@ -885,6 +894,7 @@ func TestSnapshotWithBootclasspathFragment_HiddenAPI(t *testing.T) {
 				public: {enabled: true},
 				permitted_packages: ["mysdklibrary"],
 				min_sdk_version: "current",
+				sdk_version: "current",
 			}
 
 			java_sdk_library {
@@ -903,6 +913,7 @@ func TestSnapshotWithBootclasspathFragment_HiddenAPI(t *testing.T) {
 					package_prefixes: ["newlibrary.all.mine"],
 					single_packages: ["newlibrary.mine"],
 				},
+				sdk_version: "current",
 			}
 		`),
 	).RunTest(t)
@@ -1053,11 +1064,7 @@ func testSnapshotWithBootClasspathFragment_MinSdkVersion(t *testing.T, targetBui
 			variables.Platform_version_active_codenames = []string{"VanillaIceCream"}
 		}),
 
-		android.FixtureModifyProductVariables(func(variables android.FixtureProductVariables) {
-			variables.BuildFlags = map[string]string{
-				"RELEASE_HIDDEN_API_EXPORTABLE_STUBS": "true",
-			}
-		}),
+		android.PrepareForTestWithBuildFlag("RELEASE_HIDDEN_API_EXPORTABLE_STUBS", "true"),
 
 		android.FixtureWithRootAndroidBp(`
 			sdk {
@@ -1092,6 +1099,7 @@ func testSnapshotWithBootClasspathFragment_MinSdkVersion(t *testing.T, targetBui
 				shared_library: false,
 				public: {enabled: true},
 				min_sdk_version: "S",
+				sdk_version: "current",
 			}
 
 			java_sdk_library {
@@ -1102,6 +1110,7 @@ func testSnapshotWithBootClasspathFragment_MinSdkVersion(t *testing.T, targetBui
 				public: {enabled: true},
 				min_sdk_version: "Tiramisu",
 				permitted_packages: ["mynewsdklibrary"],
+				sdk_version: "current",
 			}
 		`),
 	).RunTest(t)
@@ -1299,6 +1308,7 @@ func TestSnapshotWithEmptyBootClasspathFragment(t *testing.T) {
 				shared_library: false,
 				public: {enabled: true},
 				min_sdk_version: "Tiramisu",
+				sdk_version: "current",
 			}
 			java_sdk_library {
 				name: "mynewsdklibrary",
@@ -1308,6 +1318,7 @@ func TestSnapshotWithEmptyBootClasspathFragment(t *testing.T) {
 				public: {enabled: true},
 				min_sdk_version: "Tiramisu",
 				permitted_packages: ["mynewsdklibrary"],
+				sdk_version: "current",
 			}
 		`),
 	).RunTest(t)

@@ -93,6 +93,15 @@ func (k SdkKind) String() string {
 	}
 }
 
+func ToSdkKind(s string) SdkKind {
+	for kind := SdkNone; kind <= SdkPrivate; kind++ {
+		if s == kind.String() {
+			return kind
+		}
+	}
+	return SdkInvalid
+}
+
 func (k SdkKind) DefaultJavaLibraryName() string {
 	switch k {
 	case SdkPublic:

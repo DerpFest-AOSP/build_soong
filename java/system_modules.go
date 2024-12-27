@@ -120,14 +120,19 @@ func SystemModulesFactory() android.Module {
 	return module
 }
 
-type SystemModulesProvider interface {
-	HeaderJars() android.Paths
-	OutputDirAndDeps() (android.Path, android.Paths)
+type SystemModulesProviderInfo struct {
+	// The aggregated header jars from all jars specified in the libs property.
+	// Used when system module is added as a dependency to bootclasspath.
+	HeaderJars android.Paths
+
+	OutputDir     android.Path
+	OutputDirDeps android.Paths
+
+	// depset of header jars for this module and all transitive static dependencies
+	TransitiveStaticLibsHeaderJars *android.DepSet[android.Path]
 }
 
-var _ SystemModulesProvider = (*SystemModules)(nil)
-
-var _ SystemModulesProvider = (*systemModulesImport)(nil)
+var SystemModulesProvider = blueprint.NewProvider[*SystemModulesProviderInfo]()
 
 type SystemModules struct {
 	android.ModuleBase
@@ -135,9 +140,6 @@ type SystemModules struct {
 
 	properties SystemModulesProperties
 
-	// The aggregated header jars from all jars specified in the libs property.
-	// Used when system module is added as a dependency to bootclasspath.
-	headerJars android.Paths
 	outputDir  android.Path
 	outputDeps android.Paths
 }
@@ -147,28 +149,27 @@ type SystemModulesProperties struct {
 	Libs []string
 }
 
-func (system *SystemModules) HeaderJars() android.Paths {
-	return system.headerJars
-}
-
-func (system *SystemModules) OutputDirAndDeps() (android.Path, android.Paths) {
-	if system.outputDir == nil || len(system.outputDeps) == 0 {
-		panic("Missing directory for system module dependency")
-	}
-	return system.outputDir, system.outputDeps
-}
-
 func (system *SystemModules) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 	var jars android.Paths
 
+	var transitiveStaticLibsHeaderJars []*android.DepSet[android.Path]
 	ctx.VisitDirectDepsWithTag(systemModulesLibsTag, func(module android.Module) {
-		dep, _ := android.OtherModuleProvider(ctx, module, JavaInfoProvider)
-		jars = append(jars, dep.HeaderJars...)
+		if dep, ok := android.OtherModuleProvider(ctx, module, JavaInfoProvider); ok {
+			jars = append(jars, dep.HeaderJars...)
+			if dep.TransitiveStaticLibsHeaderJars != nil {
+				transitiveStaticLibsHeaderJars = append(transitiveStaticLibsHeaderJars, dep.TransitiveStaticLibsHeaderJars)
+			}
+		}
 	})
 
-	system.headerJars = jars
-
 	system.outputDir, system.outputDeps = TransformJarsToSystemModules(ctx, jars)
+
+	android.SetProvider(ctx, SystemModulesProvider, &SystemModulesProviderInfo{
+		HeaderJars:                     jars,
+		OutputDir:                      system.outputDir,
+		OutputDirDeps:                  system.outputDeps,
+		TransitiveStaticLibsHeaderJars: android.NewDepSet(android.PREORDER, nil, transitiveStaticLibsHeaderJars),
+	})
 }
 
 // ComponentDepsMutator is called before prebuilt modules without a corresponding source module are
@@ -309,4 +310,12 @@ func (p *systemModulesInfoProperties) AddToPropertySet(ctx android.SdkMemberCont
 		// Add the references to the libraries that form the system module.
 		propertySet.AddPropertyWithTag("libs", p.Libs, ctx.SnapshotBuilder().SdkMemberReferencePropertyTag(true))
 	}
+}
+
+// implement the following interface for IDE completion.
+var _ android.IDEInfo = (*SystemModules)(nil)
+
+func (s *SystemModules) IDEInfo(ctx android.BaseModuleContext, ideInfo *android.IdeInfo) {
+	ideInfo.Deps = append(ideInfo.Deps, s.properties.Libs...)
+	ideInfo.Libs = append(ideInfo.Libs, s.properties.Libs...)
 }

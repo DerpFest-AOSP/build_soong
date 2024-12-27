@@ -18,19 +18,11 @@ import (
 	"path/filepath"
 
 	"android/soong/android"
+
 	"github.com/google/blueprint"
 )
 
 var (
-	versionBionicHeaders = pctx.AndroidStaticRule("versionBionicHeaders",
-		blueprint.RuleParams{
-			// The `&& touch $out` isn't really necessary, but Blueprint won't
-			// let us have only implicit outputs.
-			Command:     "$versionerCmd -o $outDir $srcDir $depsPath && touch $out",
-			CommandDeps: []string{"$versionerCmd"},
-		},
-		"depsPath", "srcDir", "outDir")
-
 	preprocessNdkHeader = pctx.AndroidStaticRule("preprocessNdkHeader",
 		blueprint.RuleParams{
 			Command:     "$preprocessor -o $out $in",
@@ -39,12 +31,8 @@ var (
 		"preprocessor")
 )
 
-func init() {
-	pctx.SourcePathVariable("versionerCmd", "prebuilts/clang-tools/${config.HostPrebuiltTag}/bin/versioner")
-}
-
 // Returns the NDK base include path for use with sdk_version current. Usable with -I.
-func getCurrentIncludePath(ctx android.ModuleContext) android.OutputPath {
+func getCurrentIncludePath(ctx android.PathContext) android.OutputPath {
 	return getNdkSysrootBase(ctx).Join(ctx, "usr/include")
 }
 
@@ -73,6 +61,13 @@ type headerProperties struct {
 
 	// Path to the NOTICE file associated with the headers.
 	License *string `android:"path"`
+
+	// Set to true if the headers installed by this module should skip
+	// verification. This step ensures that each header is self-contained (can
+	// be #included alone) and is valid C. This should not be disabled except in
+	// rare cases. Outside bionic and external, if you're using this option
+	// you've probably made a mistake.
+	Skip_verification *bool
 }
 
 type headerModule struct {
@@ -159,126 +154,6 @@ func NdkHeadersFactory() android.Module {
 	return module
 }
 
-type versionedHeaderProperties struct {
-	// Base directory of the headers being installed. As an example:
-	//
-	// versioned_ndk_headers {
-	//     name: "foo",
-	//     from: "include",
-	//     to: "",
-	// }
-	//
-	// Will install $SYSROOT/usr/include/foo/bar/baz.h. If `from` were instead
-	// "include/foo", it would have installed $SYSROOT/usr/include/bar/baz.h.
-	From *string
-
-	// Install path within the sysroot. This is relative to usr/include.
-	To *string
-
-	// Path to the NOTICE file associated with the headers.
-	License *string
-}
-
-// Like ndk_headers, but preprocesses the headers with the bionic versioner:
-// https://android.googlesource.com/platform/bionic/+/main/tools/versioner/README.md.
-//
-// Unlike ndk_headers, we don't operate on a list of sources but rather a whole directory, the
-// module does not have the srcs property, and operates on a full directory (the `from` property).
-//
-// Note that this is really only built to handle bionic/libc/include.
-type versionedHeaderModule struct {
-	android.ModuleBase
-
-	properties versionedHeaderProperties
-
-	srcPaths     android.Paths
-	installPaths android.Paths
-	licensePath  android.Path
-}
-
-// Return the glob pattern to find all .h files beneath `dir`
-func headerGlobPattern(dir string) string {
-	return filepath.Join(dir, "**", "*.h")
-}
-
-func (m *versionedHeaderModule) GenerateAndroidBuildActions(ctx android.ModuleContext) {
-	if String(m.properties.License) == "" {
-		ctx.PropertyErrorf("license", "field is required")
-	}
-
-	m.licensePath = android.PathForModuleSrc(ctx, String(m.properties.License))
-
-	fromSrcPath := android.PathForModuleSrc(ctx, String(m.properties.From))
-	toOutputPath := getCurrentIncludePath(ctx).Join(ctx, String(m.properties.To))
-	m.srcPaths = ctx.GlobFiles(headerGlobPattern(fromSrcPath.String()), nil)
-	var installPaths []android.WritablePath
-	for _, header := range m.srcPaths {
-		installDir := getHeaderInstallDir(ctx, header, String(m.properties.From), String(m.properties.To))
-		installPath := installDir.Join(ctx, header.Base())
-		installPaths = append(installPaths, installPath)
-		m.installPaths = append(m.installPaths, installPath)
-	}
-
-	if len(m.installPaths) == 0 {
-		ctx.ModuleErrorf("glob %q matched zero files", String(m.properties.From))
-	}
-
-	processHeadersWithVersioner(ctx, fromSrcPath, toOutputPath, m.srcPaths, installPaths)
-}
-
-func processHeadersWithVersioner(ctx android.ModuleContext, srcDir, outDir android.Path,
-	srcPaths android.Paths, installPaths []android.WritablePath) android.Path {
-	// The versioner depends on a dependencies directory to simplify determining include paths
-	// when parsing headers. This directory contains architecture specific directories as well
-	// as a common directory, each of which contains symlinks to the actually directories to
-	// be included.
-	//
-	// ctx.Glob doesn't follow symlinks, so we need to do this ourselves so we correctly
-	// depend on these headers.
-	// TODO(http://b/35673191): Update the versioner to use a --sysroot.
-	depsPath := android.PathForSource(ctx, "bionic/libc/versioner-dependencies")
-	depsGlob := ctx.Glob(filepath.Join(depsPath.String(), "**/*"), nil)
-	for i, path := range depsGlob {
-		if ctx.IsSymlink(path) {
-			dest := ctx.Readlink(path)
-			// Additional .. to account for the symlink itself.
-			depsGlob[i] = android.PathForSource(
-				ctx, filepath.Clean(filepath.Join(path.String(), "..", dest)))
-		}
-	}
-
-	timestampFile := android.PathForModuleOut(ctx, "versioner.timestamp")
-	ctx.Build(pctx, android.BuildParams{
-		Rule:            versionBionicHeaders,
-		Description:     "versioner preprocess " + srcDir.Rel(),
-		Output:          timestampFile,
-		Implicits:       append(srcPaths, depsGlob...),
-		ImplicitOutputs: installPaths,
-		Args: map[string]string{
-			"depsPath": depsPath.String(),
-			"srcDir":   srcDir.String(),
-			"outDir":   outDir.String(),
-		},
-	})
-
-	return timestampFile
-}
-
-// versioned_ndk_headers preprocesses the headers with the bionic versioner:
-// https://android.googlesource.com/platform/bionic/+/main/tools/versioner/README.md.
-// Unlike the ndk_headers soong module, versioned_ndk_headers operates on a
-// directory level specified in `from` property. This is only used to process
-// the bionic/libc/include directory.
-func VersionedNdkHeadersFactory() android.Module {
-	module := &versionedHeaderModule{}
-
-	module.AddProperties(&module.properties)
-
-	android.InitAndroidModule(module)
-
-	return module
-}
-
 // preprocessed_ndk_header {
 //
 //	name: "foo",
@@ -309,6 +184,13 @@ type preprocessedHeadersProperties struct {
 
 	// Path to the NOTICE file associated with the headers.
 	License *string
+
+	// Set to true if the headers installed by this module should skip
+	// verification. This step ensures that each header is self-contained (can
+	// be #included alone) and is valid C. This should not be disabled except in
+	// rare cases. Outside bionic and external, if you're using this option
+	// you've probably made a mistake.
+	Skip_verification *bool
 }
 
 type preprocessedHeadersModule struct {

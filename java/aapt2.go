@@ -69,7 +69,7 @@ var aapt2CompileRule = pctx.AndroidStaticRule("aapt2Compile",
 
 // aapt2Compile compiles resources and puts the results in the requested directory.
 func aapt2Compile(ctx android.ModuleContext, dir android.Path, paths android.Paths,
-	flags []string, productToFilter string) android.WritablePaths {
+	flags []string, productToFilter string, featureFlagsPaths android.Paths) android.WritablePaths {
 	if productToFilter != "" && productToFilter != "default" {
 		// --filter-product leaves only product-specific resources. Product-specific resources only exist
 		// in value resources (values/*.xml), so filter value resource files only. Ignore other types of
@@ -83,6 +83,10 @@ func aapt2Compile(ctx android.ModuleContext, dir android.Path, paths android.Pat
 		}
 		paths = filteredPaths
 		flags = append([]string{"--filter-product " + productToFilter}, flags...)
+	}
+
+	for _, featureFlagsPath := range android.SortedUniquePaths(featureFlagsPaths) {
+		flags = append(flags, "--feature-flags", "@"+featureFlagsPath.String())
 	}
 
 	// Shard the input paths so that they can be processed in parallel. If we shard them into too
@@ -112,6 +116,7 @@ func aapt2Compile(ctx android.ModuleContext, dir android.Path, paths android.Pat
 		ctx.Build(pctx, android.BuildParams{
 			Rule:        aapt2CompileRule,
 			Description: "aapt2 compile " + dir.String() + shardDesc,
+			Implicits:   featureFlagsPaths,
 			Inputs:      shard,
 			Outputs:     outPaths,
 			Args: map[string]string{

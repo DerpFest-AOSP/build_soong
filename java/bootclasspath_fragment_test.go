@@ -222,11 +222,7 @@ func TestBootclasspathFragment_StubLibs(t *testing.T) {
 		PrepareForTestWithJavaSdkLibraryFiles,
 		FixtureWithLastReleaseApis("mysdklibrary", "myothersdklibrary", "mycoreplatform"),
 		FixtureConfigureApexBootJars("someapex:mysdklibrary"),
-		android.FixtureModifyProductVariables(func(variables android.FixtureProductVariables) {
-			variables.BuildFlags = map[string]string{
-				"RELEASE_HIDDEN_API_EXPORTABLE_STUBS": "true",
-			}
-		}),
+		android.PrepareForTestWithBuildFlag("RELEASE_HIDDEN_API_EXPORTABLE_STUBS", "true"),
 	).RunTestWithBp(t, `
 		bootclasspath_fragment {
 			name: "myfragment",
@@ -277,7 +273,7 @@ func TestBootclasspathFragment_StubLibs(t *testing.T) {
 	`)
 
 	fragment := result.Module("myfragment", "android_common")
-	info, _ := android.SingletonModuleProvider(result, fragment, HiddenAPIInfoProvider)
+	info, _ := android.OtherModuleProvider(result, fragment, HiddenAPIInfoProvider)
 
 	stubsJar := "out/soong/.intermediates/mystublib/android_common/dex/mystublib.jar"
 
@@ -461,7 +457,7 @@ func TestSnapshotWithBootclasspathFragment_HiddenAPI(t *testing.T) {
 
 	// Make sure that the library exports hidden API properties for use by the bootclasspath_fragment.
 	library := result.Module("mynewlibrary", "android_common")
-	info, _ := android.SingletonModuleProvider(result, library, hiddenAPIPropertyInfoProvider)
+	info, _ := android.OtherModuleProvider(result, library, hiddenAPIPropertyInfoProvider)
 	android.AssertArrayString(t, "split packages", []string{"sdklibrary", "newlibrary"}, info.SplitPackages)
 	android.AssertArrayString(t, "package prefixes", []string{"newlibrary.all.mine"}, info.PackagePrefixes)
 	android.AssertArrayString(t, "single packages", []string{"newlibrary.mine"}, info.SinglePackages)

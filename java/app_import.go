@@ -17,7 +17,6 @@ package java
 // This file contains the module implementations for android_app_import and android_test_import.
 
 import (
-	"fmt"
 	"reflect"
 	"strings"
 
@@ -422,6 +421,8 @@ func (a *AndroidAppImport) generateAndroidBuildActions(ctx android.ModuleContext
 		},
 	)
 
+	ctx.SetOutputFiles([]android.Path{a.outputFile}, "")
+
 	// TODO: androidmk converter jni libs
 }
 
@@ -430,6 +431,9 @@ func (a *AndroidAppImport) validatePresignedApk(ctx android.ModuleContext, srcAp
 	var extraArgs []string
 	if a.Privileged() {
 		extraArgs = append(extraArgs, "--privileged")
+		if ctx.Config().UncompressPrivAppDex() {
+			extraArgs = append(extraArgs, "--uncompress-priv-app-dex")
+		}
 	}
 	if proptools.Bool(a.properties.Skip_preprocessed_apk_checks) {
 		extraArgs = append(extraArgs, "--skip-preprocessed-apk-checks")
@@ -459,15 +463,6 @@ func (a *AndroidAppImport) Name() string {
 
 func (a *AndroidAppImport) OutputFile() android.Path {
 	return a.outputFile
-}
-
-func (a *AndroidAppImport) OutputFiles(tag string) (android.Paths, error) {
-	switch tag {
-	case "":
-		return []android.Path{a.outputFile}, nil
-	default:
-		return nil, fmt.Errorf("unsupported module reference tag %q", tag)
-	}
 }
 
 func (a *AndroidAppImport) JacocoReportClassesFile() android.Path {

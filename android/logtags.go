@@ -42,7 +42,7 @@ func (l *logtagsSingleton) GenerateBuildActions(ctx SingletonContext) {
 		if !module.ExportedToMake() {
 			return
 		}
-		if logtagsInfo, ok := SingletonModuleProvider(ctx, module, LogtagsProviderKey); ok {
+		if logtagsInfo, ok := OtherModuleProvider(ctx, module, LogtagsProviderKey); ok {
 			allLogtags = append(allLogtags, logtagsInfo.Logtags...)
 		}
 	})

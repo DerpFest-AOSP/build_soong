@@ -22,6 +22,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -1043,12 +1044,13 @@ func TestBuildConfig(t *testing.T) {
 			},
 		},
 		{
+			// RBE is only supported on linux.
 			name:    "use rbe",
 			environ: Environment{"USE_RBE=1"},
 			expectedBuildConfig: &smpb.BuildConfig{
 				ForceUseGoma:          proto.Bool(false),
 				UseGoma:               proto.Bool(false),
-				UseRbe:                proto.Bool(true),
+				UseRbe:                proto.Bool(runtime.GOOS == "linux"),
 				NinjaWeightListSource: smpb.BuildConfig_NOT_USED.Enum(),
 			},
 		},

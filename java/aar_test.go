@@ -53,7 +53,7 @@ func TestAarImportProducesJniPackages(t *testing.T) {
 			appMod := ctx.Module(tc.name, "android_common")
 			appTestMod := ctx.ModuleForTests(tc.name, "android_common")
 
-			info, ok := android.SingletonModuleProvider(ctx, appMod, JniPackageProvider)
+			info, ok := android.OtherModuleProvider(ctx, appMod, JniPackageProvider)
 			if !ok {
 				t.Errorf("expected android_library_import to have JniPackageProvider")
 			}
@@ -159,21 +159,21 @@ func TestAndroidLibraryOutputFilesRel(t *testing.T) {
 	bar := result.ModuleForTests("bar", "android_common")
 	baz := result.ModuleForTests("baz", "android_common")
 
-	fooOutputPath := android.OutputFileForModule(android.PathContext(nil), foo.Module(), "")
-	barOutputPath := android.OutputFileForModule(android.PathContext(nil), bar.Module(), "")
-	bazOutputPath := android.OutputFileForModule(android.PathContext(nil), baz.Module(), "")
+	fooOutputPaths := foo.OutputFiles(result.TestContext, t, "")
+	barOutputPaths := bar.OutputFiles(result.TestContext, t, "")
+	bazOutputPaths := baz.OutputFiles(result.TestContext, t, "")
 
-	android.AssertPathRelativeToTopEquals(t, "foo output path",
-		"out/soong/.intermediates/foo/android_common/withres/foo.jar", fooOutputPath)
-	android.AssertPathRelativeToTopEquals(t, "bar output path",
-		"out/soong/.intermediates/bar/android_common/aar/bar.jar", barOutputPath)
-	android.AssertPathRelativeToTopEquals(t, "baz output path",
-		"out/soong/.intermediates/baz/android_common/withres/baz.jar", bazOutputPath)
+	android.AssertPathsRelativeToTopEquals(t, "foo output path",
+		[]string{"out/soong/.intermediates/foo/android_common/withres/foo.jar"}, fooOutputPaths)
+	android.AssertPathsRelativeToTopEquals(t, "bar output path",
+		[]string{"out/soong/.intermediates/bar/android_common/aar/bar.jar"}, barOutputPaths)
+	android.AssertPathsRelativeToTopEquals(t, "baz output path",
+		[]string{"out/soong/.intermediates/baz/android_common/withres/baz.jar"}, bazOutputPaths)
 
 	android.AssertStringEquals(t, "foo relative output path",
-		"foo.jar", fooOutputPath.Rel())
+		"foo.jar", fooOutputPaths[0].Rel())
 	android.AssertStringEquals(t, "bar relative output path",
-		"bar.jar", barOutputPath.Rel())
+		"bar.jar", barOutputPaths[0].Rel())
 	android.AssertStringEquals(t, "baz relative output path",
-		"baz.jar", bazOutputPath.Rel())
+		"baz.jar", bazOutputPaths[0].Rel())
 }

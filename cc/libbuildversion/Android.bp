@@ -20,4 +20,5 @@ cc_library_static {
         "//apex_available:anyapex",
     ],
     vendor_available: true,
+    visibility: ["//visibility:public"],
 }

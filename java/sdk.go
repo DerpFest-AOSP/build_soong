@@ -278,7 +278,7 @@ func createFrameworkAidl(stubsModules []string, path android.WritablePath, ctx a
 
 	ctx.VisitAllModules(func(module android.Module) {
 		// Collect dex jar paths for the modules listed above.
-		if j, ok := android.SingletonModuleProvider(ctx, module, JavaInfoProvider); ok {
+		if j, ok := android.OtherModuleProvider(ctx, module, JavaInfoProvider); ok {
 			name := ctx.ModuleName(module)
 			if i := android.IndexList(name, stubsModules); i != -1 {
 				stubsJars[i] = j.HeaderJars
@@ -308,10 +308,12 @@ func createFrameworkAidl(stubsModules []string, path android.WritablePath, ctx a
 
 			rule.Command().
 				Text("rm -f").Output(aidl)
+
 			rule.Command().
 				BuiltTool("sdkparcelables").
 				Input(jar).
-				Output(aidl)
+				Output(aidl).
+				Flag("--guarantee_stable")
 
 			aidls = append(aidls, aidl)
 		}

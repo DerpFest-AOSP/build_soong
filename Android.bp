@@ -1,5 +1,8 @@
 package {
     default_applicable_licenses: ["Android-Apache-2.0"],
+    default_visibility: [
+        "//build/soong:__subpackages__",
+    ],
 }
 
 subdirs = [
@@ -23,6 +26,8 @@ bootstrap_go_package {
     srcs: [
         "doc.go",
     ],
+    // Used by plugins, though probably shouldn't be.
+    visibility: ["//visibility:public"],
 }
 
 //
@@ -40,6 +45,7 @@ cc_defaults {
             enabled: true,
         },
     },
+    defaults_visibility: ["//visibility:public"],
 }
 
 //
@@ -51,6 +57,7 @@ kernel_headers {
     vendor: true,
     recovery_available: true,
     min_sdk_version: "apex_inherit",
+    visibility: ["//visibility:public"],
 }
 
 cc_genrule {
@@ -75,6 +82,7 @@ cc_genrule {
     cmd: "$(location) -s $(out) $(in)",
     srcs: [":linker"],
     out: ["linker.s"],
+    visibility: ["//bionic/libc"],
 }
 
 cc_genrule {
@@ -99,12 +107,13 @@ cc_genrule {
     cmd: "$(location) -T $(out) $(in)",
     srcs: [":linker"],
     out: ["linker.script"],
+    visibility: ["//visibility:public"],
 }
 
 // Instantiate the dex_bootjars singleton module.
 dex_bootjars {
     name: "dex_bootjars",
-    no_full_install: true,
+    visibility: ["//visibility:public"],
 }
 
 // Pseudo-test that's run on checkbuilds to ensure that get_clang_version can
@@ -124,6 +133,7 @@ dexpreopt_systemserver_check {
 // container for apex_contributions selected using build flags
 all_apex_contributions {
     name: "all_apex_contributions",
+    visibility: ["//visibility:public"],
 }
 
 product_config {
@@ -138,7 +148,7 @@ build_prop {
     // Currently, only microdroid and cf system image can refer to system-build.prop
     visibility: [
         "//device/google/cuttlefish/system_image",
-        "//packages/modules/Virtualization/microdroid",
+        "//packages/modules/Virtualization/build/microdroid",
     ],
 }
 

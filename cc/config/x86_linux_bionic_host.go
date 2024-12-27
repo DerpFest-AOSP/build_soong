@@ -25,6 +25,8 @@ var (
 
 		"-fPIC",
 
+		"-fno-omit-frame-pointer",
+
 		"-U_FORTIFY_SOURCE",
 		"-D_FORTIFY_SOURCE=2",
 		"-fstack-protector-strong",

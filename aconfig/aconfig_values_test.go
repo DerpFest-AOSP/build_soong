@@ -33,7 +33,7 @@ func TestAconfigValues(t *testing.T) {
 	module := result.ModuleForTests("module_name", "").Module().(*ValuesModule)
 
 	// Check that the provider has the right contents
-	depData, _ := android.SingletonModuleProvider(result, module, valuesProviderKey)
+	depData, _ := android.OtherModuleProvider(result, module, valuesProviderKey)
 	android.AssertStringEquals(t, "package", "foo.package", depData.Package)
 	android.AssertPathsEndWith(t, "srcs", []string{"blah.aconfig_values"}, depData.Values)
 }

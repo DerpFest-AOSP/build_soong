@@ -50,6 +50,7 @@ func RegisterPrebuiltEtcBuildComponents(ctx android.RegistrationContext) {
 	ctx.RegisterModuleType("prebuilt_etc", PrebuiltEtcFactory)
 	ctx.RegisterModuleType("prebuilt_etc_host", PrebuiltEtcHostFactory)
 	ctx.RegisterModuleType("prebuilt_etc_cacerts", PrebuiltEtcCaCertsFactory)
+	ctx.RegisterModuleType("prebuilt_avb", PrebuiltAvbFactory)
 	ctx.RegisterModuleType("prebuilt_root", PrebuiltRootFactory)
 	ctx.RegisterModuleType("prebuilt_root_host", PrebuiltRootHostFactory)
 	ctx.RegisterModuleType("prebuilt_usr_share", PrebuiltUserShareFactory)
@@ -125,6 +126,15 @@ type prebuiltSubdirProperties struct {
 	Relative_install_path *string `android:"arch_variant"`
 }
 
+type prebuiltRootProperties struct {
+	// Install this module to the root directory, without partition subdirs.  When this module is
+	// added to PRODUCT_PACKAGES, this module will be installed to $PRODUCT_OUT/root, which will
+	// then be copied to the root of system.img. When this module is packaged by other modules like
+	// android_filesystem, this module will be installed to the root ("/"), unlike normal
+	// prebuilt_root modules which are installed to the partition subdir (e.g. "/system/").
+	Install_in_root *bool
+}
+
 type PrebuiltEtcModule interface {
 	android.Module
 
@@ -139,7 +149,12 @@ type PrebuiltEtc struct {
 	android.ModuleBase
 	android.DefaultableModuleBase
 
-	properties       prebuiltEtcProperties
+	properties prebuiltEtcProperties
+
+	// rootProperties is used to return the value of the InstallInRoot() method. Currently, only
+	// prebuilt_avb and prebuilt_root modules use this.
+	rootProperties prebuiltRootProperties
+
 	subdirProperties prebuiltSubdirProperties
 
 	sourceFilePaths android.Paths
@@ -216,6 +231,14 @@ var _ android.ImageInterface = (*PrebuiltEtc)(nil)
 
 func (p *PrebuiltEtc) ImageMutatorBegin(ctx android.BaseModuleContext) {}
 
+func (p *PrebuiltEtc) VendorVariantNeeded(ctx android.BaseModuleContext) bool {
+	return false
+}
+
+func (p *PrebuiltEtc) ProductVariantNeeded(ctx android.BaseModuleContext) bool {
+	return false
+}
+
 func (p *PrebuiltEtc) CoreVariantNeeded(ctx android.BaseModuleContext) bool {
 	return !p.ModuleBase.InstallInRecovery() && !p.ModuleBase.InstallInRamdisk() &&
 		!p.ModuleBase.InstallInVendorRamdisk() && !p.ModuleBase.InstallInDebugRamdisk()
@@ -231,6 +254,10 @@ func (p *PrebuiltEtc) VendorRamdiskVariantNeeded(ctx android.BaseModuleContext) 
 
 func (p *PrebuiltEtc) DebugRamdiskVariantNeeded(ctx android.BaseModuleContext) bool {
 	return proptools.Bool(p.properties.Debug_ramdisk_available) || p.ModuleBase.InstallInDebugRamdisk()
+}
+
+func (p *PrebuiltEtc) InstallInRoot() bool {
+	return proptools.Bool(p.rootProperties.Install_in_root)
 }
 
 func (p *PrebuiltEtc) RecoveryVariantNeeded(ctx android.BaseModuleContext) bool {
@@ -493,6 +520,13 @@ func InitPrebuiltEtcModule(p *PrebuiltEtc, dirBase string) {
 func InitPrebuiltRootModule(p *PrebuiltEtc) {
 	p.installDirBase = "."
 	p.AddProperties(&p.properties)
+	p.AddProperties(&p.rootProperties)
+}
+
+func InitPrebuiltAvbModule(p *PrebuiltEtc) {
+	p.installDirBase = "avb"
+	p.AddProperties(&p.properties)
+	p.rootProperties.Install_in_root = proptools.BoolPtr(true)
 }
 
 // prebuilt_etc is for a prebuilt artifact that is installed in
@@ -542,6 +576,20 @@ func PrebuiltEtcCaCertsFactory() android.Module {
 	InitPrebuiltEtcModule(module, "cacerts")
 	// This module is device-only
 	android.InitAndroidArchModule(module, android.DeviceSupported, android.MultilibFirst)
+	return module
+}
+
+// Generally, a <partition> directory will contain a `system` subdirectory, but the <partition> of
+// `prebuilt_avb` will not have a `system` subdirectory.
+// Ultimately, prebuilt_avb will install the prebuilt artifact to the `avb` subdirectory under the
+// root directory of the partition: <partition_root>/avb.
+// prebuilt_avb does not allow adding any other subdirectories.
+func PrebuiltAvbFactory() android.Module {
+	module := &PrebuiltEtc{}
+	InitPrebuiltAvbModule(module)
+	// This module is device-only
+	android.InitAndroidArchModule(module, android.DeviceSupported, android.MultilibFirst)
+	android.InitDefaultableModule(module)
 	return module
 }
 

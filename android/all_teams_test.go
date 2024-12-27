@@ -264,6 +264,84 @@ func TestPackageLookup(t *testing.T) {
 	AssertDeepEquals(t, "compare maps", expectedTeams, actualTeams)
 }
 
+func TestPackageLookupForIncludedBlueprintFiles(t *testing.T) {
+	t.Parallel()
+	rootBp := `
+                package { default_team: "team_top"}
+		team {
+			name: "team_top",
+			trendy_team_id: "trendy://team_top",
+		}
+                build = ["include.bp"]
+ `
+	includeBp := `
+		fake {
+			name: "IncludedModule",
+		} `
+
+	ctx := GroupFixturePreparers(
+		prepareForTestWithTeamAndFakes,
+		PrepareForTestWithPackageModule,
+		FixtureRegisterWithContext(func(ctx RegistrationContext) {
+			ctx.RegisterParallelSingletonType("all_teams", AllTeamsFactory)
+		}),
+		FixtureAddTextFile("Android.bp", rootBp),
+		FixtureAddTextFile("include.bp", includeBp),
+	).RunTest(t)
+
+	var teams *team_proto.AllTeams
+	teams = getTeamProtoOutput(t, ctx)
+
+	// map of module name -> trendy team name.
+	actualTeams := make(map[string]*string)
+	for _, teamProto := range teams.Teams {
+		actualTeams[teamProto.GetTargetName()] = teamProto.TrendyTeamId
+	}
+	expectedTeams := map[string]*string{
+		"IncludedModule": proto.String("trendy://team_top"),
+	}
+	AssertDeepEquals(t, "compare maps", expectedTeams, actualTeams)
+}
+
+func TestPackageLookupForIncludedBlueprintFilesWithPackageInChildBlueprint(t *testing.T) {
+	t.Parallel()
+	rootBp := `
+		team {
+			name: "team_top",
+			trendy_team_id: "trendy://team_top",
+		}
+                build = ["include.bp"]
+ `
+	includeBp := `
+                package { default_team: "team_top"}
+		fake {
+			name: "IncludedModule",
+		} `
+
+	ctx := GroupFixturePreparers(
+		prepareForTestWithTeamAndFakes,
+		PrepareForTestWithPackageModule,
+		FixtureRegisterWithContext(func(ctx RegistrationContext) {
+			ctx.RegisterParallelSingletonType("all_teams", AllTeamsFactory)
+		}),
+		FixtureAddTextFile("Android.bp", rootBp),
+		FixtureAddTextFile("include.bp", includeBp),
+	).RunTest(t)
+
+	var teams *team_proto.AllTeams
+	teams = getTeamProtoOutput(t, ctx)
+
+	// map of module name -> trendy team name.
+	actualTeams := make(map[string]*string)
+	for _, teamProto := range teams.Teams {
+		actualTeams[teamProto.GetTargetName()] = teamProto.TrendyTeamId
+	}
+	expectedTeams := map[string]*string{
+		"IncludedModule": proto.String("trendy://team_top"),
+	}
+	AssertDeepEquals(t, "compare maps", expectedTeams, actualTeams)
+}
+
 type fakeForTests struct {
 	ModuleBase
 

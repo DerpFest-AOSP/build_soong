@@ -15,6 +15,7 @@
 package aconfig
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -39,7 +40,7 @@ func TestAconfigDeclarations(t *testing.T) {
 	module := result.ModuleForTests("module_name", "").Module().(*DeclarationsModule)
 
 	// Check that the provider has the right contents
-	depData, _ := android.SingletonModuleProvider(result, module, android.AconfigDeclarationsProviderKey)
+	depData, _ := android.OtherModuleProvider(result, module, android.AconfigDeclarationsProviderKey)
 	android.AssertStringEquals(t, "package", depData.Package, "com.example.package")
 	android.AssertStringEquals(t, "container", depData.Container, "com.android.foo")
 	android.AssertBoolEquals(t, "exportable", depData.Exportable, true)
@@ -66,7 +67,7 @@ func TestAconfigDeclarationsWithExportableUnset(t *testing.T) {
 	result := runTest(t, android.FixtureExpectsNoErrors, bp)
 
 	module := result.ModuleForTests("module_name", "").Module().(*DeclarationsModule)
-	depData, _ := android.SingletonModuleProvider(result, module, android.AconfigDeclarationsProviderKey)
+	depData, _ := android.OtherModuleProvider(result, module, android.AconfigDeclarationsProviderKey)
 	android.AssertBoolEquals(t, "exportable", depData.Exportable, false)
 }
 
@@ -132,5 +133,97 @@ func TestMandatoryProperties(t *testing.T) {
 				ExtendWithErrorHandler(errorHandler).
 				RunTestWithBp(t, test.bp)
 		})
+	}
+}
+
+func TestAssembleFileName(t *testing.T) {
+	testCases := []struct {
+		name          string
+		releaseConfig string
+		path          string
+		expectedValue string
+	}{
+		{
+			name:          "active release config",
+			path:          "file.path",
+			expectedValue: "file.path",
+		},
+		{
+			name:          "release config FOO",
+			releaseConfig: "FOO",
+			path:          "file.path",
+			expectedValue: "file-FOO.path",
+		},
+	}
+	for _, test := range testCases {
+		actualValue := assembleFileName(test.releaseConfig, test.path)
+		if actualValue != test.expectedValue {
+			t.Errorf("Expected %q found %q", test.expectedValue, actualValue)
+		}
+	}
+}
+
+func TestGenerateAndroidBuildActions(t *testing.T) {
+	testCases := []struct {
+		name         string
+		buildFlags   map[string]string
+		bp           string
+		errorHandler android.FixtureErrorHandler
+	}{
+		{
+			name: "generate extra",
+			buildFlags: map[string]string{
+				"RELEASE_ACONFIG_EXTRA_RELEASE_CONFIGS": "config2",
+				"RELEASE_ACONFIG_VALUE_SETS":            "aconfig_value_set-config1",
+				"RELEASE_ACONFIG_VALUE_SETS_config2":    "aconfig_value_set-config2",
+			},
+			bp: `
+				aconfig_declarations {
+					name: "module_name",
+					package: "com.example.package",
+					container: "com.android.foo",
+					srcs: [
+						"foo.aconfig",
+						"bar.aconfig",
+					],
+				}
+				aconfig_value_set {
+					name: "aconfig_value_set-config1",
+					values: []
+				}
+				aconfig_value_set {
+					name: "aconfig_value_set-config2",
+					values: []
+				}
+			`,
+		},
+	}
+	for _, test := range testCases {
+		fixture := PrepareForTest(t, addBuildFlagsForTest(test.buildFlags))
+		if test.errorHandler != nil {
+			fixture = fixture.ExtendWithErrorHandler(test.errorHandler)
+		}
+		result := fixture.RunTestWithBp(t, test.bp)
+		module := result.ModuleForTests("module_name", "").Module().(*DeclarationsModule)
+		depData, _ := android.OtherModuleProvider(result, module, android.AconfigReleaseDeclarationsProviderKey)
+		expectedKeys := []string{""}
+		for _, rc := range strings.Split(test.buildFlags["RELEASE_ACONFIG_EXTRA_RELEASE_CONFIGS"], " ") {
+			expectedKeys = append(expectedKeys, rc)
+		}
+		slices.Sort(expectedKeys)
+		actualKeys := []string{}
+		for rc := range depData {
+			actualKeys = append(actualKeys, rc)
+		}
+		slices.Sort(actualKeys)
+		android.AssertStringEquals(t, "provider keys", strings.Join(expectedKeys, " "), strings.Join(actualKeys, " "))
+		for _, rc := range actualKeys {
+			if !strings.HasSuffix(depData[rc].IntermediateCacheOutputPath.String(), assembleFileName(rc, "/intermediate.pb")) {
+				t.Errorf("Incorrect intermediates proto path in provider for release config %s: %s", rc, depData[rc].IntermediateCacheOutputPath.String())
+			}
+			if !strings.HasSuffix(depData[rc].IntermediateDumpOutputPath.String(), assembleFileName(rc, "/intermediate.txt")) {
+				t.Errorf("Incorrect intermediates text path in provider for release config %s: %s", rc, depData[rc].IntermediateDumpOutputPath.String())
+			}
+		}
 	}
 }

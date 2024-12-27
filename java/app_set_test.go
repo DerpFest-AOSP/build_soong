@@ -56,7 +56,7 @@ func TestAndroidAppSet(t *testing.T) {
 	mkEntries := android.AndroidMkEntriesForTest(t, result.TestContext, module.Module())[0]
 	actualInstallFile := mkEntries.EntryMap["LOCAL_APK_SET_INSTALL_FILE"]
 	expectedInstallFile := []string{
-		strings.Replace(params.ImplicitOutputs[0].String(), android.OutSoongDir, result.Config.SoongOutDir(), 1),
+		strings.Replace(params.ImplicitOutputs[0].String(), android.TestOutSoongDir, result.Config.SoongOutDir(), 1),
 	}
 	if !reflect.DeepEqual(actualInstallFile, expectedInstallFile) {
 		t.Errorf("Unexpected LOCAL_APK_SET_INSTALL_FILE value: '%s', expected: '%s',",

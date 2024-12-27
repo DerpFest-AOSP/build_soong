@@ -54,30 +54,6 @@ type apexVndkProperties struct {
 	Vndk_version *string
 }
 
-func apexVndkMutator(mctx android.TopDownMutatorContext) {
-	if ab, ok := mctx.Module().(*apexBundle); ok && ab.vndkApex {
-		if ab.IsNativeBridgeSupported() {
-			mctx.PropertyErrorf("native_bridge_supported", "%q doesn't support native bridge binary.", mctx.ModuleType())
-		}
-
-		vndkVersion := ab.vndkVersion()
-		if vndkVersion != "" {
-			apiLevel, err := android.ApiLevelFromUser(mctx, vndkVersion)
-			if err != nil {
-				mctx.PropertyErrorf("vndk_version", "%s", err.Error())
-				return
-			}
-
-			targets := mctx.MultiTargets()
-			if len(targets) > 0 && apiLevel.LessThan(cc.MinApiForArch(mctx, targets[0].Arch.ArchType)) {
-				// Disable VNDK APEXes for VNDK versions less than the minimum supported API
-				// level for the primary architecture.
-				ab.Disable()
-			}
-		}
-	}
-}
-
 func apexVndkDepsMutator(mctx android.BottomUpMutatorContext) {
 	if m, ok := mctx.Module().(*cc.Module); ok && cc.IsForVndkApex(mctx, m) {
 		vndkVersion := m.VndkVersion()
@@ -93,8 +69,27 @@ func apexVndkDepsMutator(mctx android.BottomUpMutatorContext) {
 			mctx.AddReverseDependency(mctx.Module(), sharedLibTag, vndkApexName)
 		}
 	} else if a, ok := mctx.Module().(*apexBundle); ok && a.vndkApex {
-		vndkVersion := proptools.StringDefault(a.vndkProperties.Vndk_version, "current")
-		mctx.AddDependency(mctx.Module(), prebuiltTag, cc.VndkLibrariesTxtModules(vndkVersion, mctx)...)
+		if a.IsNativeBridgeSupported() {
+			mctx.PropertyErrorf("native_bridge_supported", "%q doesn't support native bridge binary.", mctx.ModuleType())
+		}
+
+		vndkVersion := a.vndkVersion()
+		if vndkVersion != "" {
+			apiLevel, err := android.ApiLevelFromUser(mctx, vndkVersion)
+			if err != nil {
+				mctx.PropertyErrorf("vndk_version", "%s", err.Error())
+				return
+			}
+
+			targets := mctx.MultiTargets()
+			if len(targets) > 0 && apiLevel.LessThan(cc.MinApiForArch(mctx, targets[0].Arch.ArchType)) {
+				// Disable VNDK APEXes for VNDK versions less than the minimum supported API
+				// level for the primary architecture.
+				a.Disable()
+			} else {
+				mctx.AddDependency(mctx.Module(), prebuiltTag, cc.VndkLibrariesTxtModules(vndkVersion, mctx)...)
+			}
+		}
 	}
 }
 

@@ -60,6 +60,7 @@ func init() {
 	AddNeverAllowRules(createCcStubsRule())
 	AddNeverAllowRules(createJavaExcludeStaticLibsRule())
 	AddNeverAllowRules(createProhibitHeaderOnlyRule())
+	AddNeverAllowRules(createLimitNdkExportRule()...)
 }
 
 // Add a NeverAllow rule to the set of rules to apply.
@@ -182,6 +183,7 @@ func createCcSdkVariantRules() []Rule {
 		"packages/modules/SdkExtensions/derive_sdk",
 		// These are for apps and shouldn't be used by non-SDK variant modules.
 		"prebuilts/ndk",
+		"frameworks/native/libs/binder/ndk",
 		"tools/test/graphicsbenchmark/apps/sample_app",
 		"tools/test/graphicsbenchmark/functional_tests/java",
 		"vendor/xts/gts-tests/hostsidetests/gamedevicecert/apps/javatests",
@@ -212,7 +214,7 @@ func createCcSdkVariantRules() []Rule {
 
 func createCcStubsRule() Rule {
 	ccStubsImplementationInstallableProjectsAllowedList := []string{
-		"packages/modules/Virtualization/vm_payload",
+		"packages/modules/Virtualization/libs/libvm_payload",
 	}
 
 	return NeverAllow().
@@ -237,6 +239,7 @@ func createInitFirstStageRules() []Rule {
 			Without("name", "init_first_stage").
 			Without("name", "init_first_stage.microdroid").
 			With("install_in_root", "true").
+			NotModuleType("prebuilt_root").
 			Because("install_in_root is only for init_first_stage."),
 	}
 }
@@ -263,6 +266,22 @@ func createProhibitHeaderOnlyRule() Rule {
 		Without("name", "framework-minus-apex-headers").
 		With("headers_only", "true").
 		Because("headers_only can only be used for generating framework-minus-apex headers for non-updatable modules")
+}
+
+func createLimitNdkExportRule() []Rule {
+	reason := "If the headers you're trying to export are meant to be a part of the NDK, they should be exposed by an ndk_headers module. If the headers shouldn't be a part of the NDK, the headers should instead be exposed from a separate `cc_library_headers` which consumers depend on."
+	// DO NOT ADD HERE - please consult danalbert@
+	// b/357711733
+	return []Rule{
+		NeverAllow().
+			NotIn("frameworks/native/libs/binder/ndk").
+			ModuleType("ndk_library").
+			WithMatcher("export_header_libs", isSetMatcherInstance).Because(reason),
+		NeverAllow().ModuleType("ndk_library").WithMatcher("export_generated_headers", isSetMatcherInstance).Because(reason),
+		NeverAllow().ModuleType("ndk_library").WithMatcher("export_include_dirs", isSetMatcherInstance).Because(reason),
+		NeverAllow().ModuleType("ndk_library").WithMatcher("export_shared_lib_headers", isSetMatcherInstance).Because(reason),
+		NeverAllow().ModuleType("ndk_library").WithMatcher("export_static_lib_headers", isSetMatcherInstance).Because(reason),
+	}
 }
 
 func neverallowMutator(ctx BottomUpMutatorContext) {

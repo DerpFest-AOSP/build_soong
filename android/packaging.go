@@ -15,8 +15,12 @@
 package android
 
 import (
+	"bytes"
+	"encoding/gob"
+	"errors"
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/google/blueprint"
@@ -55,6 +59,42 @@ type PackagingSpec struct {
 
 	// ArchType of the module which produced this packaging spec
 	archType ArchType
+
+	// List of module names that this packaging spec overrides
+	overrides *[]string
+
+	// Name of the module where this packaging spec is output of
+	owner string
+}
+
+func (p *PackagingSpec) GobEncode() ([]byte, error) {
+	w := new(bytes.Buffer)
+	encoder := gob.NewEncoder(w)
+	err := errors.Join(encoder.Encode(p.relPathInPackage), encoder.Encode(p.srcPath),
+		encoder.Encode(p.symlinkTarget), encoder.Encode(p.executable),
+		encoder.Encode(p.effectiveLicenseFiles), encoder.Encode(p.partition),
+		encoder.Encode(p.skipInstall), encoder.Encode(p.aconfigPaths),
+		encoder.Encode(p.archType))
+	if err != nil {
+		return nil, err
+	}
+
+	return w.Bytes(), nil
+}
+
+func (p *PackagingSpec) GobDecode(data []byte) error {
+	r := bytes.NewBuffer(data)
+	decoder := gob.NewDecoder(r)
+	err := errors.Join(decoder.Decode(&p.relPathInPackage), decoder.Decode(&p.srcPath),
+		decoder.Decode(&p.symlinkTarget), decoder.Decode(&p.executable),
+		decoder.Decode(&p.effectiveLicenseFiles), decoder.Decode(&p.partition),
+		decoder.Decode(&p.skipInstall), decoder.Decode(&p.aconfigPaths),
+		decoder.Decode(&p.archType))
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func (p *PackagingSpec) Equals(other *PackagingSpec) bool {
@@ -324,7 +364,10 @@ func (p *PackagingBase) AddDeps(ctx BottomUpMutatorContext, depTag blueprint.Dep
 }
 
 func (p *PackagingBase) GatherPackagingSpecsWithFilter(ctx ModuleContext, filter func(PackagingSpec) bool) map[string]PackagingSpec {
-	m := make(map[string]PackagingSpec)
+	// all packaging specs gathered from the dep.
+	var all []PackagingSpec
+	// list of module names overridden
+	var overridden []string
 
 	var arches []ArchType
 	for _, target := range getSupportedTargets(ctx) {
@@ -345,7 +388,8 @@ func (p *PackagingBase) GatherPackagingSpecsWithFilter(ctx ModuleContext, filter
 		if pi, ok := ctx.OtherModuleDependencyTag(child).(PackagingItem); !ok || !pi.IsPackagingItem() {
 			return
 		}
-		for _, ps := range child.TransitivePackagingSpecs() {
+		for _, ps := range OtherModuleProviderOrDefault(
+			ctx, child, InstallFilesProvider).TransitivePackagingSpecs.ToList() {
 			if !filterArch(ps) {
 				continue
 			}
@@ -355,17 +399,33 @@ func (p *PackagingBase) GatherPackagingSpecsWithFilter(ctx ModuleContext, filter
 					continue
 				}
 			}
-			dstPath := ps.relPathInPackage
-			if existingPs, ok := m[dstPath]; ok {
-				if !existingPs.Equals(&ps) {
-					ctx.ModuleErrorf("packaging conflict at %v:\n%v\n%v", dstPath, existingPs, ps)
-				}
-				continue
+			all = append(all, ps)
+			if ps.overrides != nil {
+				overridden = append(overridden, *ps.overrides...)
 			}
-
-			m[dstPath] = ps
 		}
 	})
+
+	// all minus packaging specs that are overridden
+	var filtered []PackagingSpec
+	for _, ps := range all {
+		if ps.owner != "" && InList(ps.owner, overridden) {
+			continue
+		}
+		filtered = append(filtered, ps)
+	}
+
+	m := make(map[string]PackagingSpec)
+	for _, ps := range filtered {
+		dstPath := ps.relPathInPackage
+		if existingPs, ok := m[dstPath]; ok {
+			if !existingPs.Equals(&ps) {
+				ctx.ModuleErrorf("packaging conflict at %v:\n%v\n%v", dstPath, existingPs, ps)
+			}
+			continue
+		}
+		m[dstPath] = ps
+	}
 	return m
 }
 
@@ -377,31 +437,59 @@ func (p *PackagingBase) GatherPackagingSpecs(ctx ModuleContext) map[string]Packa
 // CopySpecsToDir is a helper that will add commands to the rule builder to copy the PackagingSpec
 // entries into the specified directory.
 func (p *PackagingBase) CopySpecsToDir(ctx ModuleContext, builder *RuleBuilder, specs map[string]PackagingSpec, dir WritablePath) (entries []string) {
-	if len(specs) == 0 {
+	dirsToSpecs := make(map[WritablePath]map[string]PackagingSpec)
+	dirsToSpecs[dir] = specs
+	return p.CopySpecsToDirs(ctx, builder, dirsToSpecs)
+}
+
+// CopySpecsToDirs is a helper that will add commands to the rule builder to copy the PackagingSpec
+// entries into corresponding directories.
+func (p *PackagingBase) CopySpecsToDirs(ctx ModuleContext, builder *RuleBuilder, dirsToSpecs map[WritablePath]map[string]PackagingSpec) (entries []string) {
+	empty := true
+	for _, specs := range dirsToSpecs {
+		if len(specs) > 0 {
+			empty = false
+			break
+		}
+	}
+	if empty {
 		return entries
 	}
+
 	seenDir := make(map[string]bool)
 	preparerPath := PathForModuleOut(ctx, "preparer.sh")
 	cmd := builder.Command().Tool(preparerPath)
 	var sb strings.Builder
 	sb.WriteString("set -e\n")
-	for _, k := range SortedKeys(specs) {
-		ps := specs[k]
-		destPath := filepath.Join(dir.String(), ps.relPathInPackage)
-		destDir := filepath.Dir(destPath)
-		entries = append(entries, ps.relPathInPackage)
-		if _, ok := seenDir[destDir]; !ok {
-			seenDir[destDir] = true
-			sb.WriteString(fmt.Sprintf("mkdir -p %s\n", destDir))
-		}
-		if ps.symlinkTarget == "" {
-			cmd.Implicit(ps.srcPath)
-			sb.WriteString(fmt.Sprintf("cp %s %s\n", ps.srcPath, destPath))
-		} else {
-			sb.WriteString(fmt.Sprintf("ln -sf %s %s\n", ps.symlinkTarget, destPath))
-		}
-		if ps.executable {
-			sb.WriteString(fmt.Sprintf("chmod a+x %s\n", destPath))
+
+	dirs := make([]WritablePath, 0, len(dirsToSpecs))
+	for dir, _ := range dirsToSpecs {
+		dirs = append(dirs, dir)
+	}
+	sort.Slice(dirs, func(i, j int) bool {
+		return dirs[i].String() < dirs[j].String()
+	})
+
+	for _, dir := range dirs {
+		specs := dirsToSpecs[dir]
+		for _, k := range SortedKeys(specs) {
+			ps := specs[k]
+			destPath := filepath.Join(dir.String(), ps.relPathInPackage)
+			destDir := filepath.Dir(destPath)
+			entries = append(entries, ps.relPathInPackage)
+			if _, ok := seenDir[destDir]; !ok {
+				seenDir[destDir] = true
+				sb.WriteString(fmt.Sprintf("mkdir -p %s\n", destDir))
+			}
+			if ps.symlinkTarget == "" {
+				cmd.Implicit(ps.srcPath)
+				sb.WriteString(fmt.Sprintf("cp %s %s\n", ps.srcPath, destPath))
+			} else {
+				sb.WriteString(fmt.Sprintf("ln -sf %s %s\n", ps.symlinkTarget, destPath))
+			}
+			if ps.executable {
+				sb.WriteString(fmt.Sprintf("chmod a+x %s\n", destPath))
+			}
 		}
 	}
 

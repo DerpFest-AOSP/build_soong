@@ -21,7 +21,7 @@ func (this *allTestSpecsSingleton) GenerateBuildActions(ctx android.SingletonCon
 	var intermediateMetadataPaths android.Paths
 
 	ctx.VisitAllModules(func(module android.Module) {
-		if metadata, ok := android.SingletonModuleProvider(ctx, module, TestSpecProviderKey); ok {
+		if metadata, ok := android.OtherModuleProvider(ctx, module, TestSpecProviderKey); ok {
 			intermediateMetadataPaths = append(intermediateMetadataPaths, metadata.IntermediatePath)
 		}
 	})

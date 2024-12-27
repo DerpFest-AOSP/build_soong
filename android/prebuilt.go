@@ -61,7 +61,7 @@ var _ ExcludeFromApexContentsTag = PrebuiltDepTag
 type UserSuppliedPrebuiltProperties struct {
 	// When prefer is set to true the prebuilt will be used instead of any source module with
 	// a matching name.
-	Prefer *bool `android:"arch_variant"`
+	Prefer proptools.Configurable[bool] `android:"arch_variant,replace_instead_of_append"`
 
 	// When specified this names a Soong config variable that controls the prefer property.
 	//
@@ -148,11 +148,7 @@ func PrebuiltNameFromSource(name string) string {
 }
 
 func (p *Prebuilt) ForcePrefer() {
-	p.properties.Prefer = proptools.BoolPtr(true)
-}
-
-func (p *Prebuilt) Prefer() bool {
-	return proptools.Bool(p.properties.Prefer)
+	p.properties.Prefer = NewSimpleConfigurable(true)
 }
 
 // SingleSourcePathFromSupplier invokes the supplied supplier for the current module in the
@@ -248,6 +244,8 @@ func InitPrebuiltModuleWithSrcSupplier(module PrebuiltInterface, srcsSupplier Pr
 	p.srcsPropertyName = srcsPropertyName
 }
 
+// InitPrebuiltModule is the same as InitPrebuiltModuleWithSrcSupplier, but uses the
+// provided list of strings property as the source provider.
 func InitPrebuiltModule(module PrebuiltInterface, srcs *[]string) {
 	if srcs == nil {
 		panic(fmt.Errorf("srcs must not be nil"))
@@ -255,6 +253,20 @@ func InitPrebuiltModule(module PrebuiltInterface, srcs *[]string) {
 
 	srcsSupplier := func(ctx BaseModuleContext, _ Module) []string {
 		return *srcs
+	}
+
+	InitPrebuiltModuleWithSrcSupplier(module, srcsSupplier, "srcs")
+}
+
+// InitConfigurablePrebuiltModule is the same as InitPrebuiltModule, but uses a
+// Configurable list of strings property instead of a regular list of strings.
+func InitConfigurablePrebuiltModule(module PrebuiltInterface, srcs *proptools.Configurable[[]string]) {
+	if srcs == nil {
+		panic(fmt.Errorf("srcs must not be nil"))
+	}
+
+	srcsSupplier := func(ctx BaseModuleContext, _ Module) []string {
+		return srcs.GetOrDefault(ctx, nil)
 	}
 
 	InitPrebuiltModuleWithSrcSupplier(module, srcsSupplier, "srcs")
@@ -738,7 +750,7 @@ func (p *Prebuilt) usePrebuilt(ctx BaseMutatorContext, source Module, prebuilt M
 	}
 
 	// TODO: use p.Properties.Name and ctx.ModuleDir to override preference
-	return Bool(p.properties.Prefer)
+	return p.properties.Prefer.GetOrDefault(ctx, false)
 }
 
 func (p *Prebuilt) SourceExists() bool {

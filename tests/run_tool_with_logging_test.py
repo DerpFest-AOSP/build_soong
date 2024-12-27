@@ -193,7 +193,7 @@ class RunToolWithLoggingTest(unittest.TestCase):
     logger_path = self._import_executable("tool_event_logger")
 
     self._run_script_and_wait(f"""
-      TMPDIR="{self.working_dir.name}"
+      export TMPDIR="{self.working_dir.name}"
       export ANDROID_TOOL_LOGGER="{logger_path}"
       export ANDROID_TOOL_LOGGER_EXTRA_ARGS="--dry_run"
       {self.logging_script_path} "FAKE_TOOL" {test_tool.executable} arg1 arg2
@@ -206,7 +206,7 @@ class RunToolWithLoggingTest(unittest.TestCase):
     logger_path = self._import_executable("tool_event_logger")
 
     self._run_script_and_wait(f"""
-      TMPDIR="{self.working_dir.name}"
+      export TMPDIR="{self.working_dir.name}"
       export ANDROID_TOOL_LOGGER="{logger_path}"
       export ANDROID_TOOL_LOGGER_EXTRA_ARGS="--dry_run"
       {self.logging_script_path} "FAKE_TOOL" {test_tool.executable} --tool-arg1

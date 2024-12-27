@@ -58,6 +58,7 @@ type RuleBuilder struct {
 	sboxInputs       bool
 	sboxManifestPath WritablePath
 	missingDeps      []string
+	args             map[string]string
 }
 
 // NewRuleBuilder returns a newly created RuleBuilder.
@@ -76,6 +77,17 @@ func NewRuleBuilder(pctx PackageContext, ctx BuilderContext) *RuleBuilder {
 func (rb *RuleBuilder) SetSboxOutDirDirAsEmpty() *RuleBuilder {
 	rb.sboxOutSubDir = ""
 	return rb
+}
+
+// Set the phony_output argument.
+// This causes the output files to be ignored.
+// If the output isn't created, it's not treated as an error.
+// The build rule is run every time whether or not the output is created.
+func (rb *RuleBuilder) SetPhonyOutput() {
+	if rb.args == nil {
+		rb.args = make(map[string]string)
+	}
+	rb.args["phony_output"] = "true"
 }
 
 // RuleBuilderInstall is a tuple of install from and to locations.
@@ -451,6 +463,8 @@ func (r *RuleBuilder) Build(name string, desc string) {
 	r.build(name, desc, true)
 }
 
+var sandboxEnvOnceKey = NewOnceKey("sandbox_environment_variables")
+
 func (r *RuleBuilder) build(name string, desc string, ninjaEscapeCommandString bool) {
 	name = ninjaNameEscape(name)
 
@@ -542,6 +556,12 @@ func (r *RuleBuilder) build(name string, desc string, ninjaEscapeCommandString b
 					To:   proto.String(r.sboxPathForInputRel(input)),
 				})
 			}
+			for _, input := range r.OrderOnlys() {
+				command.CopyBefore = append(command.CopyBefore, &sbox_proto.Copy{
+					From: proto.String(input.String()),
+					To:   proto.String(r.sboxPathForInputRel(input)),
+				})
+			}
 
 			// If using rsp files copy them and their contents into the sbox directory with
 			// the appropriate path mappings.
@@ -562,6 +582,44 @@ func (r *RuleBuilder) build(name string, desc string, ninjaEscapeCommandString b
 				})
 			}
 
+			// Only allow the build to access certain environment variables
+			command.DontInheritEnv = proto.Bool(true)
+			command.Env = r.ctx.Config().Once(sandboxEnvOnceKey, func() interface{} {
+				// The list of allowed variables was found by running builds of all
+				// genrules and seeing what failed
+				var result []*sbox_proto.EnvironmentVariable
+				inheritedVars := []string{
+					"PATH",
+					"JAVA_HOME",
+					"TMPDIR",
+					// Allow RBE variables because the art tests invoke RBE manually
+					"RBE_log_dir",
+					"RBE_platform",
+					"RBE_server_address",
+					// TODO: RBE_exec_root is set to the absolute path to the root of the source
+					// tree, which we don't want sandboxed actions to find. Remap it to ".".
+					"RBE_exec_root",
+				}
+				for _, v := range inheritedVars {
+					result = append(result, &sbox_proto.EnvironmentVariable{
+						Name: proto.String(v),
+						State: &sbox_proto.EnvironmentVariable_Inherit{
+							Inherit: true,
+						},
+					})
+				}
+				// Set OUT_DIR to the relative path of the sandboxed out directory.
+				// Otherwise, OUT_DIR will be inherited from the rest of the build,
+				// which will allow scripts to escape the sandbox if OUT_DIR is an
+				// absolute path.
+				result = append(result, &sbox_proto.EnvironmentVariable{
+					Name: proto.String("OUT_DIR"),
+					State: &sbox_proto.EnvironmentVariable_Value{
+						Value: sboxOutSubDir,
+					},
+				})
+				return result
+			}).([]*sbox_proto.EnvironmentVariable)
 			command.Chdir = proto.Bool(true)
 		}
 
@@ -726,6 +784,12 @@ func (r *RuleBuilder) build(name string, desc string, ninjaEscapeCommandString b
 		commandString = proptools.NinjaEscape(commandString)
 	}
 
+	args_vars := make([]string, len(r.args))
+	i := 0
+	for k, _ := range r.args {
+		args_vars[i] = k
+		i++
+	}
 	r.ctx.Build(r.pctx, BuildParams{
 		Rule: r.ctx.Rule(r.pctx, name, blueprint.RuleParams{
 			Command:        commandString,
@@ -734,7 +798,7 @@ func (r *RuleBuilder) build(name string, desc string, ninjaEscapeCommandString b
 			Rspfile:        proptools.NinjaEscape(rspFile),
 			RspfileContent: rspFileContent,
 			Pool:           pool,
-		}),
+		}, args_vars...),
 		Inputs:          rspFileInputs,
 		Implicits:       inputs,
 		OrderOnly:       r.OrderOnlys(),
@@ -744,6 +808,7 @@ func (r *RuleBuilder) build(name string, desc string, ninjaEscapeCommandString b
 		Depfile:         depFile,
 		Deps:            depFormat,
 		Description:     desc,
+		Args:            r.args,
 	})
 }
 

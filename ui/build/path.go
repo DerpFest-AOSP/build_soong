@@ -57,6 +57,22 @@ func parsePathDir(dir string) []string {
 	return ret
 }
 
+func updatePathForSandbox(config Config) {
+	wd, err := os.Getwd()
+	if err != nil {
+		return
+	}
+
+	var newPath []string
+	if path, ok := config.Environment().Get("PATH"); ok && path != "" {
+		entries := strings.Split(path, string(filepath.ListSeparator))
+		for _, ent := range entries {
+			newPath = append(newPath, config.sandboxPath(wd, ent))
+		}
+	}
+	config.Environment().Set("PATH", strings.Join(newPath, string(filepath.ListSeparator)))
+}
+
 // SetupLitePath is the "lite" version of SetupPath used for dumpvars, or other
 // places that does not need the full logging capabilities of path_interposer,
 // wants the minimal performance overhead, and still get the benefits of $PATH
@@ -109,18 +125,10 @@ func SetupLitePath(ctx Context, config Config, tmpDir string) {
 	prebuiltsPath, _ := filepath.Abs("prebuilts/build-tools/path/" + runtime.GOOS + "-x86")
 	myPath = prebuiltsPath + string(os.PathListSeparator) + myPath
 
-	if value, _ := config.Environment().Get("BUILD_BROKEN_PYTHON_IS_PYTHON2"); value == "true" {
-		py2Path, _ := filepath.Abs("prebuilts/build-tools/path/" + runtime.GOOS + "-x86/py2")
-		if info, err := os.Stat(py2Path); err == nil && info.IsDir() {
-			myPath = py2Path + string(os.PathListSeparator) + myPath
-		}
-	} else if value != "" {
-		ctx.Fatalf("BUILD_BROKEN_PYTHON_IS_PYTHON2 can only be set to 'true' or an empty string, but got %s\n", value)
-	}
-
 	// Set $PATH to be the directories containing the host tool symlinks, and
 	// the prebuilts directory for the current host OS.
 	config.Environment().Set("PATH", myPath)
+	updatePathForSandbox(config)
 	config.pathReplaced = true
 }
 
@@ -253,17 +261,9 @@ func SetupPath(ctx Context, config Config) {
 	prebuiltsPath, _ := filepath.Abs("prebuilts/build-tools/path/" + runtime.GOOS + "-x86")
 	myPath = prebuiltsPath + string(os.PathListSeparator) + myPath
 
-	if value, _ := config.Environment().Get("BUILD_BROKEN_PYTHON_IS_PYTHON2"); value == "true" {
-		py2Path, _ := filepath.Abs("prebuilts/build-tools/path/" + runtime.GOOS + "-x86/py2")
-		if info, err := os.Stat(py2Path); err == nil && info.IsDir() {
-			myPath = py2Path + string(os.PathListSeparator) + myPath
-		}
-	} else if value != "" {
-		ctx.Fatalf("BUILD_BROKEN_PYTHON_IS_PYTHON2 can only be set to 'true' or an empty string, but got %s\n", value)
-	}
-
 	// Replace the $PATH variable with the path_interposer symlinks, and
 	// checked-in prebuilts.
 	config.Environment().Set("PATH", myPath)
+	updatePathForSandbox(config)
 	config.pathReplaced = true
 }

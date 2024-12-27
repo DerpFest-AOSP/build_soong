@@ -22,4 +22,6 @@ bootstrap_go_package {
         "genrule_test.go",
     ],
     pluginFor: ["soong_build"],
+    // Used by plugins
+    visibility: ["//visibility:public"],
 }

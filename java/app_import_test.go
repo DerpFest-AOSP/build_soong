@@ -777,30 +777,79 @@ func TestAndroidTestImport_Preprocessed(t *testing.T) {
 }
 
 func TestAndroidAppImport_Preprocessed(t *testing.T) {
-	ctx, _ := testJava(t, `
-		android_app_import {
-			name: "foo",
-			apk: "prebuilts/apk/app.apk",
-			presigned: true,
-			preprocessed: true,
-		}
-		`)
+	for _, dontUncompressPrivAppDexs := range []bool{false, true} {
+		name := fmt.Sprintf("dontUncompressPrivAppDexs:%t", dontUncompressPrivAppDexs)
+		t.Run(name, func(t *testing.T) {
+			result := android.GroupFixturePreparers(
+				PrepareForTestWithJavaDefaultModules,
+				android.FixtureModifyProductVariables(func(variables android.FixtureProductVariables) {
+					variables.UncompressPrivAppDex = proptools.BoolPtr(!dontUncompressPrivAppDexs)
+				}),
+			).RunTestWithBp(t, `
+				android_app_import {
+					name: "foo",
+					apk: "prebuilts/apk/app.apk",
+					presigned: true,
+					preprocessed: true,
+				}
 
-	apkName := "foo.apk"
-	variant := ctx.ModuleForTests("foo", "android_common")
-	outputBuildParams := variant.Output(apkName).BuildParams
-	if outputBuildParams.Rule.String() != android.Cp.String() {
-		t.Errorf("Unexpected prebuilt android_app_import rule: " + outputBuildParams.Rule.String())
-	}
+				android_app_import {
+					name: "bar",
+					apk: "prebuilts/apk/app.apk",
+					presigned: true,
+					privileged: true,
+					preprocessed: true,
+				}
+			`)
 
-	// Make sure compression and aligning were validated.
-	if outputBuildParams.Validation == nil {
-		t.Errorf("Expected validation rule, but was not found")
-	}
+			// non-privileged app
+			apkName := "foo.apk"
+			variant := result.ModuleForTests("foo", "android_common")
+			outputBuildParams := variant.Output(apkName).BuildParams
+			if outputBuildParams.Rule.String() != android.Cp.String() {
+				t.Errorf("Unexpected prebuilt android_app_import rule: " + outputBuildParams.Rule.String())
+			}
 
-	validationBuildParams := variant.Output("validated-prebuilt/check.stamp").BuildParams
-	if validationBuildParams.Rule.String() != checkPresignedApkRule.String() {
-		t.Errorf("Unexpected validation rule: " + validationBuildParams.Rule.String())
+			// Make sure compression and aligning were validated.
+			if outputBuildParams.Validation == nil {
+				t.Errorf("Expected validation rule, but was not found")
+			}
+
+			validationBuildParams := variant.Output("validated-prebuilt/check.stamp").BuildParams
+			if validationBuildParams.Rule.String() != checkPresignedApkRule.String() {
+				t.Errorf("Unexpected validation rule: " + validationBuildParams.Rule.String())
+			}
+
+			expectedScriptArgs := "--preprocessed"
+			actualScriptArgs := validationBuildParams.Args["extraArgs"]
+			android.AssertStringEquals(t, "check script extraArgs", expectedScriptArgs, actualScriptArgs)
+
+			// privileged app
+			apkName = "bar.apk"
+			variant = result.ModuleForTests("bar", "android_common")
+			outputBuildParams = variant.Output(apkName).BuildParams
+			if outputBuildParams.Rule.String() != android.Cp.String() {
+				t.Errorf("Unexpected prebuilt android_app_import rule: " + outputBuildParams.Rule.String())
+			}
+
+			// Make sure compression and aligning were validated.
+			if outputBuildParams.Validation == nil {
+				t.Errorf("Expected validation rule, but was not found")
+			}
+
+			validationBuildParams = variant.Output("validated-prebuilt/check.stamp").BuildParams
+			if validationBuildParams.Rule.String() != checkPresignedApkRule.String() {
+				t.Errorf("Unexpected validation rule: " + validationBuildParams.Rule.String())
+			}
+
+			expectedScriptArgs = "--privileged"
+			if !dontUncompressPrivAppDexs {
+				expectedScriptArgs += " --uncompress-priv-app-dex"
+			}
+			expectedScriptArgs += " --preprocessed"
+			actualScriptArgs = validationBuildParams.Args["extraArgs"]
+			android.AssertStringEquals(t, "check script extraArgs", expectedScriptArgs, actualScriptArgs)
+		})
 	}
 }
 

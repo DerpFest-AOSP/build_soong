@@ -47,7 +47,7 @@ func (cov *coverage) deps(ctx DepsContext, deps Deps) Deps {
 
 		// no_std modules are missing libprofiler_builtins which provides coverage, so we need to add it as a dependency.
 		if rustModule, ok := ctx.Module().(*Module); ok && rustModule.compiler.noStdlibs() {
-			ctx.AddVariationDependencies([]blueprint.Variation{{Mutator: "rust_libraries", Variation: "rlib"}, {Mutator: "link", Variation: ""}}, rlibDepTag, ProfilerBuiltins)
+			ctx.AddVariationDependencies([]blueprint.Variation{{Mutator: "rust_libraries", Variation: "rlib"}}, rlibDepTag, ProfilerBuiltins)
 		}
 	}
 
@@ -87,10 +87,6 @@ func (cov *coverage) flags(ctx ModuleContext, flags Flags, deps PathDeps) (Flags
 }
 
 func (cov *coverage) begin(ctx BaseModuleContext) {
-	if ctx.Host() {
-		// Host coverage not yet supported.
-	} else {
-		// Update useSdk and sdkVersion args if Rust modules become SDK aware.
-		cov.Properties = cc.SetCoverageProperties(ctx, cov.Properties, ctx.RustModule().nativeCoverage(), false, "")
-	}
+	// Update useSdk and sdkVersion args if Rust modules become SDK aware.
+	cov.Properties = cc.SetCoverageProperties(ctx, cov.Properties, ctx.RustModule().nativeCoverage(), false, "")
 }

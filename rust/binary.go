@@ -134,6 +134,9 @@ func (binary *binaryDecorator) compile(ctx ModuleContext, flags Flags, deps Path
 	ret := buildOutput{outputFile: outputFile}
 	crateRootPath := crateRootPath(ctx, binary)
 
+	// Ensure link dirs are not duplicated
+	deps.linkDirs = android.FirstUniqueStrings(deps.linkDirs)
+
 	flags.RustFlags = append(flags.RustFlags, deps.depFlags...)
 	flags.LinkFlags = append(flags.LinkFlags, deps.depLinkFlags...)
 	flags.LinkFlags = append(flags.LinkFlags, deps.linkObjects...)

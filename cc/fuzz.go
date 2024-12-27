@@ -57,7 +57,7 @@ func (fuzzer *fuzzer) props() []interface{} {
 	return []interface{}{&fuzzer.Properties}
 }
 
-func fuzzMutatorDeps(mctx android.TopDownMutatorContext) {
+func fuzzMutatorDeps(mctx android.BottomUpMutatorContext) {
 	currentModule, ok := mctx.Module().(*Module)
 	if !ok {
 		return
@@ -373,7 +373,7 @@ func NewFuzzer(hod android.HostOrDeviceSupported) *Module {
 		}
 
 		if targetFramework == fuzz.AFL {
-			fuzzBin.baseCompiler.Properties.Srcs = append(fuzzBin.baseCompiler.Properties.Srcs, ":aflpp_driver", ":afl-compiler-rt")
+			fuzzBin.baseCompiler.Properties.Srcs.AppendSimpleValue([]string{":aflpp_driver", ":afl-compiler-rt"})
 			module.fuzzer.Properties.FuzzFramework = fuzz.AFL
 		}
 	})

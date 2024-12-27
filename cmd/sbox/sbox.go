@@ -27,6 +27,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -50,6 +51,8 @@ const (
 	depFilePlaceholder    = "__SBOX_DEPFILE__"
 	sandboxDirPlaceholder = "__SBOX_SANDBOX_DIR__"
 )
+
+var envVarNameRegex = regexp.MustCompile("^[a-zA-Z0-9_-]+$")
 
 func init() {
 	flag.StringVar(&sandboxesRoot, "sandbox-path", "",
@@ -238,6 +241,51 @@ func readManifest(file string) (*sbox_proto.Manifest, error) {
 	return &manifest, nil
 }
 
+func createEnv(command *sbox_proto.Command) ([]string, error) {
+	env := []string{}
+	if command.DontInheritEnv == nil || !*command.DontInheritEnv {
+		env = os.Environ()
+	}
+	for _, envVar := range command.Env {
+		if envVar.Name == nil || !envVarNameRegex.MatchString(*envVar.Name) {
+			name := "nil"
+			if envVar.Name != nil {
+				name = *envVar.Name
+			}
+			return nil, fmt.Errorf("Invalid environment variable name: %q", name)
+		}
+		if envVar.State == nil {
+			return nil, fmt.Errorf("Must set state")
+		}
+		switch state := envVar.State.(type) {
+		case *sbox_proto.EnvironmentVariable_Value:
+			env = append(env, *envVar.Name+"="+state.Value)
+		case *sbox_proto.EnvironmentVariable_Unset:
+			if !state.Unset {
+				return nil, fmt.Errorf("Can't have unset set to false")
+			}
+			prefix := *envVar.Name + "="
+			for i := 0; i < len(env); i++ {
+				if strings.HasPrefix(env[i], prefix) {
+					env = append(env[:i], env[i+1:]...)
+					i--
+				}
+			}
+		case *sbox_proto.EnvironmentVariable_Inherit:
+			if !state.Inherit {
+				return nil, fmt.Errorf("Can't have inherit set to false")
+			}
+			val, ok := os.LookupEnv(*envVar.Name)
+			if ok {
+				env = append(env, *envVar.Name+"="+val)
+			}
+		default:
+			return nil, fmt.Errorf("Unhandled state type")
+		}
+	}
+	return env, nil
+}
+
 // runCommand runs a single command from a manifest.  If the command references the
 // __SBOX_DEPFILE__ placeholder it returns the name of the depfile that was used.
 func runCommand(command *sbox_proto.Command, tempDir string, commandIndex int) (depFile string, err error) {
@@ -313,6 +361,12 @@ func runCommand(command *sbox_proto.Command, tempDir string, commandIndex int) (
 			return "", fmt.Errorf("Failed to update PATH: %w", err)
 		}
 	}
+
+	cmd.Env, err = createEnv(command)
+	if err != nil {
+		return "", err
+	}
+
 	err = cmd.Run()
 
 	if err != nil {

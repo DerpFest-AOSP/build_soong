@@ -23,9 +23,40 @@ from xml.dom import minidom
 android_ns = 'http://schemas.android.com/apk/res/android'
 
 
+def get_or_create_applications(doc, manifest):
+  """Get all <application> tags from the manifest, or create one if none exist.
+  Multiple <application> tags may exist when manifest feature flagging is used.
+  """
+  applications = get_children_with_tag(manifest, 'application')
+  if len(applications) == 0:
+    application = doc.createElement('application')
+    indent = get_indent(manifest.firstChild, 1)
+    first = manifest.firstChild
+    manifest.insertBefore(doc.createTextNode(indent), first)
+    manifest.insertBefore(application, first)
+    applications.append(application)
+  return applications
+
+
+def get_or_create_uses_sdks(doc, manifest):
+  """Get all <uses-sdk> tags from the manifest, or create one if none exist.
+  Multiple <uses-sdk> tags may exist when manifest feature flagging is used.
+  """
+  uses_sdks = get_children_with_tag(manifest, 'uses-sdk')
+  if len(uses_sdks) == 0:
+    uses_sdk = doc.createElement('uses-sdk')
+    indent = get_indent(manifest.firstChild, 1)
+    manifest.insertBefore(uses_sdk, manifest.firstChild)
+
+    # Insert an indent before uses-sdk to line it up with the indentation of the
+    # other children of the <manifest> tag.
+    manifest.insertBefore(doc.createTextNode(indent), manifest.firstChild)
+    uses_sdks.append(uses_sdk)
+  return uses_sdks
+
 def get_children_with_tag(parent, tag_name):
   children = []
-  for child in  parent.childNodes:
+  for child in parent.childNodes:
     if child.nodeType == minidom.Node.ELEMENT_NODE and \
        child.tagName == tag_name:
       children.append(child)

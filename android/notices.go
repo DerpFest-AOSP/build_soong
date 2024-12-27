@@ -36,10 +36,22 @@ func modulesOutputDirs(ctx BuilderContext, modules ...Module) []string {
 	return SortedUniqueStrings(dirs)
 }
 
-func modulesLicenseMetadata(ctx BuilderContext, modules ...Module) Paths {
+type BuilderAndOtherModuleProviderContext interface {
+	BuilderContext
+	OtherModuleProviderContext
+}
+
+func modulesLicenseMetadata(ctx OtherModuleProviderContext, modules ...Module) Paths {
 	result := make(Paths, 0, len(modules))
+	mctx, isMctx := ctx.(ModuleContext)
 	for _, module := range modules {
-		if mf := module.base().licenseMetadataFile; mf != nil {
+		var mf Path
+		if isMctx && mctx.Module() == module {
+			mf = mctx.LicenseMetadataFile()
+		} else {
+			mf = OtherModuleProviderOrDefault(ctx, module, InstallFilesProvider).LicenseMetadataFile
+		}
+		if mf != nil {
 			result = append(result, mf)
 		}
 	}
@@ -48,7 +60,7 @@ func modulesLicenseMetadata(ctx BuilderContext, modules ...Module) Paths {
 
 // buildNoticeOutputFromLicenseMetadata writes out a notice file.
 func buildNoticeOutputFromLicenseMetadata(
-	ctx BuilderContext, tool, ruleName string, outputFile WritablePath,
+	ctx BuilderAndOtherModuleProviderContext, tool, ruleName string, outputFile WritablePath,
 	libraryName string, stripPrefix []string, modules ...Module) {
 	depsFile := outputFile.ReplaceExtension(ctx, strings.TrimPrefix(outputFile.Ext()+".d", "."))
 	rule := NewRuleBuilder(pctx, ctx)
@@ -84,7 +96,7 @@ func buildNoticeOutputFromLicenseMetadata(
 // on the license metadata files for the input `modules` defaulting to the
 // current context module if none given.
 func BuildNoticeTextOutputFromLicenseMetadata(
-	ctx BuilderContext, outputFile WritablePath, ruleName, libraryName string,
+	ctx BuilderAndOtherModuleProviderContext, outputFile WritablePath, ruleName, libraryName string,
 	stripPrefix []string, modules ...Module) {
 	buildNoticeOutputFromLicenseMetadata(ctx, "textnotice", "text_notice_"+ruleName,
 		outputFile, libraryName, stripPrefix, modules...)
@@ -94,7 +106,7 @@ func BuildNoticeTextOutputFromLicenseMetadata(
 // on the license metadata files for the input `modules` defaulting to the
 // current context module if none given.
 func BuildNoticeHtmlOutputFromLicenseMetadata(
-	ctx BuilderContext, outputFile WritablePath, ruleName, libraryName string,
+	ctx BuilderAndOtherModuleProviderContext, outputFile WritablePath, ruleName, libraryName string,
 	stripPrefix []string, modules ...Module) {
 	buildNoticeOutputFromLicenseMetadata(ctx, "htmlnotice", "html_notice_"+ruleName,
 		outputFile, libraryName, stripPrefix, modules...)
@@ -104,7 +116,7 @@ func BuildNoticeHtmlOutputFromLicenseMetadata(
 // on the license metadata files for the input `modules` defaulting to the
 // current context module if none given.
 func BuildNoticeXmlOutputFromLicenseMetadata(
-	ctx BuilderContext, outputFile WritablePath, ruleName, libraryName string,
+	ctx BuilderAndOtherModuleProviderContext, outputFile WritablePath, ruleName, libraryName string,
 	stripPrefix []string, modules ...Module) {
 	buildNoticeOutputFromLicenseMetadata(ctx, "xmlnotice", "xml_notice_"+ruleName,
 		outputFile, libraryName, stripPrefix, modules...)

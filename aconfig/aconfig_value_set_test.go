@@ -18,6 +18,8 @@ import (
 	"testing"
 
 	"android/soong/android"
+
+	"github.com/google/blueprint"
 )
 
 func TestAconfigValueSet(t *testing.T) {
@@ -38,6 +40,115 @@ func TestAconfigValueSet(t *testing.T) {
 	module := result.ModuleForTests("module_name", "").Module().(*ValueSetModule)
 
 	// Check that the provider has the right contents
-	depData, _ := android.SingletonModuleProvider(result, module, valueSetProviderKey)
+	depData, _ := android.OtherModuleProvider(result, module, valueSetProviderKey)
 	android.AssertStringEquals(t, "AvailablePackages", "blah.aconfig_values", depData.AvailablePackages["foo.package"][0].String())
+}
+
+func TestAconfigValueSetBpGlob(t *testing.T) {
+	result := android.GroupFixturePreparers(
+		PrepareForTestWithAconfigBuildComponents,
+		android.FixtureMergeMockFs(
+			map[string][]byte{
+				// .../some_release/android.foo/
+				"some_release/android.foo/Android.bp": []byte(`
+				aconfig_values {
+					name: "aconfig-values-platform_build_release-some_release-android.foo-all",
+					package: "android.foo",
+					srcs: [
+						"*.textproto",
+					],
+				}
+				`),
+				"some_release/android.foo/flag.textproto": nil,
+
+				// .../some_release/android.bar/
+				"some_release/android.bar/Android.bp": []byte(`
+				aconfig_values {
+					name: "aconfig-values-platform_build_release-some_release-android.bar-all",
+					package: "android.bar",
+					srcs: [
+						"*.textproto",
+					],
+				}
+				`),
+				"some_release/android.bar/flag.textproto": nil,
+
+				// .../some_release/
+				"some_release/Android.bp": []byte(`
+				aconfig_value_set {
+					name: "aconfig_value_set-platform_build_release-some_release",
+					srcs: [
+						"*/Android.bp",
+					],
+				}
+				`),
+			},
+		),
+	).RunTest(t)
+
+	checkModuleHasDependency := func(name, variant, dep string) bool {
+		t.Helper()
+		module := result.ModuleForTests(name, variant).Module()
+		depFound := false
+		result.VisitDirectDeps(module, func(m blueprint.Module) {
+			if m.Name() == dep {
+				depFound = true
+			}
+		})
+		return depFound
+	}
+	android.AssertBoolEquals(t,
+		"aconfig_value_set expected to depend on aconfig_value via srcs",
+		true,
+		checkModuleHasDependency(
+			"aconfig_value_set-platform_build_release-some_release",
+			"",
+			"aconfig-values-platform_build_release-some_release-android.foo-all",
+		),
+	)
+	android.AssertBoolEquals(t,
+		"aconfig_value_set expected to depend on aconfig_value via srcs",
+		true,
+		checkModuleHasDependency(
+			"aconfig_value_set-platform_build_release-some_release",
+			"",
+			"aconfig-values-platform_build_release-some_release-android.bar-all",
+		),
+	)
+}
+
+func TestAconfigValueSetBpGlobError(t *testing.T) {
+	android.GroupFixturePreparers(
+		PrepareForTestWithAconfigBuildComponents,
+		android.FixtureMergeMockFs(
+			map[string][]byte{
+				// .../some_release/android.bar/
+				"some_release/android.bar/Android.bp": []byte(`
+				aconfig_values {
+					name: "aconfig-values-platform_build_release-some_release-android_bar-all",
+					package: "android.bar",
+					srcs: [
+						"*.textproto",
+					],
+				}
+				`),
+				"some_release/android.bar/flag.textproto": nil,
+
+				// .../some_release/
+				"some_release/Android.bp": []byte(`
+				aconfig_value_set {
+					name: "aconfig_value_set-platform_build_release-some_release",
+					srcs: [
+						"*/Android.bp",
+					],
+				}
+				`),
+			},
+		),
+	).ExtendWithErrorHandler(android.FixtureExpectsOneErrorPattern(
+		`module "aconfig_value_set-platform_build_release-some_release": module ` +
+			`"aconfig-values-platform_build_release-some_release-android.bar-all" not found. ` +
+			`Rename the aconfig_values module defined in "some_release/android.bar/Android.bp" ` +
+			`to "aconfig-values-platform_build_release-some_release-android.bar-all"`),
+	).RunTest(t)
 }

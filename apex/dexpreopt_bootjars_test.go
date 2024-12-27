@@ -127,16 +127,29 @@ func testDexpreoptBoot(t *testing.T, ruleFile string, expectedInputs, expectedOu
 			src: "com.android.art-arm.apex",
 			exported_bootclasspath_fragments: ["art-bootclasspath-fragment"],
 		}
+
+		apex_contributions {
+			name: "prebuilt_art_contributions",
+			contents: ["prebuilt_com.android.art"],
+			api_domain: "com.android.art",
+		}
 	`
 
-	result := android.GroupFixturePreparers(
+	fixture := android.GroupFixturePreparers(
 		java.PrepareForTestWithDexpreopt,
 		java.PrepareForTestWithJavaSdkLibraryFiles,
 		java.FixtureWithLastReleaseApis("foo"),
 		java.FixtureConfigureBootJars("com.android.art:core-oj", "platform:foo", "system_ext:bar", "platform:baz"),
 		PrepareForTestWithApexBuildComponents,
 		prepareForTestWithArtApex,
-	).RunTestWithBp(t, fmt.Sprintf(bp, preferPrebuilt))
+	)
+	if preferPrebuilt {
+		fixture = android.GroupFixturePreparers(
+			fixture,
+			android.PrepareForTestWithBuildFlag("RELEASE_APEX_CONTRIBUTIONS_ART", "prebuilt_art_contributions"),
+		)
+	}
+	result := fixture.RunTestWithBp(t, fmt.Sprintf(bp, preferPrebuilt))
 
 	dexBootJars := result.ModuleForTests("dex_bootjars", "android_common")
 	rule := dexBootJars.Output(ruleFile)
@@ -200,7 +213,7 @@ func TestDexpreoptBootJarsWithPrebuiltArtApex(t *testing.T) {
 		"out/soong/dexpreopt_arm64/dex_bootjars_input/foo.jar",
 		"out/soong/dexpreopt_arm64/dex_bootjars_input/bar.jar",
 		"out/soong/dexpreopt_arm64/dex_bootjars_input/baz.jar",
-		"out/soong/.intermediates/prebuilt_com.android.art.deapexer/android_common/deapexer/etc/boot-image.prof",
+		"out/soong/.intermediates/prebuilt_com.android.art/android_common_com.android.art/deapexer/etc/boot-image.prof",
 		"out/soong/.intermediates/default/java/dex_bootjars/android_common/boot/boot.prof",
 		"out/soong/dexpreopt/uffd_gc_flag.txt",
 	}
@@ -384,12 +397,12 @@ func TestDexpreoptProfileWithMultiplePrebuiltArtApexes(t *testing.T) {
 		{
 			desc:                         "Prebuilt apex prebuilt_com.android.art is selected, profile should come from .prof deapexed from the prebuilt",
 			selectedArtApexContributions: "art.prebuilt.contributions",
-			expectedProfile:              "out/soong/.intermediates/prebuilt_com.android.art.deapexer/android_common/deapexer/etc/boot-image.prof",
+			expectedProfile:              "out/soong/.intermediates/prebuilt_com.android.art/android_common_com.android.art/deapexer/etc/boot-image.prof",
 		},
 		{
 			desc:                         "Prebuilt apex prebuilt_com.android.art.v2 is selected, profile should come from .prof deapexed from the prebuilt",
 			selectedArtApexContributions: "art.prebuilt.v2.contributions",
-			expectedProfile:              "out/soong/.intermediates/prebuilt_com.android.art.v2.deapexer/android_common/deapexer/etc/boot-image.prof",
+			expectedProfile:              "out/soong/.intermediates/com.android.art.v2/android_common_com.android.art/deapexer/etc/boot-image.prof",
 		},
 	}
 	for _, tc := range testCases {
@@ -399,11 +412,7 @@ func TestDexpreoptProfileWithMultiplePrebuiltArtApexes(t *testing.T) {
 			java.FixtureConfigureBootJars("com.android.art:core-oj"),
 			PrepareForTestWithApexBuildComponents,
 			prepareForTestWithArtApex,
-			android.FixtureModifyProductVariables(func(variables android.FixtureProductVariables) {
-				variables.BuildFlags = map[string]string{
-					"RELEASE_APEX_CONTRIBUTIONS_ART": tc.selectedArtApexContributions,
-				}
-			}),
+			android.PrepareForTestWithBuildFlag("RELEASE_APEX_CONTRIBUTIONS_ART", tc.selectedArtApexContributions),
 		).RunTestWithBp(t, bp)
 
 		dexBootJars := result.ModuleForTests("dex_bootjars", "android_common")

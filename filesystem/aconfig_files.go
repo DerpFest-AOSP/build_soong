@@ -16,7 +16,6 @@ package filesystem
 
 import (
 	"android/soong/android"
-	"path/filepath"
 	"strings"
 
 	"github.com/google/blueprint/proptools"
@@ -56,6 +55,7 @@ func (f *filesystem) buildAconfigFlagsFiles(ctx android.ModuleContext, builder *
 	sb.WriteString(" \\\n")
 	sb.WriteString(sbCaches.String())
 	cmd.ImplicitOutput(installAconfigFlagsPath)
+	f.appendToEntry(ctx, installAconfigFlagsPath)
 
 	installAconfigStorageDir := dir.Join(ctx, "etc", "aconfig")
 	sb.WriteString("mkdir -p ")
@@ -63,16 +63,18 @@ func (f *filesystem) buildAconfigFlagsFiles(ctx android.ModuleContext, builder *
 	sb.WriteRune('\n')
 
 	generatePartitionAconfigStorageFile := func(fileType, fileName string) {
+		outputPath := installAconfigStorageDir.Join(ctx, fileName)
 		sb.WriteString(aconfigToolPath.String())
 		sb.WriteString(" create-storage --container ")
 		sb.WriteString(f.PartitionType())
 		sb.WriteString(" --file ")
 		sb.WriteString(fileType)
 		sb.WriteString(" --out ")
-		sb.WriteString(filepath.Join(installAconfigStorageDir.String(), fileName))
+		sb.WriteString(outputPath.String())
 		sb.WriteString(" \\\n")
 		sb.WriteString(sbCaches.String())
-		cmd.ImplicitOutput(installAconfigStorageDir.Join(ctx, fileName))
+		cmd.ImplicitOutput(outputPath)
+		f.appendToEntry(ctx, outputPath)
 	}
 	generatePartitionAconfigStorageFile("package_map", "package.map")
 	generatePartitionAconfigStorageFile("flag_map", "flag.map")

@@ -1,0 +1,127 @@
+digraph java {
+	//rankdir="LR";
+	//splines="false";
+	//cluster=true;
+	//node [ ordering="in" ];
+	node [ shape="rect" style="rounded" color="blue" ];
+
+	{
+		rank="same";
+		lib_java_sources [ label="library\njava sources" group="lib" ];
+		lib2_java_sources [ label="library\njava sources" group="lib2" ];
+		app_java_sources [ label="app\njava sources" group="app" ];
+	}
+
+	node [ group="lib"];
+	{
+		rank="same";
+		lib_java_classes [ label="library java\n.class files" ];
+		lib_java_headers [ label="library java\nheader .class files" ];
+	}
+
+	node [ group="lib2"];
+	{
+		rank="same";
+		lib_spacer [ style=invis width=4 ];
+		lib2_java_classes [ label="library java\n.class files" ];
+		lib2_java_headers [ label="library java\nheader .class files" ];
+	}
+	{
+		rank="same";
+		lib2_combined_classes [ label="combined library\n.class files" ];
+		lib2_combined_headers [ label="combined library\nheader .class files" ];
+	}
+
+	node [ group="app"];
+	{
+		rank="same";
+		lib2_spacer [ style=invis width=4 ];
+		app_java_classes [ label="app java\n.class files" ];
+	}
+	{
+		rank="same";
+		app_combined_classes [ label="combined app and library\n.class files" ];
+	}
+	{
+		rank="same";
+		app_dex [ label="app classes.dex files" ];
+	}
+
+
+	node [ shape="rect" style="" color="black" ];
+	node [ group="lib"];
+	{
+		rank="same";
+		lib_turbine_action [ label="turbine" ];
+		lib_javac_action [ label="javac" ];
+	}
+
+	node [ group="lib2"];
+	{
+		rank="same";
+		lib2_turbine_action [ label="turbine" ];
+		lib2_javac_action [ label="javac" ];
+	}
+	{
+		rank="same";
+		lib2_combine_action [ label="merge_zips" ];
+		lib2_combine_headers_action [ label="merge_zips" ];
+	}
+
+	node [ group="app"];
+	{
+		rank="same";
+		app_javac_action [ label="javac" ];
+	}
+	{
+		rank="same";
+		app_combine_action [ label="merge_zips" ];
+	}
+	{
+		rank="same";
+		app_r8_action [ label="r8" ];
+	}
+
+	// library
+
+	lib_java_sources -> lib_turbine_action [ weight=100 ];
+	lib_turbine_action -> lib_java_headers [ weight=100 ];
+
+	lib_java_sources -> lib_javac_action [ weight=1000 ];
+	lib_javac_action -> lib_java_classes [ weight=100 ];
+
+	lib_java_headers -> lib_spacer [ style=invis ];
+
+	// library 2
+
+	lib_java_headers -> lib2_turbine_action [ weight=0 ];
+	lib2_java_sources -> lib2_turbine_action [ weight=100 ];
+	lib2_turbine_action -> lib2_java_headers [ weight=100 ];
+
+	lib_java_headers -> lib2_javac_action [ weight=0 ];
+	lib2_java_sources -> lib2_javac_action [ weight=1000 ];
+	lib2_javac_action ->lib2_java_classes [ weight=100 ];
+
+	lib_java_classes -> lib2_combine_action [ weight=0 ];
+	lib2_java_classes -> lib2_combine_action [ weight=100 ];
+	lib2_combine_action -> lib2_combined_classes [ weight=100 ];
+
+	lib_java_headers -> lib2_combine_headers_action [ weight=0 ];
+	lib2_java_headers -> lib2_combine_headers_action [ weight=100 ];
+	lib2_combine_headers_action -> lib2_combined_headers [ weight=100 ];
+
+	lib2_combined_headers -> lib2_spacer [ style=invis ];
+
+	// app
+
+	lib2_combined_headers -> app_javac_action [ weight=0 ];
+	app_java_sources -> app_javac_action [ weight=1000 ];
+	app_javac_action -> app_java_classes [ weight=100 ];
+
+	lib2_combined_classes -> app_combine_action [ weight=0 ];
+	app_java_classes -> app_combine_action [ weight=100 ];
+	app_combine_action -> app_combined_classes [ weight=100 ];
+
+	app_combined_classes -> app_r8_action;
+	app_r8_action -> app_dex [ weight=100 ];
+}

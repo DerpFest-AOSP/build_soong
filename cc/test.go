@@ -15,11 +15,9 @@
 package cc
 
 import (
+	"github.com/google/blueprint/proptools"
 	"path/filepath"
 	"strconv"
-	"strings"
-
-	"github.com/google/blueprint/proptools"
 
 	"android/soong/android"
 	"android/soong/tradefed"
@@ -75,13 +73,9 @@ type TestOptions struct {
 }
 
 type TestBinaryProperties struct {
-	// Create a separate binary for each source file.  Useful when there is
-	// global state that can not be torn down and reset between each test suite.
-	Test_per_src *bool
-
 	// Disables the creation of a test-specific directory when used with
 	// relative_install_path. Useful if several tests need to be in the same
-	// directory, but test_per_src doesn't work.
+	// directory.
 	No_named_install_directory *bool
 
 	// list of files or filegroup modules that provide data that should be installed alongside
@@ -174,84 +168,12 @@ func BenchmarkHostFactory() android.Module {
 	return module.Init()
 }
 
-type testPerSrc interface {
-	testPerSrc() bool
-	srcs() []string
-	isAllTestsVariation() bool
-	setSrc(string, string)
-	unsetSrc()
-}
-
-func (test *testBinary) testPerSrc() bool {
-	return Bool(test.Properties.Test_per_src)
-}
-
-func (test *testBinary) srcs() []string {
-	return test.baseCompiler.Properties.Srcs
-}
-
 func (test *testBinary) dataPaths() []android.DataPath {
 	return test.data
 }
 
-func (test *testBinary) isAllTestsVariation() bool {
-	stem := test.binaryDecorator.Properties.Stem
-	return stem != nil && *stem == ""
-}
-
-func (test *testBinary) setSrc(name, src string) {
-	test.baseCompiler.Properties.Srcs = []string{src}
-	test.binaryDecorator.Properties.Stem = StringPtr(name)
-}
-
-func (test *testBinary) unsetSrc() {
-	test.baseCompiler.Properties.Srcs = nil
-	test.binaryDecorator.Properties.Stem = StringPtr("")
-}
-
 func (test *testBinary) testBinary() bool {
 	return true
-}
-
-var _ testPerSrc = (*testBinary)(nil)
-
-func TestPerSrcMutator(mctx android.BottomUpMutatorContext) {
-	if m, ok := mctx.Module().(*Module); ok {
-		if test, ok := m.linker.(testPerSrc); ok {
-			numTests := len(test.srcs())
-			if test.testPerSrc() && numTests > 0 {
-				if duplicate, found := android.CheckDuplicate(test.srcs()); found {
-					mctx.PropertyErrorf("srcs", "found a duplicate entry %q", duplicate)
-					return
-				}
-				testNames := make([]string, numTests)
-				for i, src := range test.srcs() {
-					testNames[i] = strings.TrimSuffix(filepath.Base(src), filepath.Ext(src))
-				}
-				// In addition to creating one variation per test source file,
-				// create an additional "all tests" variation named "", and have it
-				// depends on all other test_per_src variations. This is useful to
-				// create subsequent dependencies of a given module on all
-				// test_per_src variations created above: by depending on
-				// variation "", that module will transitively depend on all the
-				// other test_per_src variations without the need to know their
-				// name or even their number.
-				testNames = append(testNames, "")
-				tests := mctx.CreateLocalVariations(testNames...)
-				allTests := tests[numTests]
-				allTests.(*Module).linker.(testPerSrc).unsetSrc()
-				// Prevent the "all tests" variation from being installable nor
-				// exporting to Make, as it won't create any output file.
-				allTests.(*Module).Properties.PreventInstall = true
-				allTests.(*Module).Properties.HideFromMake = true
-				for i, src := range test.srcs() {
-					tests[i].(*Module).linker.(testPerSrc).setSrc(testNames[i], src)
-					mctx.AddInterVariantDependency(testPerSrcDepTag, allTests, tests[i])
-				}
-				mctx.AliasVariation("")
-			}
-		}
-	}
 }
 
 type testDecorator struct {
@@ -381,10 +303,6 @@ func (test *testBinary) moduleInfoJSON(ctx ModuleContext, moduleInfoJSON *androi
 		moduleInfoJSON.TestConfig = append(moduleInfoJSON.TestConfig, test.testConfig.String())
 	}
 	moduleInfoJSON.TestConfig = append(moduleInfoJSON.TestConfig, test.extraTestConfigs.Strings()...)
-
-	if Bool(test.Properties.Test_per_src) {
-		moduleInfoJSON.SubName = "_" + String(test.binaryDecorator.Properties.Stem)
-	}
 
 	moduleInfoJSON.DataDependencies = append(moduleInfoJSON.DataDependencies, test.Properties.Data_bins...)
 

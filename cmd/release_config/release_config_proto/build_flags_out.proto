@@ -39,29 +39,30 @@ import "build_flags_src.proto";
 //      com.android.mypackage is a valid name while com.android.myPackage,
 //      com.android.1mypackage are invalid
 
-message tracepoint {
+message Tracepoint {
   // Path to declaration or value file relative to $TOP
   optional string source = 1;
-  optional value value = 201;
+  optional Value value = 201;
 }
 
-message flag_artifact {
+message FlagArtifact {
   // The original declaration
-  optional flag_declaration flag_declaration = 1;
+  optional FlagDeclaration flag_declaration = 1;
 
   // Value for the flag
-  optional value value = 201;
+  optional Value value = 201;
 
   // Trace of where the flag value was assigned.
-  repeated tracepoint traces = 8;
+  repeated Tracepoint traces = 8;
 }
 
-message flag_artifacts {
+message FlagArtifacts {
   // The artifacts
-  repeated flag_artifact flag_artifacts = 1;
+  repeated FlagArtifact flags = 1;
+  reserved "flag_artifacts";
 }
 
-message release_config_artifact {
+message ReleaseConfigArtifact {
   // The name of the release config.
   // See # name for format detail
   optional string name = 1;
@@ -71,7 +72,8 @@ message release_config_artifact {
 
   // The complete set of build flags in this release config, after all
   // inheritance and other processing is complete.
-  repeated flag_artifact flag_artifacts = 3;
+  repeated FlagArtifact flags = 3;
+  reserved "flag_artifacts";
 
   // The (complete) list of aconfig_value_sets Soong modules to use.
   repeated string aconfig_value_sets = 4;
@@ -80,23 +82,30 @@ message release_config_artifact {
   // Included for reference only.
   repeated string inherits = 5;
 
-  // The release config directories used for this config.
+  // The release config directories used for this config.  This includes
+  // directories that provide flag declarations, but do not provide any flag
+  // values specific to this release config.
   // For example, "build/release".
   repeated string directories = 6;
 
   // Prior stage(s) for flag advancement (during development).
   // Once a flag has met criteria in a prior stage, it can advance to this one.
   repeated string prior_stages = 7;
+
+  // The release config directories that contribute directly to this release
+  // config.  The listed directories contain at least a `release_config` message
+  // for this release config.
+  repeated string value_directories = 8;
 }
 
-message release_configs_artifact {
+message ReleaseConfigsArtifact {
   // The active release config for this build.
-  optional release_config_artifact release_config = 1;
+  optional ReleaseConfigArtifact release_config = 1;
 
   // All other release configs defined for this TARGET_PRODUCT.
-  repeated release_config_artifact other_release_configs = 2;
+  repeated ReleaseConfigArtifact other_release_configs = 2;
 
   // Map of release_config_artifact.directories to release_config_map message.
-  map<string, release_config_map> release_config_maps_map = 3;
+  map<string, ReleaseConfigMap> release_config_maps_map = 3;
 }
 

@@ -448,6 +448,7 @@ loop:
 			Prerequisites: prerequisites,
 			Recipe:        recipe,
 			RecipePos:     recipePos,
+			RecipeEndPos:  p.pos(),
 		})
 	}
 }

@@ -94,11 +94,15 @@ type LinkableInterface interface {
 	SelectedStl() string
 
 	BuildStaticVariant() bool
+	BuildRlibVariant() bool
 	BuildSharedVariant() bool
 	SetStatic()
 	SetShared()
 	IsPrebuilt() bool
 	Toc() android.OptionalPath
+
+	// IsRustFFI returns true if this is a Rust FFI library.
+	IsRustFFI() bool
 
 	// IsFuzzModule returns true if this a *_fuzz module.
 	IsFuzzModule() bool

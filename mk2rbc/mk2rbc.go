@@ -72,6 +72,7 @@ var knownFunctions = map[string]interface {
 	"add_soong_config_namespace":           &simpleCallParser{name: baseName + ".soong_config_namespace", returnType: starlarkTypeVoid, addGlobals: true},
 	"add_soong_config_var_value":           &simpleCallParser{name: baseName + ".soong_config_set", returnType: starlarkTypeVoid, addGlobals: true},
 	soongConfigAssign:                      &simpleCallParser{name: baseName + ".soong_config_set", returnType: starlarkTypeVoid, addGlobals: true},
+	"soong_config_set_bool":                &simpleCallParser{name: baseName + ".soong_config_set_bool", returnType: starlarkTypeVoid, addGlobals: true},
 	soongConfigAppend:                      &simpleCallParser{name: baseName + ".soong_config_append", returnType: starlarkTypeVoid, addGlobals: true},
 	"soong_config_get":                     &simpleCallParser{name: baseName + ".soong_config_get", returnType: starlarkTypeString, addGlobals: true},
 	"add-to-product-copy-files-if-exists":  &simpleCallParser{name: baseName + ".copy_if_exists", returnType: starlarkTypeList},

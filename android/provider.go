@@ -14,6 +14,8 @@ var _ OtherModuleProviderContext = BaseModuleContext(nil)
 var _ OtherModuleProviderContext = ModuleContext(nil)
 var _ OtherModuleProviderContext = BottomUpMutatorContext(nil)
 var _ OtherModuleProviderContext = TopDownMutatorContext(nil)
+var _ OtherModuleProviderContext = SingletonContext(nil)
+var _ OtherModuleProviderContext = (*TestContext)(nil)
 
 // OtherModuleProvider reads the provider for the given module.  If the provider has been set the value is
 // returned and the boolean is true.  If it has not been set the zero value of the provider's type  is returned
@@ -28,6 +30,11 @@ func OtherModuleProvider[K any](ctx OtherModuleProviderContext, module blueprint
 		return k, false
 	}
 	return value.(K), ok
+}
+
+func OtherModuleProviderOrDefault[K any](ctx OtherModuleProviderContext, module blueprint.Module, provider blueprint.ProviderKey[K]) K {
+	value, _ := OtherModuleProvider(ctx, module, provider)
+	return value
 }
 
 // ModuleProviderContext is a helper interface that is a subset of ModuleContext, BottomUpMutatorContext, or
@@ -49,26 +56,6 @@ var _ ModuleProviderContext = TopDownMutatorContext(nil)
 // TopDownMutatorContext.
 func ModuleProvider[K any](ctx ModuleProviderContext, provider blueprint.ProviderKey[K]) (K, bool) {
 	value, ok := ctx.provider(provider)
-	if !ok {
-		var k K
-		return k, false
-	}
-	return value.(K), ok
-}
-
-type SingletonModuleProviderContext interface {
-	moduleProvider(blueprint.Module, blueprint.AnyProviderKey) (any, bool)
-}
-
-var _ SingletonModuleProviderContext = SingletonContext(nil)
-var _ SingletonModuleProviderContext = (*TestContext)(nil)
-
-// SingletonModuleProvider wraps blueprint.SingletonModuleProvider to provide a type-safe method to retrieve the value
-// of the given provider from a module using a SingletonContext.  If the provider has not been set the first return
-// value will be the zero value of the provider's type, and the second return value will be false.  If the provider has
-// been set the second return value will be true.
-func SingletonModuleProvider[K any](ctx SingletonModuleProviderContext, module blueprint.Module, provider blueprint.ProviderKey[K]) (K, bool) {
-	value, ok := ctx.moduleProvider(module, provider)
 	if !ok {
 		var k K
 		return k, false

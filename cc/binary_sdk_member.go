@@ -132,7 +132,7 @@ func (p *nativeBinaryInfoProperties) PopulateFromVariant(ctx android.SdkMemberCo
 
 	if ccModule.linker != nil {
 		specifiedDeps := specifiedDeps{}
-		specifiedDeps = ccModule.linker.linkerSpecifiedDeps(ctx, ccModule, specifiedDeps)
+		specifiedDeps = ccModule.linker.linkerSpecifiedDeps(ctx.SdkModuleContext(), ccModule, specifiedDeps)
 
 		p.SharedLibs = specifiedDeps.sharedLibs
 		p.SystemSharedLibs = specifiedDeps.systemSharedLibs

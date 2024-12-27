@@ -88,12 +88,17 @@ but is useful when developing APIs for an unknown future release.
 
 ### introduced
 
-Indicates the version in which an API was first introduced. For example,
-`introduced=21` specifies that the API was first added (or first made public) in
-API level 21. This tag can be applied to either a version definition or an
-individual symbol. If applied to a version, all symbols contained in the version
-will have the tag applied. An `introduced` tag on a symbol overrides the value
-set for the version, if both are defined.
+Indicates the version in which an API was first introduced in the NDK. For
+example, `introduced=21` specifies that the API was first added (or first made
+public) in API level 21. This tag can be applied to either a version definition
+or an individual symbol. If applied to a version, all symbols contained in the
+version will have the tag applied. An `introduced` tag on a symbol overrides the
+value set for the version, if both are defined.
+
+The `introduced` tag should only be used with NDK APIs. Other API surface tags
+(such as `apex`) will override `introduced`. APIs that are in the NDK should
+never use tags like `apex`, and APIs that are not in the NDK should never use
+`introduced`.
 
 Note: The map file alone does not contain all the information needed to
 determine which API level an API was added in. The `first_version` property of

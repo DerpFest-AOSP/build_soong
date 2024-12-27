@@ -31,6 +31,7 @@ var sharedLibrarySdkMemberType = &librarySdkMemberType{
 		SupportsSdk:           true,
 		HostOsDependent:       true,
 		SupportedLinkageNames: []string{"shared"},
+		StripDisabled:         true,
 	},
 	prebuiltModuleType: "cc_prebuilt_library_shared",
 }
@@ -405,6 +406,9 @@ func addPossiblyArchSpecificProperties(sdkModuleContext android.ModuleContext, b
 	if len(libInfo.StubsVersions) > 0 {
 		stubsSet := outputProperties.AddPropertySet("stubs")
 		stubsSet.AddProperty("versions", libInfo.StubsVersions)
+		// The symbol file will be copied next to the Android.bp file
+		stubsSet.AddProperty("symbol_file", libInfo.StubsSymbolFilePath.Base())
+		builder.CopyToSnapshot(libInfo.StubsSymbolFilePath, libInfo.StubsSymbolFilePath.Base())
 	}
 }
 
@@ -480,6 +484,9 @@ type nativeLibInfoProperties struct {
 	// is written to does not vary by arch so cannot be android specific.
 	StubsVersions []string `sdk:"ignored-on-host"`
 
+	// The symbol file containing the APIs exported by this library.
+	StubsSymbolFilePath android.Path `sdk:"ignored-on-host"`
+
 	// Value of SanitizeProperties.Sanitize. Several - but not all - of these
 	// affect the expanded variants. All are propagated to avoid entangling the
 	// sanitizer logic with the snapshot generation.
@@ -536,7 +543,7 @@ func (p *nativeLibInfoProperties) PopulateFromVariant(ctx android.SdkMemberConte
 	p.ExportedFlags = exportedInfo.Flags
 	if ccModule.linker != nil {
 		specifiedDeps := specifiedDeps{}
-		specifiedDeps = ccModule.linker.linkerSpecifiedDeps(ctx, ccModule, specifiedDeps)
+		specifiedDeps = ccModule.linker.linkerSpecifiedDeps(ctx.SdkModuleContext(), ccModule, specifiedDeps)
 
 		if lib := ccModule.library; lib != nil {
 			if !lib.hasStubsVariants() {
@@ -548,6 +555,11 @@ func (p *nativeLibInfoProperties) PopulateFromVariant(ctx android.SdkMemberConte
 				// the versioned stub libs are retained in the prebuilt tree; currently only
 				// the stub corresponding to ccModule.StubsVersion() is.
 				p.StubsVersions = lib.allStubsVersions()
+				if lib.buildStubs() && ccModule.stubsSymbolFilePath() == nil {
+					ctx.ModuleErrorf("Could not determine symbol_file")
+				} else {
+					p.StubsSymbolFilePath = ccModule.stubsSymbolFilePath()
+				}
 			}
 		}
 		p.SystemSharedLibs = specifiedDeps.systemSharedLibs

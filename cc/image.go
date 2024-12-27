@@ -39,17 +39,9 @@ const (
 )
 
 const (
-	// VendorVariation is the variant name used for /vendor code that does not
-	// compile against the VNDK.
-	VendorVariation = "vendor"
-
 	// VendorVariationPrefix is the variant prefix used for /vendor code that compiles
 	// against the VNDK.
 	VendorVariationPrefix = "vendor."
-
-	// ProductVariation is the variant name used for /product code that does not
-	// compile against the VNDK.
-	ProductVariation = "product"
 
 	// ProductVariationPrefix is the variant prefix used for /product code that compiles
 	// against the VNDK.
@@ -117,12 +109,12 @@ func (c *Module) HasNonSystemVariants() bool {
 
 // Returns true if the module is "product" variant. Usually these modules are installed in /product
 func (c *Module) InProduct() bool {
-	return c.Properties.ImageVariation == ProductVariation
+	return c.Properties.ImageVariation == android.ProductVariation
 }
 
 // Returns true if the module is "vendor" variant. Usually these modules are installed in /vendor
 func (c *Module) InVendor() bool {
-	return c.Properties.ImageVariation == VendorVariation
+	return c.Properties.ImageVariation == android.VendorVariation
 }
 
 // Returns true if the module is "vendor" or "product" variant. This replaces previous UseVndk usages
@@ -207,6 +199,12 @@ type ImageMutatableModule interface {
 
 	// SetCoreVariantNeeded sets whether the Core Variant is needed.
 	SetCoreVariantNeeded(b bool)
+
+	// SetProductVariantNeeded sets whether the Product Variant is needed.
+	SetProductVariantNeeded(b bool)
+
+	// SetVendorVariantNeeded sets whether the Vendor Variant is needed.
+	SetVendorVariantNeeded(b bool)
 }
 
 var _ ImageMutatableModule = (*Module)(nil)
@@ -267,6 +265,14 @@ func (m *Module) SetCoreVariantNeeded(b bool) {
 	m.Properties.CoreVariantNeeded = b
 }
 
+func (m *Module) SetProductVariantNeeded(b bool) {
+	m.Properties.ProductVariantNeeded = b
+}
+
+func (m *Module) SetVendorVariantNeeded(b bool) {
+	m.Properties.VendorVariantNeeded = b
+}
+
 func (m *Module) SnapshotVersion(mctx android.BaseModuleContext) string {
 	if snapshot, ok := m.linker.(SnapshotInterface); ok {
 		return snapshot.Version()
@@ -319,41 +325,34 @@ func MutateImage(mctx android.BaseModuleContext, m ImageMutatableModule) {
 		}
 	}
 
+	var vendorVariantNeeded bool = false
+	var productVariantNeeded bool = false
 	var coreVariantNeeded bool = false
 	var ramdiskVariantNeeded bool = false
 	var vendorRamdiskVariantNeeded bool = false
 	var recoveryVariantNeeded bool = false
-
-	var vendorVariants []string
-	var productVariants []string
-
-	needVndkVersionVendorVariantForLlndk := false
 
 	if m.NeedsLlndkVariants() {
 		// This is an LLNDK library.  The implementation of the library will be on /system,
 		// and vendor and product variants will be created with LLNDK stubs.
 		// The LLNDK libraries need vendor variants even if there is no VNDK.
 		coreVariantNeeded = true
-		vendorVariants = append(vendorVariants, "")
-		productVariants = append(productVariants, "")
-		// Generate vendor variants for boardVndkVersion only if the VNDK snapshot does not
-		// provide the LLNDK stub libraries.
-		if needVndkVersionVendorVariantForLlndk {
-			vendorVariants = append(vendorVariants, "")
-		}
+		vendorVariantNeeded = true
+		productVariantNeeded = true
+
 	} else if m.NeedsVendorPublicLibraryVariants() {
 		// A vendor public library has the implementation on /vendor, with stub variants
 		// for system and product.
 		coreVariantNeeded = true
-		vendorVariants = append(vendorVariants, "")
-		productVariants = append(productVariants, "")
+		vendorVariantNeeded = true
+		productVariantNeeded = true
 	} else if m.IsSnapshotPrebuilt() {
 		// Make vendor variants only for the versions in BOARD_VNDK_VERSION and
 		// PRODUCT_EXTRA_VNDK_VERSIONS.
 		if m.InstallInRecovery() {
 			recoveryVariantNeeded = true
 		} else {
-			vendorVariants = append(vendorVariants, m.SnapshotVersion(mctx))
+			m.AppendExtraVariant(VendorVariationPrefix + m.SnapshotVersion(mctx))
 		}
 	} else if m.HasNonSystemVariants() {
 		// This will be available to /system unless it is product_specific
@@ -364,16 +363,16 @@ func MutateImage(mctx android.BaseModuleContext, m ImageMutatableModule) {
 		// BOARD_VNDK_VERSION. The other modules are regarded as AOSP, or
 		// PLATFORM_VNDK_VERSION.
 		if m.HasVendorVariant() {
-			vendorVariants = append(vendorVariants, "")
+			vendorVariantNeeded = true
 		}
 
 		// product_available modules are available to /product.
 		if m.HasProductVariant() {
-			productVariants = append(productVariants, "")
+			productVariantNeeded = true
 		}
 	} else if vendorSpecific && m.SdkVersion() == "" {
 		// This will be available in /vendor (or /odm) only
-		vendorVariants = append(vendorVariants, "")
+		vendorVariantNeeded = true
 	} else {
 		// This is either in /system (or similar: /data), or is a
 		// module built with the NDK. Modules built with the NDK
@@ -384,7 +383,7 @@ func MutateImage(mctx android.BaseModuleContext, m ImageMutatableModule) {
 	if coreVariantNeeded && productSpecific && m.SdkVersion() == "" {
 		// The module has "product_specific: true" that does not create core variant.
 		coreVariantNeeded = false
-		productVariants = append(productVariants, "")
+		productVariantNeeded = true
 	}
 
 	if m.RamdiskAvailable() {
@@ -414,34 +413,30 @@ func MutateImage(mctx android.BaseModuleContext, m ImageMutatableModule) {
 		coreVariantNeeded = false
 	}
 
-	for _, variant := range android.FirstUniqueStrings(vendorVariants) {
-		if variant == "" {
-			m.AppendExtraVariant(VendorVariation)
-		} else {
-			m.AppendExtraVariant(VendorVariationPrefix + variant)
-		}
-	}
-
-	for _, variant := range android.FirstUniqueStrings(productVariants) {
-		if variant == "" {
-			m.AppendExtraVariant(ProductVariation)
-		} else {
-			m.AppendExtraVariant(ProductVariationPrefix + variant)
-		}
-	}
-
 	m.SetRamdiskVariantNeeded(ramdiskVariantNeeded)
 	m.SetVendorRamdiskVariantNeeded(vendorRamdiskVariantNeeded)
 	m.SetRecoveryVariantNeeded(recoveryVariantNeeded)
 	m.SetCoreVariantNeeded(coreVariantNeeded)
+	m.SetProductVariantNeeded(productVariantNeeded)
+	m.SetVendorVariantNeeded(vendorVariantNeeded)
 
 	// Disable the module if no variants are needed.
 	if !ramdiskVariantNeeded &&
 		!recoveryVariantNeeded &&
 		!coreVariantNeeded &&
+		!productVariantNeeded &&
+		!vendorVariantNeeded &&
 		len(m.ExtraVariants()) == 0 {
 		m.Disable()
 	}
+}
+
+func (c *Module) VendorVariantNeeded(ctx android.BaseModuleContext) bool {
+	return c.Properties.VendorVariantNeeded
+}
+
+func (c *Module) ProductVariantNeeded(ctx android.BaseModuleContext) bool {
+	return c.Properties.ProductVariantNeeded
 }
 
 func (c *Module) CoreVariantNeeded(ctx android.BaseModuleContext) bool {
@@ -470,11 +465,8 @@ func (c *Module) ExtraImageVariations(ctx android.BaseModuleContext) []string {
 
 func squashVendorSrcs(m *Module) {
 	if lib, ok := m.compiler.(*libraryDecorator); ok {
-		lib.baseCompiler.Properties.Srcs = append(lib.baseCompiler.Properties.Srcs,
-			lib.baseCompiler.Properties.Target.Vendor.Srcs...)
-
-		lib.baseCompiler.Properties.Exclude_srcs = append(lib.baseCompiler.Properties.Exclude_srcs,
-			lib.baseCompiler.Properties.Target.Vendor.Exclude_srcs...)
+		lib.baseCompiler.Properties.Srcs.AppendSimpleValue(lib.baseCompiler.Properties.Target.Vendor.Srcs)
+		lib.baseCompiler.Properties.Exclude_srcs.AppendSimpleValue(lib.baseCompiler.Properties.Target.Vendor.Exclude_srcs)
 
 		lib.baseCompiler.Properties.Exclude_generated_sources = append(lib.baseCompiler.Properties.Exclude_generated_sources,
 			lib.baseCompiler.Properties.Target.Vendor.Exclude_generated_sources...)
@@ -487,11 +479,8 @@ func squashVendorSrcs(m *Module) {
 
 func squashProductSrcs(m *Module) {
 	if lib, ok := m.compiler.(*libraryDecorator); ok {
-		lib.baseCompiler.Properties.Srcs = append(lib.baseCompiler.Properties.Srcs,
-			lib.baseCompiler.Properties.Target.Product.Srcs...)
-
-		lib.baseCompiler.Properties.Exclude_srcs = append(lib.baseCompiler.Properties.Exclude_srcs,
-			lib.baseCompiler.Properties.Target.Product.Exclude_srcs...)
+		lib.baseCompiler.Properties.Srcs.AppendSimpleValue(lib.baseCompiler.Properties.Target.Product.Srcs)
+		lib.baseCompiler.Properties.Exclude_srcs.AppendSimpleValue(lib.baseCompiler.Properties.Target.Product.Exclude_srcs)
 
 		lib.baseCompiler.Properties.Exclude_generated_sources = append(lib.baseCompiler.Properties.Exclude_generated_sources,
 			lib.baseCompiler.Properties.Target.Product.Exclude_generated_sources...)
@@ -504,11 +493,8 @@ func squashProductSrcs(m *Module) {
 
 func squashRecoverySrcs(m *Module) {
 	if lib, ok := m.compiler.(*libraryDecorator); ok {
-		lib.baseCompiler.Properties.Srcs = append(lib.baseCompiler.Properties.Srcs,
-			lib.baseCompiler.Properties.Target.Recovery.Srcs...)
-
-		lib.baseCompiler.Properties.Exclude_srcs = append(lib.baseCompiler.Properties.Exclude_srcs,
-			lib.baseCompiler.Properties.Target.Recovery.Exclude_srcs...)
+		lib.baseCompiler.Properties.Srcs.AppendSimpleValue(lib.baseCompiler.Properties.Target.Recovery.Srcs)
+		lib.baseCompiler.Properties.Exclude_srcs.AppendSimpleValue(lib.baseCompiler.Properties.Target.Recovery.Exclude_srcs)
 
 		lib.baseCompiler.Properties.Exclude_generated_sources = append(lib.baseCompiler.Properties.Exclude_generated_sources,
 			lib.baseCompiler.Properties.Target.Recovery.Exclude_generated_sources...)
@@ -517,13 +503,13 @@ func squashRecoverySrcs(m *Module) {
 
 func squashVendorRamdiskSrcs(m *Module) {
 	if lib, ok := m.compiler.(*libraryDecorator); ok {
-		lib.baseCompiler.Properties.Exclude_srcs = append(lib.baseCompiler.Properties.Exclude_srcs, lib.baseCompiler.Properties.Target.Vendor_ramdisk.Exclude_srcs...)
+		lib.baseCompiler.Properties.Exclude_srcs.AppendSimpleValue(lib.baseCompiler.Properties.Target.Vendor_ramdisk.Exclude_srcs)
 	}
 }
 
 func squashRamdiskSrcs(m *Module) {
 	if lib, ok := m.compiler.(*libraryDecorator); ok {
-		lib.baseCompiler.Properties.Exclude_srcs = append(lib.baseCompiler.Properties.Exclude_srcs, lib.baseCompiler.Properties.Target.Ramdisk.Exclude_srcs...)
+		lib.baseCompiler.Properties.Exclude_srcs.AppendSimpleValue(lib.baseCompiler.Properties.Target.Ramdisk.Exclude_srcs)
 	}
 }
 
@@ -537,15 +523,15 @@ func (c *Module) SetImageVariation(ctx android.BaseModuleContext, variant string
 	} else if variant == android.RecoveryVariation {
 		c.MakeAsPlatform()
 		squashRecoverySrcs(c)
-	} else if strings.HasPrefix(variant, VendorVariation) {
-		c.Properties.ImageVariation = VendorVariation
+	} else if strings.HasPrefix(variant, android.VendorVariation) {
+		c.Properties.ImageVariation = android.VendorVariation
 
 		if strings.HasPrefix(variant, VendorVariationPrefix) {
 			c.Properties.VndkVersion = strings.TrimPrefix(variant, VendorVariationPrefix)
 		}
 		squashVendorSrcs(c)
-	} else if strings.HasPrefix(variant, ProductVariation) {
-		c.Properties.ImageVariation = ProductVariation
+	} else if strings.HasPrefix(variant, android.ProductVariation) {
+		c.Properties.ImageVariation = android.ProductVariation
 		if strings.HasPrefix(variant, ProductVariationPrefix) {
 			c.Properties.VndkVersion = strings.TrimPrefix(variant, ProductVariationPrefix)
 		}

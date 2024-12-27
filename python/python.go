@@ -38,7 +38,7 @@ func registerPythonMutators(ctx android.RegistrationContext) {
 
 // Exported to support other packages using Python modules in tests.
 func RegisterPythonPreDepsMutators(ctx android.RegisterMutatorsContext) {
-	ctx.BottomUp("python_version", versionSplitMutator()).Parallel()
+	ctx.Transition("python_version", &versionSplitTransitionMutator{})
 }
 
 // the version-specific properties that apply to python modules.
@@ -245,7 +245,6 @@ var (
 	protoExt                 = ".proto"
 	pyVersion2               = "PY2"
 	pyVersion3               = "PY3"
-	pyVersion2And3           = "PY2ANDPY3"
 	internalPath             = "internal"
 )
 
@@ -253,46 +252,67 @@ type basePropertiesProvider interface {
 	getBaseProperties() *BaseProperties
 }
 
-// versionSplitMutator creates version variants for modules and appends the version-specific
-// properties for a given variant to the properties in the variant module
-func versionSplitMutator() func(android.BottomUpMutatorContext) {
-	return func(mctx android.BottomUpMutatorContext) {
-		if base, ok := mctx.Module().(basePropertiesProvider); ok {
-			props := base.getBaseProperties()
-			var versionNames []string
-			// collect version specific properties, so that we can merge version-specific properties
-			// into the module's overall properties
-			var versionProps []VersionProperties
-			// PY3 is first so that we alias the PY3 variant rather than PY2 if both
-			// are available
-			if proptools.BoolDefault(props.Version.Py3.Enabled, true) {
-				versionNames = append(versionNames, pyVersion3)
-				versionProps = append(versionProps, props.Version.Py3)
+type versionSplitTransitionMutator struct{}
+
+func (versionSplitTransitionMutator) Split(ctx android.BaseModuleContext) []string {
+	if base, ok := ctx.Module().(basePropertiesProvider); ok {
+		props := base.getBaseProperties()
+		var variants []string
+		// PY3 is first so that we alias the PY3 variant rather than PY2 if both
+		// are available
+		if proptools.BoolDefault(props.Version.Py3.Enabled, true) {
+			variants = append(variants, pyVersion3)
+		}
+		if proptools.BoolDefault(props.Version.Py2.Enabled, false) {
+			if ctx.ModuleName() != "py2-cmd" &&
+				ctx.ModuleName() != "py2-stdlib" {
+				ctx.PropertyErrorf("version.py2.enabled", "Python 2 is no longer supported, please convert to python 3.")
 			}
-			if proptools.BoolDefault(props.Version.Py2.Enabled, false) {
-				if !mctx.DeviceConfig().BuildBrokenUsesSoongPython2Modules() &&
-					mctx.ModuleName() != "py2-cmd" &&
-					mctx.ModuleName() != "py2-stdlib" {
-					mctx.PropertyErrorf("version.py2.enabled", "Python 2 is no longer supported, please convert to python 3. This error can be temporarily overridden by setting BUILD_BROKEN_USES_SOONG_PYTHON2_MODULES := true in the product configuration")
-				}
-				versionNames = append(versionNames, pyVersion2)
-				versionProps = append(versionProps, props.Version.Py2)
-			}
-			modules := mctx.CreateLocalVariations(versionNames...)
-			// Alias module to the first variant
-			if len(versionNames) > 0 {
-				mctx.AliasVariation(versionNames[0])
-			}
-			for i, v := range versionNames {
-				// set the actual version for Python module.
-				newProps := modules[i].(basePropertiesProvider).getBaseProperties()
-				newProps.Actual_version = v
-				// append versioned properties for the Python module to the overall properties
-				err := proptools.AppendMatchingProperties([]interface{}{newProps}, &versionProps[i], nil)
-				if err != nil {
-					panic(err)
-				}
-			}
+			variants = append(variants, pyVersion2)
+		}
+		return variants
+	}
+	return []string{""}
+}
+
+func (versionSplitTransitionMutator) OutgoingTransition(ctx android.OutgoingTransitionContext, sourceVariation string) string {
+	return ""
+}
+
+func (versionSplitTransitionMutator) IncomingTransition(ctx android.IncomingTransitionContext, incomingVariation string) string {
+	if incomingVariation != "" {
+		return incomingVariation
+	}
+	if base, ok := ctx.Module().(basePropertiesProvider); ok {
+		props := base.getBaseProperties()
+		if proptools.BoolDefault(props.Version.Py3.Enabled, true) {
+			return pyVersion3
+		} else {
+			return pyVersion2
+		}
+	}
+
+	return ""
+}
+
+func (versionSplitTransitionMutator) Mutate(ctx android.BottomUpMutatorContext, variation string) {
+	if variation == "" {
+		return
+	}
+	if base, ok := ctx.Module().(basePropertiesProvider); ok {
+		props := base.getBaseProperties()
+		props.Actual_version = variation
+
+		var versionProps *VersionProperties
+		if variation == pyVersion3 {
+			versionProps = &props.Version.Py3
+		} else if variation == pyVersion2 {
+			versionProps = &props.Version.Py2
+		}
+
+		err := proptools.AppendMatchingProperties([]interface{}{props}, versionProps, nil)
+		if err != nil {
+			panic(err)
 		}
 	}
 }

@@ -60,7 +60,9 @@ type filesystem struct {
 	output     android.OutputPath
 	installDir android.InstallPath
 
-	// For testing. Keeps the result of CopySpecsToDir()
+	fileListFile android.OutputPath
+
+	// Keeps the entries installed from this filesystem
 	entries []string
 }
 
@@ -145,14 +147,14 @@ type filesystemProperties struct {
 func filesystemFactory() android.Module {
 	module := &filesystem{}
 	module.filterPackagingSpec = module.filterInstallablePackagingSpec
-	initFilesystemModule(module)
+	initFilesystemModule(module, module)
 	return module
 }
 
-func initFilesystemModule(module *filesystem) {
-	module.AddProperties(&module.properties)
-	android.InitPackageModule(module)
-	module.PackagingBase.DepsCollectFirstTargetOnly = true
+func initFilesystemModule(module android.DefaultableModule, filesystemModule *filesystem) {
+	module.AddProperties(&filesystemModule.properties)
+	android.InitPackageModule(filesystemModule)
+	filesystemModule.PackagingBase.DepsCollectFirstTargetOnly = true
 	android.InitAndroidMultiTargetsArchModule(module, android.DeviceSupported, android.MultilibCommon)
 	android.InitDefaultableModule(module)
 }
@@ -221,8 +223,26 @@ func (f *filesystem) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 
 	f.installDir = android.PathForModuleInstall(ctx, "etc")
 	ctx.InstallFile(f.installDir, f.installFileName(), f.output)
-
 	ctx.SetOutputFiles([]android.Path{f.output}, "")
+
+	f.fileListFile = android.PathForModuleOut(ctx, "fileList").OutputPath
+	android.WriteFileRule(ctx, f.fileListFile, f.installedFilesList())
+}
+
+func (f *filesystem) appendToEntry(ctx android.ModuleContext, installedFile android.OutputPath) {
+	partitionBaseDir := android.PathForModuleOut(ctx, "root", f.partitionName()).String() + "/"
+
+	relPath, inTargetPartition := strings.CutPrefix(installedFile.String(), partitionBaseDir)
+	if inTargetPartition {
+		f.entries = append(f.entries, relPath)
+	}
+}
+
+func (f *filesystem) installedFilesList() string {
+	installedFilePaths := android.FirstUniqueStrings(f.entries)
+	slices.Sort(installedFilePaths)
+
+	return strings.Join(installedFilePaths, "\n")
 }
 
 func validatePartitionType(ctx android.ModuleContext, p partition) {
@@ -269,17 +289,19 @@ func (f *filesystem) buildNonDepsFiles(ctx android.ModuleContext, builder *andro
 		builder.Command().Textf("(! [ -e %s -o -L %s ] || (echo \"%s already exists from an earlier stage of the build\" && exit 1))", dst, dst, dst)
 		builder.Command().Text("mkdir -p").Text(filepath.Dir(dst.String()))
 		builder.Command().Text("ln -sf").Text(proptools.ShellEscape(target)).Text(dst.String())
+		f.appendToEntry(ctx, dst)
 	}
 
 	// create extra files if there's any
 	if f.buildExtraFiles != nil {
 		rootForExtraFiles := android.PathForModuleGen(ctx, "root-extra").OutputPath
 		extraFiles := f.buildExtraFiles(ctx, rootForExtraFiles)
-		for _, f := range extraFiles {
-			rel, err := filepath.Rel(rootForExtraFiles.String(), f.String())
+		for _, extraFile := range extraFiles {
+			rel, err := filepath.Rel(rootForExtraFiles.String(), extraFile.String())
 			if err != nil || strings.HasPrefix(rel, "..") {
-				ctx.ModuleErrorf("can't make %q relative to %q", f, rootForExtraFiles)
+				ctx.ModuleErrorf("can't make %q relative to %q", extraFile, rootForExtraFiles)
 			}
+			f.appendToEntry(ctx, rootDir.Join(ctx, rel))
 		}
 		if len(extraFiles) > 0 {
 			builder.Command().BuiltTool("merge_directories").
@@ -288,6 +310,33 @@ func (f *filesystem) buildNonDepsFiles(ctx android.ModuleContext, builder *andro
 				Text(rootForExtraFiles.String())
 		}
 	}
+}
+
+func (f *filesystem) copyPackagingSpecs(ctx android.ModuleContext, builder *android.RuleBuilder, specs map[string]android.PackagingSpec, rootDir, rebasedDir android.WritablePath) []string {
+	rootDirSpecs := make(map[string]android.PackagingSpec)
+	rebasedDirSpecs := make(map[string]android.PackagingSpec)
+
+	for rel, spec := range specs {
+		if spec.Partition() == "root" {
+			rootDirSpecs[rel] = spec
+		} else {
+			rebasedDirSpecs[rel] = spec
+		}
+	}
+
+	dirsToSpecs := make(map[android.WritablePath]map[string]android.PackagingSpec)
+	dirsToSpecs[rootDir] = rootDirSpecs
+	dirsToSpecs[rebasedDir] = rebasedDirSpecs
+
+	return f.CopySpecsToDirs(ctx, builder, dirsToSpecs)
+}
+
+func (f *filesystem) copyFilesToProductOut(ctx android.ModuleContext, builder *android.RuleBuilder, rebasedDir android.OutputPath) {
+	if f.Name() != ctx.Config().SoongDefinedSystemImage() {
+		return
+	}
+	installPath := android.PathForModuleInPartitionInstall(ctx, f.partitionName())
+	builder.Command().Textf("cp -prf %s/* %s", rebasedDir, installPath)
 }
 
 func (f *filesystem) buildImageUsingBuildImage(ctx android.ModuleContext) android.OutputPath {
@@ -300,13 +349,14 @@ func (f *filesystem) buildImageUsingBuildImage(ctx android.ModuleContext) androi
 	// Wipe the root dir to get rid of leftover files from prior builds
 	builder.Command().Textf("rm -rf %s && mkdir -p %s", rootDir, rootDir)
 	specs := f.gatherFilteredPackagingSpecs(ctx)
-	f.entries = f.CopySpecsToDir(ctx, builder, specs, rebasedDir)
+	f.entries = f.copyPackagingSpecs(ctx, builder, specs, rootDir, rebasedDir)
 
 	f.buildNonDepsFiles(ctx, builder, rootDir)
 	f.addMakeBuiltFiles(ctx, builder, rootDir)
 	f.buildFsverityMetadataFiles(ctx, builder, specs, rootDir, rebasedDir)
 	f.buildEventLogtagsFile(ctx, builder, rebasedDir)
 	f.buildAconfigFlagsFiles(ctx, builder, specs, rebasedDir)
+	f.copyFilesToProductOut(ctx, builder, rebasedDir)
 
 	// run host_init_verifier
 	// Ideally we should have a concept of pluggable linters that verify the generated image.
@@ -443,12 +493,13 @@ func (f *filesystem) buildCpioImage(ctx android.ModuleContext, compressed bool) 
 	// Wipe the root dir to get rid of leftover files from prior builds
 	builder.Command().Textf("rm -rf %s && mkdir -p %s", rootDir, rootDir)
 	specs := f.gatherFilteredPackagingSpecs(ctx)
-	f.entries = f.CopySpecsToDir(ctx, builder, specs, rebasedDir)
+	f.entries = f.copyPackagingSpecs(ctx, builder, specs, rootDir, rebasedDir)
 
 	f.buildNonDepsFiles(ctx, builder, rootDir)
 	f.buildFsverityMetadataFiles(ctx, builder, specs, rootDir, rebasedDir)
 	f.buildEventLogtagsFile(ctx, builder, rebasedDir)
 	f.buildAconfigFlagsFiles(ctx, builder, specs, rebasedDir)
+	f.copyFilesToProductOut(ctx, builder, rebasedDir)
 
 	output := android.PathForModuleOut(ctx, f.installFileName()).OutputPath
 	cmd := builder.Command().
@@ -535,6 +586,8 @@ func (f *filesystem) buildEventLogtagsFile(ctx android.ModuleContext, builder *a
 	for _, path := range android.SortedKeys(logtagsFilePaths) {
 		cmd.Text(path)
 	}
+
+	f.appendToEntry(ctx, eventLogtagsPath)
 }
 
 type partition interface {
@@ -558,6 +611,7 @@ func (f *filesystem) AndroidMkEntries() []android.AndroidMkEntries {
 			func(ctx android.AndroidMkExtraEntriesContext, entries *android.AndroidMkEntries) {
 				entries.SetString("LOCAL_MODULE_PATH", f.installDir.String())
 				entries.SetString("LOCAL_INSTALLED_MODULE_STEM", f.installFileName())
+				entries.SetString("LOCAL_FILESYSTEM_FILELIST", f.fileListFile.String())
 			},
 		},
 	}}
@@ -607,7 +661,7 @@ func sha1sum(values []string) string {
 
 var _ cc.UseCoverage = (*filesystem)(nil)
 
-func (*filesystem) IsNativeCoverageNeeded(ctx android.IncomingTransitionContext) bool {
+func (*filesystem) IsNativeCoverageNeeded(ctx cc.IsNativeCoverageNeededContext) bool {
 	return ctx.Device() && ctx.DeviceConfig().NativeCoverageEnabled()
 }
 

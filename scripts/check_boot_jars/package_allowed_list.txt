@@ -74,6 +74,7 @@ javax\.xml\.validation
 javax\.xml\.xpath
 jdk\.internal
 jdk\.internal\.access
+jdk\.internal\.event
 jdk\.internal\.math
 jdk\.internal\.misc
 jdk\.internal\.ref
@@ -81,6 +82,7 @@ jdk\.internal\.reflect
 jdk\.internal\.util
 jdk\.internal\.util\.jar
 jdk\.internal\.util\.random
+jdk\.internal\.vm
 jdk\.internal\.vm\.annotation
 jdk\.net
 jdk\.random

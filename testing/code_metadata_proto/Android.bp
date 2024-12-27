@@ -26,6 +26,7 @@ bootstrap_go_package {
     srcs: [
         "code_metadata.pb.go",
     ],
+    visibility: ["//build/make/tools/metadata"],
 }
 
 python_library_host {
@@ -40,4 +41,5 @@ python_library_host {
     proto: {
         canonical_path_from_root: false,
     },
+    visibility: ["//tools/asuite/team_build_scripts"],
 }

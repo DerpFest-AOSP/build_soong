@@ -199,9 +199,7 @@ func TestProductVariables(t *testing.T) {
 			ctx.RegisterModuleType("module3", testProductVariableModuleFactoryFactory(&struct {
 				Foo []string
 			}{}))
-			ctx.PreDepsMutators(func(ctx RegisterMutatorsContext) {
-				ctx.BottomUp("variable", VariableMutator).Parallel()
-			})
+			registerVariableBuildComponents(ctx)
 		}),
 		FixtureWithRootAndroidBp(bp),
 	).RunTest(t)
@@ -210,14 +208,14 @@ func TestProductVariables(t *testing.T) {
 var testProductVariableDefaultsProperties = struct {
 	Product_variables struct {
 		Eng struct {
-			Foo []string
+			Foo []string `android:"arch_variant"`
 			Bar []string
-		}
-	}
+		} `android:"arch_variant"`
+	} `android:"arch_variant"`
 }{}
 
 type productVariablesDefaultsTestProperties struct {
-	Foo []string
+	Foo []string `android:"arch_variant"`
 }
 
 type productVariablesDefaultsTestProperties2 struct {
@@ -242,7 +240,7 @@ func productVariablesDefaultsTestModuleFactory() Module {
 	module := &productVariablesDefaultsTestModule{}
 	module.AddProperties(&module.properties)
 	module.variableProperties = testProductVariableDefaultsProperties
-	InitAndroidModule(module)
+	InitAndroidArchModule(module, DeviceSupported, MultilibBoth)
 	InitDefaultableModule(module)
 	return module
 }
@@ -323,4 +321,47 @@ func BenchmarkSliceToTypeArray(b *testing.B) {
 			}
 		})
 	}
+}
+
+// Test a defaults module that supports more product variable properties than the target module.
+func TestProductVariablesArch(t *testing.T) {
+	bp := `
+		test {
+			name: "foo",
+			arch: {
+				arm: {
+					product_variables: {
+						eng: {
+							foo: ["arm"],
+						},
+					},
+				},
+				arm64: {
+					product_variables: {
+						eng: {
+							foo: ["arm64"],
+						},
+					},
+				},
+			},
+			foo: ["module"],
+		}
+	`
+
+	result := GroupFixturePreparers(
+		FixtureModifyProductVariables(func(variables FixtureProductVariables) {
+			variables.Eng = boolPtr(true)
+		}),
+		PrepareForTestWithArchMutator,
+		PrepareForTestWithVariables,
+		FixtureRegisterWithContext(func(ctx RegistrationContext) {
+			ctx.RegisterModuleType("test", productVariablesDefaultsTestModuleFactory)
+		}),
+		FixtureWithRootAndroidBp(bp),
+	).RunTest(t)
+
+	foo := result.ModuleForTests("foo", "android_arm64_armv8-a").Module().(*productVariablesDefaultsTestModule)
+
+	want := []string{"module", "arm64"}
+	AssertDeepEquals(t, "foo", want, foo.properties.Foo)
 }

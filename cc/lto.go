@@ -110,7 +110,7 @@ func (lto *lto) flags(ctx ModuleContext, flags Flags) Flags {
 		var ltoLdFlags []string
 
 		// Do not perform costly LTO optimizations for Eng builds.
-		if Bool(lto.Properties.Lto_O0) || ctx.Config().Eng() {
+		if Bool(lto.Properties.Lto_O0) || ctx.optimizeForSize() || ctx.Config().Eng() {
 			ltoLdFlags = append(ltoLdFlags, "-Wl,--lto-O0")
 		}
 

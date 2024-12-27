@@ -203,10 +203,8 @@ func TestHiddenAPISingletonSdks(t *testing.T) {
 				FixtureConfigureBootJars("platform:foo"),
 				android.FixtureModifyProductVariables(func(variables android.FixtureProductVariables) {
 					variables.Always_use_prebuilt_sdks = proptools.BoolPtr(tc.unbundledBuild)
-					variables.BuildFlags = map[string]string{
-						"RELEASE_HIDDEN_API_EXPORTABLE_STUBS": "true",
-					}
 				}),
+				android.PrepareForTestWithBuildFlag("RELEASE_HIDDEN_API_EXPORTABLE_STUBS", "true"),
 			).RunTestWithBp(t, `
 		java_library {
 			name: "foo",

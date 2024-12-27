@@ -36,10 +36,6 @@ type customModule struct {
 	data       AndroidMkData
 	distFiles  TaggedDistFiles
 	outputFile OptionalPath
-
-	// The paths that will be used as the default dist paths if no tag is
-	// specified.
-	defaultDistPaths Paths
 }
 
 const (
@@ -50,7 +46,7 @@ const (
 
 func (m *customModule) GenerateAndroidBuildActions(ctx ModuleContext) {
 
-	m.base().licenseMetadataFile = PathForOutput(ctx, "meta_lic")
+	var defaultDistPaths Paths
 
 	// If the dist_output_file: true then create an output file that is stored in
 	// the OutputFile property of the AndroidMkEntry.
@@ -62,7 +58,7 @@ func (m *customModule) GenerateAndroidBuildActions(ctx ModuleContext) {
 		// property in AndroidMkEntry when determining the default dist paths.
 		// Setting this first allows it to be overridden based on the
 		// default_dist_files setting replicating that previous behavior.
-		m.defaultDistPaths = Paths{path}
+		defaultDistPaths = Paths{path}
 	}
 
 	// Based on the setting of the default_dist_files property possibly create a
@@ -71,26 +67,37 @@ func (m *customModule) GenerateAndroidBuildActions(ctx ModuleContext) {
 	defaultDistFiles := proptools.StringDefault(m.properties.Default_dist_files, defaultDistFiles_Tagged)
 	switch defaultDistFiles {
 	case defaultDistFiles_None:
-		// Do nothing
+		m.setOutputFiles(ctx, defaultDistPaths)
 
 	case defaultDistFiles_Default:
 		path := PathForTesting("default-dist.out")
-		m.defaultDistPaths = Paths{path}
+		defaultDistPaths = Paths{path}
+		m.setOutputFiles(ctx, defaultDistPaths)
 		m.distFiles = MakeDefaultDistFiles(path)
 
 	case defaultDistFiles_Tagged:
 		// Module types that set AndroidMkEntry.DistFiles to the result of calling
 		// GenerateTaggedDistFiles(ctx) relied on no tag being treated as "" which
-		// meant that the default dist paths would be whatever was returned by
-		// OutputFiles(""). In order to preserve that behavior when treating no tag
-		// as being equal to DefaultDistTag this ensures that
-		// OutputFiles(DefaultDistTag) will return the same as OutputFiles("").
-		m.defaultDistPaths = PathsForTesting("one.out")
+		// meant that the default dist paths would be the same as empty-string-tag
+		// output files. In order to preserve that behavior when treating no tag
+		// as being equal to DefaultDistTag this ensures that DefaultDistTag output
+		// will be the same as empty-string-tag output.
+		defaultDistPaths = PathsForTesting("one.out")
+		m.setOutputFiles(ctx, defaultDistPaths)
 
 		// This must be called after setting defaultDistPaths/outputFile as
-		// GenerateTaggedDistFiles calls into OutputFiles(tag) which may use those
-		// fields.
+		// GenerateTaggedDistFiles calls into outputFiles property which may use
+		// those fields.
 		m.distFiles = m.GenerateTaggedDistFiles(ctx)
+	}
+}
+
+func (m *customModule) setOutputFiles(ctx ModuleContext, defaultDistPaths Paths) {
+	ctx.SetOutputFiles(PathsForTesting("one.out"), "")
+	ctx.SetOutputFiles(PathsForTesting("two.out", "three/four.out"), ".multiple")
+	ctx.SetOutputFiles(PathsForTesting("another.out"), ".another-tag")
+	if defaultDistPaths != nil {
+		ctx.SetOutputFiles(defaultDistPaths, DefaultDistTag)
 	}
 }
 
@@ -99,25 +106,6 @@ func (m *customModule) AndroidMk() AndroidMkData {
 		Custom: func(w io.Writer, name, prefix, moduleDir string, data AndroidMkData) {
 			m.data = data
 		},
-	}
-}
-
-func (m *customModule) OutputFiles(tag string) (Paths, error) {
-	switch tag {
-	case DefaultDistTag:
-		if m.defaultDistPaths != nil {
-			return m.defaultDistPaths, nil
-		} else {
-			return nil, fmt.Errorf("default dist tag is not available")
-		}
-	case "":
-		return PathsForTesting("one.out"), nil
-	case ".multiple":
-		return PathsForTesting("two.out", "three/four.out"), nil
-	case ".another-tag":
-		return PathsForTesting("another.out"), nil
-	default:
-		return nil, fmt.Errorf("unsupported module reference tag %q", tag)
 	}
 }
 
@@ -287,7 +275,8 @@ func TestGetDistForGoals(t *testing.T) {
 		)
 	}
 	for idx, line := range androidMkLines {
-		expectedLine := strings.ReplaceAll(expectedAndroidMkLines[idx], "meta_lic", module.base().licenseMetadataFile.String())
+		expectedLine := strings.ReplaceAll(expectedAndroidMkLines[idx], "meta_lic",
+			OtherModuleProviderOrDefault(ctx, module, InstallFilesProvider).LicenseMetadataFile.String())
 		if line != expectedLine {
 			t.Errorf(
 				"Expected AndroidMk line to be '%s', got '%s'",

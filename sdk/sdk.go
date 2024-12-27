@@ -84,20 +84,6 @@ type sdkProperties struct {
 
 	// True if this is a module_exports (or module_exports_snapshot) module type.
 	Module_exports bool `blueprint:"mutated"`
-
-	// The additional visibility to add to the prebuilt modules to allow them to
-	// reference each other.
-	//
-	// This can only be used to widen the visibility of the members:
-	//
-	// * Specifying //visibility:public here will make all members visible and
-	//   essentially ignore their own visibility.
-	// * Specifying //visibility:private here is an error.
-	// * Specifying any other rule here will add it to the members visibility and
-	//   be output to the member prebuilt in the snapshot. Duplicates will be
-	//   dropped. Adding a rule to members that have //visibility:private will
-	//   cause the //visibility:private to be discarded.
-	Prebuilt_visibility []string
 }
 
 // sdk defines an SDK which is a logical group of modules (e.g. native libs, headers, java libs, etc.)
@@ -130,8 +116,6 @@ func newSdkModule(moduleExports bool) *sdk {
 
 	s.AddProperties(&s.properties, s.dynamicMemberTypeListProperties, &traitsWrapper)
 
-	// Make sure that the prebuilt visibility property is verified for errors.
-	android.AddVisibilityProperty(s, "prebuilt_visibility", &s.properties.Prebuilt_visibility)
 	android.InitCommonOSAndroidMultiTargetsArchModule(s, android.HostAndDeviceSupported, android.MultilibCommon)
 	android.InitDefaultableModule(s)
 	android.AddLoadHook(s, func(ctx android.LoadHookContext) {
@@ -193,6 +177,10 @@ func (s *sdk) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 		// Generate the snapshot from the member info.
 		s.buildSnapshot(ctx, sdkVariants)
 	}
+
+	if s.snapshotFile.Valid() {
+		ctx.SetOutputFiles([]android.Path{s.snapshotFile.Path()}, "")
+	}
 }
 
 func (s *sdk) AndroidMkEntries() []android.AndroidMkEntries {
@@ -207,6 +195,11 @@ func (s *sdk) AndroidMkEntries() []android.AndroidMkEntries {
 		OutputFile: s.snapshotFile,
 		DistFiles:  android.MakeDefaultDistFiles(s.snapshotFile.Path(), s.infoFile.Path()),
 		Include:    "$(BUILD_PHONY_PACKAGE)",
+		ExtraEntries: []android.AndroidMkExtraEntriesFunc{
+			func(ctx android.AndroidMkExtraEntriesContext, entries *android.AndroidMkEntries) {
+				entries.SetBool("LOCAL_DONT_CHECK_MODULE", true)
+			},
+		},
 		ExtraFooters: []android.AndroidMkExtraFootersFunc{
 			func(w io.Writer, name, prefix, moduleDir string) {
 				// Allow the sdk to be built by simply passing its name on the command line.
@@ -220,18 +213,6 @@ func (s *sdk) AndroidMkEntries() []android.AndroidMkEntries {
 			},
 		},
 	}}
-}
-
-func (s *sdk) OutputFiles(tag string) (android.Paths, error) {
-	switch tag {
-	case "":
-		if s.snapshotFile.Valid() {
-			return []android.Path{s.snapshotFile.Path()}, nil
-		}
-		return nil, fmt.Errorf("snapshot file not defined. This is most likely because this isn't the common_os variant of this module")
-	default:
-		return nil, fmt.Errorf("unknown tag %q", tag)
-	}
 }
 
 // gatherTraits gathers the traits from the dynamically generated trait specific properties.

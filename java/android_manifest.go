@@ -71,11 +71,14 @@ func shouldReturnFinalOrFutureInt(ctx android.ModuleContext, targetSdkVersionLev
 	return targetSdkVersionLevel.IsPreview() && (ctx.Config().UnbundledBuildApps() || includedInMts(ctx.Module()))
 }
 
-// Helper function that casts android.Module to java.androidTestApp
-// If this type conversion is possible, it queries whether the test app is included in an MTS suite
+// Helper function that returns true if android_test, android_test_helper_app, java_test are in an MTS suite.
 func includedInMts(module android.Module) bool {
 	if test, ok := module.(androidTestApp); ok {
 		return test.includedInTestSuite("mts")
+	}
+	// java_test
+	if test, ok := module.(*Test); ok {
+		return android.PrefixInList(test.testProperties.Test_suites, "mts")
 	}
 	return false
 }

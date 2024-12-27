@@ -30,15 +30,11 @@ var (
 type llndkLibraryProperties struct {
 	// Relative path to the symbol map.
 	// An example file can be seen here: TODO(danalbert): Make an example.
-	Symbol_file *string
+	Symbol_file *string `android:"path,arch_variant"`
 
 	// Whether to export any headers as -isystem instead of -I. Mainly for use by
 	// bionic/libc.
 	Export_headers_as_system *bool
-
-	// Which headers to process with versioner. This really only handles
-	// bionic/libc/include right now.
-	Export_preprocessed_headers []string
 
 	// Whether the system library uses symbol versions.
 	Unversioned *bool
@@ -182,10 +178,6 @@ func (txt *llndkLibrariesTxtModule) BaseDir() string {
 // PrebuiltEtcModule interface
 func (txt *llndkLibrariesTxtModule) SubDir() string {
 	return ""
-}
-
-func (txt *llndkLibrariesTxtModule) OutputFiles(tag string) (android.Paths, error) {
-	return android.Paths{txt.outputFile}, nil
 }
 
 func llndkMutator(mctx android.BottomUpMutatorContext) {

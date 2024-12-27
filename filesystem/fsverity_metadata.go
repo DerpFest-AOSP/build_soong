@@ -87,6 +87,7 @@ func (f *filesystem) buildFsverityMetadataFiles(ctx android.ModuleContext, build
 		sb.WriteRune(' ')
 		sb.WriteString(srcPath.String())
 		sb.WriteRune('\n')
+		f.appendToEntry(ctx, destPath)
 	}
 
 	// STEP 2: generate signed BuildManifest.apk
@@ -108,6 +109,7 @@ func (f *filesystem) buildFsverityMetadataFiles(ctx android.ModuleContext, build
 	sb.WriteString(" --output ")
 	sb.WriteString(manifestPbPath.String())
 	sb.WriteRune(' ')
+	f.appendToEntry(ctx, manifestPbPath)
 
 	manifestGeneratorListPath := android.PathForModuleOut(ctx, "fsverity_manifest.list")
 	f.writeManifestGeneratorListFile(ctx, manifestGeneratorListPath.OutputPath, matchedSpecs, rebasedDir)
@@ -115,15 +117,18 @@ func (f *filesystem) buildFsverityMetadataFiles(ctx android.ModuleContext, build
 	sb.WriteString(manifestGeneratorListPath.String())
 	sb.WriteRune('\n')
 	cmd.Implicit(manifestGeneratorListPath)
+	f.appendToEntry(ctx, manifestGeneratorListPath.OutputPath)
 
 	// STEP 2-2: generate BuildManifest.apk (unsigned)
 	aapt2Path := ctx.Config().HostToolPath(ctx, "aapt2")
 	apkPath := rebasedDir.Join(ctx, "etc", "security", "fsverity", "BuildManifest.apk")
+	idsigPath := rebasedDir.Join(ctx, "etc", "security", "fsverity", "BuildManifest.apk.idsig")
 	manifestTemplatePath := android.PathForSource(ctx, "system/security/fsverity/AndroidManifest.xml")
 	libs := android.PathsForModuleSrc(ctx, f.properties.Fsverity.Libs)
 	cmd.Implicit(aapt2Path)
 	cmd.Implicit(manifestTemplatePath)
 	cmd.Implicits(libs)
+	cmd.ImplicitOutput(apkPath)
 
 	sb.WriteString(aapt2Path.String())
 	sb.WriteString(" link -o ")
@@ -150,12 +155,15 @@ func (f *filesystem) buildFsverityMetadataFiles(ctx android.ModuleContext, build
 	sb.WriteString(f.partitionName())
 	sb.WriteRune('\n')
 
+	f.appendToEntry(ctx, apkPath)
+
 	// STEP 2-3: sign BuildManifest.apk
 	apksignerPath := ctx.Config().HostToolPath(ctx, "apksigner")
 	pemPath, keyPath := ctx.Config().DefaultAppCertificate(ctx)
 	cmd.Implicit(apksignerPath)
 	cmd.Implicit(pemPath)
 	cmd.Implicit(keyPath)
+	cmd.ImplicitOutput(idsigPath)
 	sb.WriteString(apksignerPath.String())
 	sb.WriteString(" sign --in ")
 	sb.WriteString(apkPath.String())
@@ -164,6 +172,8 @@ func (f *filesystem) buildFsverityMetadataFiles(ctx android.ModuleContext, build
 	sb.WriteString(" --key ")
 	sb.WriteString(keyPath.String())
 	sb.WriteRune('\n')
+
+	f.appendToEntry(ctx, idsigPath)
 
 	android.WriteExecutableFileRuleVerbatim(ctx, fsverityBuilderPath, sb.String())
 }

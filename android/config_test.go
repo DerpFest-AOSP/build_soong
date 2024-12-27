@@ -125,6 +125,38 @@ func assertStringEquals(t *testing.T, expected, actual string) {
 	}
 }
 
+func TestReleaseAconfigExtraReleaseConfigs(t *testing.T) {
+	testCases := []struct {
+		name     string
+		flag     string
+		expected []string
+	}{
+		{
+			name:     "empty",
+			flag:     "",
+			expected: []string{},
+		},
+		{
+			name:     "specified",
+			flag:     "bar foo",
+			expected: []string{"bar", "foo"},
+		},
+		{
+			name:     "duplicates",
+			flag:     "foo bar foo",
+			expected: []string{"foo", "bar"},
+		},
+	}
+
+	for _, tc := range testCases {
+		fixture := GroupFixturePreparers(
+			PrepareForTestWithBuildFlag("RELEASE_ACONFIG_EXTRA_RELEASE_CONFIGS", tc.flag),
+		)
+		actual := fixture.RunTest(t).Config.ReleaseAconfigExtraReleaseConfigs()
+		AssertArrayString(t, tc.name, tc.expected, actual)
+	}
+}
+
 func TestConfiguredJarList(t *testing.T) {
 	list1 := CreateTestConfiguredJarList([]string{"apex1:jarA"})
 

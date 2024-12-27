@@ -68,7 +68,7 @@ type SingletonModuleBase struct {
 func (smb *SingletonModuleBase) GenerateBuildActions(ctx blueprint.ModuleContext) {
 	smb.lock.Lock()
 	if smb.variant != "" {
-		ctx.ModuleErrorf("GenerateAndroidBuildActions already called for variant %q, SingletonModules can only  have one variant", smb.variant)
+		ctx.ModuleErrorf("GenerateAndroidBuildActions already called for variant %q, SingletonModules can only have one variant", smb.variant)
 	}
 	smb.variant = ctx.ModuleSubDir()
 	smb.lock.Unlock()

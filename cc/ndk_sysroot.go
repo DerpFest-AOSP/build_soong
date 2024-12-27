@@ -54,7 +54,22 @@ package cc
 
 import (
 	"android/soong/android"
+	"fmt"
+	"path/filepath"
 	"strings"
+
+	"github.com/google/blueprint"
+)
+
+var (
+	verifyCCompat = pctx.AndroidStaticRule("verifyCCompat",
+		blueprint.RuleParams{
+			Command:     "$ccCmd -x c -fsyntax-only $flags $in && touch $out",
+			CommandDeps: []string{"$ccCmd"},
+		},
+		"ccCmd",
+		"flags",
+	)
 )
 
 func init() {
@@ -64,7 +79,6 @@ func init() {
 func RegisterNdkModuleTypes(ctx android.RegistrationContext) {
 	ctx.RegisterModuleType("ndk_headers", NdkHeadersFactory)
 	ctx.RegisterModuleType("ndk_library", NdkLibraryFactory)
-	ctx.RegisterModuleType("versioned_ndk_headers", VersionedNdkHeadersFactory)
 	ctx.RegisterModuleType("preprocessed_ndk_headers", preprocessedNdkHeadersFactory)
 	ctx.RegisterParallelSingletonType("ndk", NdkSingleton)
 }
@@ -101,6 +115,45 @@ func getNdkFullTimestampFile(ctx android.PathContext) android.WritablePath {
 // Used for ABI monitoring to track only structures defined in NDK headers.
 func getNdkABIHeadersFile(ctx android.PathContext) android.WritablePath {
 	return android.PathForOutput(ctx, "ndk_abi_headers.txt")
+}
+
+func verifyNdkHeaderIsCCompatible(ctx android.SingletonContext,
+	src android.Path, dest android.Path) android.Path {
+	sysrootInclude := getCurrentIncludePath(ctx)
+	baseOutputDir := android.PathForOutput(ctx, "c-compat-verification")
+	installRelPath, err := filepath.Rel(sysrootInclude.String(), dest.String())
+	if err != nil {
+		ctx.Errorf("filepath.Rel(%q, %q) failed: %s", dest, sysrootInclude, err)
+	}
+	output := baseOutputDir.Join(ctx, installRelPath)
+	ctx.Build(pctx, android.BuildParams{
+		Rule:        verifyCCompat,
+		Description: fmt.Sprintf("Verifying C compatibility of %s", src),
+		Output:      output,
+		Input:       dest,
+		// Ensures that all the headers in the sysroot are already installed
+		// before testing any of the headers for C compatibility, and also that
+		// the check will be re-run whenever the sysroot changes. This is
+		// necessary because many of the NDK headers depend on other NDK
+		// headers, but we don't have explicit dependency tracking for that.
+		Implicits: []android.Path{getNdkHeadersTimestampFile(ctx)},
+		Args: map[string]string{
+			"ccCmd": "${config.ClangBin}/clang",
+			"flags": fmt.Sprintf(
+				// Ideally we'd check each ABI, multiple API levels,
+				// fortify/non-fortify, and a handful of other variations. It's
+				// a lot more difficult to do that though, and would eat up more
+				// build time. All the problems we've seen so far that this
+				// check would catch have been in arch-generic and
+				// minSdkVersion-generic code in frameworks though, so this is a
+				// good place to start.
+				"-target aarch64-linux-android%d --sysroot %s",
+				android.FutureApiLevel.FinalOrFutureInt(),
+				getNdkSysrootBase(ctx).String(),
+			),
+		},
+	})
+	return output
 }
 
 func NdkSingleton() android.Singleton {
@@ -143,10 +196,17 @@ func writeNdkAbiSrcFilter(ctx android.BuilderContext,
 
 type ndkSingleton struct{}
 
+type srcDestPair struct {
+	src  android.Path
+	dest android.Path
+}
+
 func (n *ndkSingleton) GenerateBuildActions(ctx android.SingletonContext) {
 	var staticLibInstallPaths android.Paths
 	var headerSrcPaths android.Paths
 	var headerInstallPaths android.Paths
+	var headersToVerify []srcDestPair
+	var headerCCompatVerificationTimestampPaths android.Paths
 	var installPaths android.Paths
 	var licensePaths android.Paths
 	ctx.VisitAllModules(func(module android.Module) {
@@ -157,13 +217,14 @@ func (n *ndkSingleton) GenerateBuildActions(ctx android.SingletonContext) {
 		if m, ok := module.(*headerModule); ok {
 			headerSrcPaths = append(headerSrcPaths, m.srcPaths...)
 			headerInstallPaths = append(headerInstallPaths, m.installPaths...)
-			installPaths = append(installPaths, m.installPaths...)
-			licensePaths = append(licensePaths, m.licensePath)
-		}
-
-		if m, ok := module.(*versionedHeaderModule); ok {
-			headerSrcPaths = append(headerSrcPaths, m.srcPaths...)
-			headerInstallPaths = append(headerInstallPaths, m.installPaths...)
+			if !Bool(m.properties.Skip_verification) {
+				for i, installPath := range m.installPaths {
+					headersToVerify = append(headersToVerify, srcDestPair{
+						src:  m.srcPaths[i],
+						dest: installPath,
+					})
+				}
+			}
 			installPaths = append(installPaths, m.installPaths...)
 			licensePaths = append(licensePaths, m.licensePath)
 		}
@@ -171,6 +232,14 @@ func (n *ndkSingleton) GenerateBuildActions(ctx android.SingletonContext) {
 		if m, ok := module.(*preprocessedHeadersModule); ok {
 			headerSrcPaths = append(headerSrcPaths, m.srcPaths...)
 			headerInstallPaths = append(headerInstallPaths, m.installPaths...)
+			if !Bool(m.properties.Skip_verification) {
+				for i, installPath := range m.installPaths {
+					headersToVerify = append(headersToVerify, srcDestPair{
+						src:  m.srcPaths[i],
+						dest: installPath,
+					})
+				}
+			}
 			installPaths = append(installPaths, m.installPaths...)
 			licensePaths = append(licensePaths, m.licensePath)
 		}
@@ -223,6 +292,12 @@ func (n *ndkSingleton) GenerateBuildActions(ctx android.SingletonContext) {
 		Implicits: headerInstallPaths,
 	})
 
+	for _, srcDestPair := range headersToVerify {
+		headerCCompatVerificationTimestampPaths = append(
+			headerCCompatVerificationTimestampPaths,
+			verifyNdkHeaderIsCCompatible(ctx, srcDestPair.src, srcDestPair.dest))
+	}
+
 	writeNdkAbiSrcFilter(ctx, headerSrcPaths, getNdkABIHeadersFile(ctx))
 
 	fullDepPaths := append(staticLibInstallPaths, getNdkBaseTimestampFile(ctx))
@@ -235,6 +310,6 @@ func (n *ndkSingleton) GenerateBuildActions(ctx android.SingletonContext) {
 	ctx.Build(pctx, android.BuildParams{
 		Rule:      android.Touch,
 		Output:    getNdkFullTimestampFile(ctx),
-		Implicits: fullDepPaths,
+		Implicits: append(fullDepPaths, headerCCompatVerificationTimestampPaths...),
 	})
 }

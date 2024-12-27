@@ -49,14 +49,44 @@ func runNinjaForBuild(ctx Context, config Config) {
 	nr := status.NewNinjaReader(ctx, ctx.Status.StartTool(), fifo)
 	defer nr.Close()
 
-	executable := config.PrebuiltBuildTool("ninja")
-	args := []string{
-		"-d", "keepdepfile",
-		"-d", "keeprsp",
-		"-d", "stats",
-		"--frontend_file", fifo,
+	var executable string
+	var args []string
+	switch config.ninjaCommand {
+	case NINJA_N2:
+		executable = config.N2Bin()
+		args = []string{
+			"-d", "trace",
+			// TODO: implement these features, or remove them.
+			//"-d", "keepdepfile",
+			//"-d", "keeprsp",
+			//"-d", "stats",
+			"--frontend-file", fifo,
+		}
+	case NINJA_SISO:
+		executable = config.SisoBin()
+		args = []string{
+			"ninja",
+			"--log_dir", config.SoongOutDir(),
+			// TODO: implement these features, or remove them.
+			//"-d", "trace",
+			//"-d", "keepdepfile",
+			//"-d", "keeprsp",
+			//"-d", "stats",
+			//"--frontend-file", fifo,
+		}
+	default:
+		// NINJA_NINJA is the default.
+		executable = config.NinjaBin()
+		args = []string{
+			"-d", "keepdepfile",
+			"-d", "keeprsp",
+			"-d", "stats",
+			"--frontend_file", fifo,
+			"-o", "usesphonyoutputs=yes",
+			"-w", "dupbuild=err",
+			"-w", "missingdepfile=err",
+		}
 	}
-
 	args = append(args, config.NinjaArgs()...)
 
 	var parallel int
@@ -72,10 +102,15 @@ func runNinjaForBuild(ctx Context, config Config) {
 
 	args = append(args, "-f", config.CombinedNinjaFile())
 
-	args = append(args,
-		"-o", "usesphonyoutputs=yes",
-		"-w", "dupbuild=err",
-		"-w", "missingdepfile=err")
+	if !config.BuildBrokenMissingOutputs() {
+		// Missing outputs will be treated as errors.
+		// BUILD_BROKEN_MISSING_OUTPUTS can be used to bypass this check.
+		if config.ninjaCommand != NINJA_N2 {
+			args = append(args,
+				"-w", "missingoutfile=err",
+			)
+		}
+	}
 
 	cmd := Command(ctx, config, "ninja", executable, args...)
 
@@ -87,18 +122,21 @@ func runNinjaForBuild(ctx Context, config Config) {
 		cmd.Environment.AppendFromKati(config.KatiEnvFile())
 	}
 
-	switch config.NinjaWeightListSource() {
-	case NINJA_LOG:
-		cmd.Args = append(cmd.Args, "-o", "usesninjalogasweightlist=yes")
-	case EVENLY_DISTRIBUTED:
-		// pass empty weight list means ninja considers every tasks's weight as 1(default value).
-		cmd.Args = append(cmd.Args, "-o", "usesweightlist=/dev/null")
-	case EXTERNAL_FILE:
-		fallthrough
-	case HINT_FROM_SOONG:
-		// The weight list is already copied/generated.
-		ninjaWeightListPath := filepath.Join(config.OutDir(), ninjaWeightListFileName)
-		cmd.Args = append(cmd.Args, "-o", "usesweightlist="+ninjaWeightListPath)
+	// TODO(b/346806126): implement this for the other ninjaCommand values.
+	if config.ninjaCommand == NINJA_NINJA {
+		switch config.NinjaWeightListSource() {
+		case NINJA_LOG:
+			cmd.Args = append(cmd.Args, "-o", "usesninjalogasweightlist=yes")
+		case EVENLY_DISTRIBUTED:
+			// pass empty weight list means ninja considers every tasks's weight as 1(default value).
+			cmd.Args = append(cmd.Args, "-o", "usesweightlist=/dev/null")
+		case EXTERNAL_FILE:
+			fallthrough
+		case HINT_FROM_SOONG:
+			// The weight list is already copied/generated.
+			ninjaWeightListPath := filepath.Join(config.OutDir(), ninjaWeightListFileName)
+			cmd.Args = append(cmd.Args, "-o", "usesweightlist="+ninjaWeightListPath)
+		}
 	}
 
 	// Allow both NINJA_ARGS and NINJA_EXTRA_ARGS, since both have been
@@ -198,11 +236,22 @@ func runNinjaForBuild(ctx Context, config Config) {
 			// We don't want this build broken flag to cause reanalysis, so allow it through to the
 			// actions.
 			"BUILD_BROKEN_INCORRECT_PARTITION_IMAGES",
+			// Do not do reanalysis just because we changed ninja commands.
+			"SOONG_NINJA",
+			"SOONG_USE_N2",
+			"RUST_BACKTRACE",
+			"RUST_LOG",
 		}, config.BuildBrokenNinjaUsesEnvVars()...)...)
 	}
 
 	cmd.Environment.Set("DIST_DIR", config.DistDir())
 	cmd.Environment.Set("SHELL", "/bin/bash")
+	switch config.ninjaCommand {
+	case NINJA_N2:
+		cmd.Environment.Set("RUST_BACKTRACE", "1")
+	default:
+		// Only set RUST_BACKTRACE for n2.
+	}
 
 	// Print the environment variables that Ninja is operating in.
 	ctx.Verboseln("Ninja environment: ")

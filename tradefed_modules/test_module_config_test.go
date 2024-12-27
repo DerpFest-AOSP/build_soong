@@ -40,6 +40,8 @@ const bp = `
 			name: "base",
 			sdk_version: "current",
                         data: [":HelperApp", "data/testfile"],
+                        host_required: ["other-module"],
+                        test_suites: ["general-tests"],
 		}
 
                 test_module_config {
@@ -79,6 +81,7 @@ func TestModuleConfigAndroidTest(t *testing.T) {
 	android.AssertArrayString(t, "", entries.EntryMap["LOCAL_COMPATIBILITY_SUPPORT_FILES"], []string{})
 
 	android.AssertArrayString(t, "", entries.EntryMap["LOCAL_REQUIRED_MODULES"], []string{"base"})
+	android.AssertArrayString(t, "", entries.EntryMap["LOCAL_HOST_REQUIRED_MODULES"], []string{"other-module"})
 	android.AssertArrayString(t, "", entries.EntryMap["LOCAL_CERTIFICATE"], []string{"build/make/target/product/security/testkey.x509.pem"})
 	android.AssertStringEquals(t, "", entries.Class, "APPS")
 
@@ -160,7 +163,7 @@ func TestModuleConfigBadBaseShouldFailWithGeneralMessage(t *testing.T) {
 		java.PrepareForTestWithJavaDefaultModules,
 		android.FixtureRegisterWithContext(RegisterTestModuleConfigBuildComponents),
 	).ExtendWithErrorHandler(
-		android.FixtureExpectsOneErrorPattern("'base' module used as base but it is not a 'android_test' module.")).
+		android.FixtureExpectsAtLeastOneErrorMatchingPattern("'base' module used as base but it is not a 'android_test' module.")).
 		RunTestWithBp(t, badBp)
 }
 
@@ -193,6 +196,7 @@ func TestModuleConfigNoFiltersOrAnnotationsShouldFail(t *testing.T) {
 			name: "base",
 			sdk_version: "current",
                         srcs: ["a.java"],
+                        test_suites: ["general-tests"],
 		}
 
                 test_module_config {
@@ -218,6 +222,7 @@ func TestModuleConfigMultipleDerivedTestsWriteDistinctMakeEntries(t *testing.T) 
 			sdk_version: "current",
                         srcs: ["a.java"],
                         data: [":HelperApp", "data/testfile"],
+                        test_suites: ["general-tests"],
 		}
 
                 android_test_helper_app {
@@ -362,6 +367,31 @@ func TestModuleConfigHostNeedsATestSuite(t *testing.T) {
 		RunTestWithBp(t, badBp)
 }
 
+func TestModuleConfigNonMatchingTestSuitesGiveErrors(t *testing.T) {
+	badBp := `
+		java_test_host {
+			name: "base",
+                        srcs: ["a.java"],
+                        test_suites: ["general-tests", "some-compat"],
+		}
+
+                test_module_config_host {
+                        name: "derived_test",
+                        base: "base",
+                        exclude_filters: ["android.test.example.devcodelab.DevCodelabTest#testHelloFail"],
+                        include_annotations: ["android.platform.test.annotations.LargeTest"],
+                        test_suites: ["device-tests", "random-suite"],
+                }`
+
+	android.GroupFixturePreparers(
+		java.PrepareForTestWithJavaDefaultModules,
+		android.FixtureRegisterWithContext(RegisterTestModuleConfigBuildComponents),
+	).ExtendWithErrorHandler(
+		// Use \\ to escape bracket so it isn't used as [] set for regex.
+		android.FixtureExpectsAtLeastOneErrorMatchingPattern("Suites: \\[device-tests, random-suite] listed but do not exist in base module")).
+		RunTestWithBp(t, badBp)
+}
+
 func TestTestOnlyProvider(t *testing.T) {
 	t.Parallel()
 	ctx := android.GroupFixturePreparers(
@@ -389,6 +419,7 @@ func TestTestOnlyProvider(t *testing.T) {
 			name: "base",
 			sdk_version: "current",
                         data: ["data/testfile"],
+                        test_suites: ["general-tests"],
 		}
 
 		java_test_host {

@@ -32,7 +32,7 @@ func TestTestSpec(t *testing.T) {
 	module := result.ModuleForTests("module-name", "")
 
 	// Check that the provider has the right contents
-	data, _ := android.SingletonModuleProvider(result, module.Module(), soongTesting.TestSpecProviderKey)
+	data, _ := android.OtherModuleProvider(result, module.Module(), soongTesting.TestSpecProviderKey)
 	if !strings.HasSuffix(
 		data.IntermediatePath.String(), "/intermediateTestSpecMetadata.pb",
 	) {

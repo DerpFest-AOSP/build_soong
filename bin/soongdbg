@@ -32,11 +32,13 @@ class Graph:
                 dep.rdeps.add(node)
                 node.dep_tags.setdefault(dep, list()).append(d)
 
-    def find_paths(self, id1, id2):
+    def find_paths(self, id1, id2, tag_filter):
         # Throws KeyError if one of the names isn't found
         def recurse(node1, node2, visited):
             result = set()
             for dep in node1.rdeps:
+                if not matches_tag(dep, node1, tag_filter):
+                    continue
                 if dep == node2:
                     result.add(node2)
                 if dep not in visited:
@@ -214,6 +216,8 @@ def print_args(parser):
                         help="jq query for each module metadata")
     parser.add_argument("--deptags", action="store_true",
                         help="show dependency tags (makes the graph much more complex)")
+    parser.add_argument("--tag", action="append", default=[],
+                        help="Limit output to these dependency tags.")
 
     group = parser.add_argument_group("output formats",
                                       "If no format is provided, a dot file will be written to"
@@ -259,13 +263,21 @@ def print_nodes(args, nodes, module_formatter):
         sys.stdout.write(text)
 
 
-def get_deps(nodes, root, maxdepth, reverse):
+def matches_tag(node, dep, tag_filter):
+    if not tag_filter:
+        return True
+    return not tag_filter.isdisjoint([t.tag_type for t in node.dep_tags[dep]])
+
+
+def get_deps(nodes, root, maxdepth, reverse, tag_filter):
     if root in nodes:
         return
     nodes.add(root)
     if maxdepth != 0:
         for dep in (root.rdeps if reverse else root.deps):
-            get_deps(nodes, dep, maxdepth-1, reverse)
+            if not matches_tag(root, dep, tag_filter):
+                continue
+            get_deps(nodes, dep, maxdepth-1, reverse, tag_filter)
 
 
 def new_module_formatter(args):
@@ -302,7 +314,7 @@ class BetweenCommand:
 
     def run(self, args):
         graph = load_graph()
-        print_nodes(args, graph.find_paths(args.module[0], args.module[1]),
+        print_nodes(args, graph.find_paths(args.module[0], args.module[1], set(args.tag)),
                     new_module_formatter(args))
 
 
@@ -328,7 +340,7 @@ class DepsCommand:
                 sys.stderr.write(f"error: Can't find root: {id}\n")
                 err = True
                 continue
-            get_deps(nodes, root, args.depth, args.reverse)
+            get_deps(nodes, root, args.depth, args.reverse, set(args.tag))
         if err:
             sys.exit(1)
         print_nodes(args, nodes, new_module_formatter(args))

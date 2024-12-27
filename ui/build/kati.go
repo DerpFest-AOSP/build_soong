@@ -41,7 +41,7 @@ const katiPackageSuffix = "-package"
 // arguments.
 func genKatiSuffix(ctx Context, config Config) {
 	// Construct the base suffix.
-	katiSuffix := "-" + config.TargetProduct()
+	katiSuffix := "-" + config.TargetProduct() + config.CoverageSuffix()
 
 	// Append kati arguments to the suffix.
 	if args := config.KatiArgs(); len(args) > 0 {
@@ -84,7 +84,7 @@ func writeValueIfChanged(ctx Context, config Config, dir string, filename string
 // arguments, and a custom function closure to mutate the environment Kati runs
 // in.
 func runKati(ctx Context, config Config, extraSuffix string, args []string, envFunc func(*Environment)) {
-	executable := config.PrebuiltBuildTool("ckati")
+	executable := config.KatiBin()
 	// cKati arguments.
 	args = append([]string{
 		// Instead of executing commands directly, generate a Ninja file.

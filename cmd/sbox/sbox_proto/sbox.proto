@@ -51,6 +51,30 @@ message Command {
   // A list of files that will be copied before the sandboxed command, and whose contents should be
   // copied as if they were listed in copy_before.
   repeated RspFile rsp_files = 6;
+
+  // The environment variables that will be set or unset while running the command.
+  // Also see dont_inherit_env.
+  repeated EnvironmentVariable env = 7;
+
+  // By default, all environment variables are inherited from the calling process, but may be
+  // replaced or unset by env. If dont_inherit_env is set, no environment variables will be
+  // inherited, and instead only the variables in env will be defined.
+  optional bool dont_inherit_env = 8;
+}
+
+message EnvironmentVariable {
+  // The name of the environment variable
+  required string name = 1;
+  oneof state {
+    // The value to set the environment variable to.
+    string value = 2;
+    // This environment variable should be unset in the command.
+    bool unset = 3;
+    // This environment variable should be inherited from the parent process.
+    // Can be combined with dont_inherit_env to only inherit certain environment
+    // variables.
+    bool inherit = 4;
+  }
 }
 
 // Copy describes a from-to pair of files to copy.  The paths may be relative, the root that they

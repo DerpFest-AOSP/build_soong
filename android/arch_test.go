@@ -332,6 +332,12 @@ func TestArchMutator(t *testing.T) {
 		}
 
 		module {
+			name: "nohostcross",
+			host_supported: true,
+			host_cross_supported: false,
+		}
+
+		module {
 			name: "baz",
 			device_supported: false,
 		}
@@ -355,13 +361,14 @@ func TestArchMutator(t *testing.T) {
 	`
 
 	testCases := []struct {
-		name          string
-		preparer      FixturePreparer
-		fooVariants   []string
-		barVariants   []string
-		bazVariants   []string
-		quxVariants   []string
-		firstVariants []string
+		name                string
+		preparer            FixturePreparer
+		fooVariants         []string
+		barVariants         []string
+		noHostCrossVariants []string
+		bazVariants         []string
+		quxVariants         []string
+		firstVariants       []string
 
 		multiTargetVariants    []string
 		multiTargetVariantsMap map[string][]string
@@ -373,6 +380,7 @@ func TestArchMutator(t *testing.T) {
 			preparer:            nil,
 			fooVariants:         []string{"android_arm64_armv8-a", "android_arm_armv7-a-neon"},
 			barVariants:         append(buildOSVariants, "android_arm64_armv8-a", "android_arm_armv7-a-neon"),
+			noHostCrossVariants: append(buildOSVariants, "android_arm64_armv8-a", "android_arm_armv7-a-neon"),
 			bazVariants:         nil,
 			quxVariants:         append(buildOS32Variants, "android_arm_armv7-a-neon"),
 			firstVariants:       append(buildOS64Variants, "android_arm64_armv8-a"),
@@ -390,6 +398,7 @@ func TestArchMutator(t *testing.T) {
 			}),
 			fooVariants:         nil,
 			barVariants:         buildOSVariants,
+			noHostCrossVariants: buildOSVariants,
 			bazVariants:         nil,
 			quxVariants:         buildOS32Variants,
 			firstVariants:       buildOS64Variants,
@@ -406,6 +415,7 @@ func TestArchMutator(t *testing.T) {
 			}),
 			fooVariants:         []string{"android_arm64_armv8-a", "android_arm_armv7-a-neon"},
 			barVariants:         []string{"linux_musl_x86_64", "linux_musl_arm64", "linux_musl_x86", "android_arm64_armv8-a", "android_arm_armv7-a-neon"},
+			noHostCrossVariants: []string{"linux_musl_x86_64", "linux_musl_x86", "android_arm64_armv8-a", "android_arm_armv7-a-neon"},
 			bazVariants:         nil,
 			quxVariants:         []string{"linux_musl_x86", "android_arm_armv7-a-neon"},
 			firstVariants:       []string{"linux_musl_x86_64", "linux_musl_arm64", "android_arm64_armv8-a"},
@@ -441,7 +451,7 @@ func TestArchMutator(t *testing.T) {
 
 	for _, tt := range testCases {
 		t.Run(tt.name, func(t *testing.T) {
-			if tt.goOS != runtime.GOOS {
+			if tt.goOS != "" && tt.goOS != runtime.GOOS {
 				t.Skipf("requries runtime.GOOS %s", tt.goOS)
 			}
 
@@ -459,6 +469,10 @@ func TestArchMutator(t *testing.T) {
 
 			if g, w := enabledVariants(ctx, "bar"), tt.barVariants; !reflect.DeepEqual(w, g) {
 				t.Errorf("want bar variants:\n%q\ngot:\n%q\n", w, g)
+			}
+
+			if g, w := enabledVariants(ctx, "nohostcross"), tt.noHostCrossVariants; !reflect.DeepEqual(w, g) {
+				t.Errorf("want nohostcross variants:\n%q\ngot:\n%q\n", w, g)
 			}
 
 			if g, w := enabledVariants(ctx, "baz"), tt.bazVariants; !reflect.DeepEqual(w, g) {

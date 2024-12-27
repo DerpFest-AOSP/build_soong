@@ -722,6 +722,7 @@ test {
 				propInfo{Name: "Arch.X86_64.A", Type: "string", Value: "x86_64 a"},
 				propInfo{Name: "B", Type: "bool", Value: "true"},
 				propInfo{Name: "C", Type: "string slice", Values: []string{"default_c", "c"}},
+				propInfo{Name: "Defaults", Type: "string slice", Values: []string{"foo_defaults"}},
 				propInfo{Name: "Embedded_prop", Type: "string", Value: "a"},
 				propInfo{Name: "Name", Type: "string", Value: "foo"},
 				propInfo{Name: "Nested.E", Type: "string", Value: "nested e"},
@@ -933,31 +934,54 @@ func TestSetAndroidMkEntriesWithTestOptions(t *testing.T) {
 	}
 }
 
-type fakeBlueprintModule struct{}
-
-func (fakeBlueprintModule) Name() string { return "foo" }
-
-func (fakeBlueprintModule) GenerateBuildActions(blueprint.ModuleContext) {}
-
 type sourceProducerTestModule struct {
-	fakeBlueprintModule
-	source Path
+	ModuleBase
+	props struct {
+		// A represents the source file
+		A string
+	}
 }
 
-func (s sourceProducerTestModule) Srcs() Paths { return Paths{s.source} }
-
-type outputFileProducerTestModule struct {
-	fakeBlueprintModule
-	output map[string]Path
-	error  map[string]error
+func sourceProducerTestModuleFactory() Module {
+	module := &sourceProducerTestModule{}
+	module.AddProperties(&module.props)
+	InitAndroidModule(module)
+	return module
 }
 
-func (o outputFileProducerTestModule) OutputFiles(tag string) (Paths, error) {
-	return PathsIfNonNil(o.output[tag]), o.error[tag]
+func (s sourceProducerTestModule) GenerateAndroidBuildActions(ModuleContext) {}
+
+func (s sourceProducerTestModule) Srcs() Paths { return PathsForTesting(s.props.A) }
+
+type outputFilesTestModule struct {
+	ModuleBase
+	props struct {
+		// A represents the tag
+		A string
+		// B represents the output file for tag A
+		B string
+	}
+}
+
+func outputFilesTestModuleFactory() Module {
+	module := &outputFilesTestModule{}
+	module.AddProperties(&module.props)
+	InitAndroidModule(module)
+	return module
+}
+
+func (o outputFilesTestModule) GenerateAndroidBuildActions(ctx ModuleContext) {
+	if o.props.A != "" || o.props.B != "" {
+		ctx.SetOutputFiles(PathsForTesting(o.props.B), o.props.A)
+	}
+	// This is to simulate the case that some module uses an object to set its
+	// OutputFilesProvider, but the object itself is empty.
+	ctx.SetOutputFiles(Paths{}, "missing")
 }
 
 type pathContextAddMissingDependenciesWrapper struct {
 	PathContext
+	OtherModuleProviderContext
 	missingDeps []string
 }
 
@@ -968,52 +992,91 @@ func (p *pathContextAddMissingDependenciesWrapper) OtherModuleName(module bluepr
 	return module.Name()
 }
 
+func (p *pathContextAddMissingDependenciesWrapper) Module() Module { return nil }
+
+func (p *pathContextAddMissingDependenciesWrapper) GetOutputFiles() OutputFilesInfo {
+	return OutputFilesInfo{}
+}
+
 func TestOutputFileForModule(t *testing.T) {
 	testcases := []struct {
 		name        string
-		module      blueprint.Module
+		bp          string
 		tag         string
-		env         map[string]string
-		config      func(*config)
 		expected    string
 		missingDeps []string
+		env         map[string]string
+		config      func(*config)
 	}{
 		{
-			name:     "SourceFileProducer",
-			module:   &sourceProducerTestModule{source: PathForTesting("foo.txt")},
-			expected: "foo.txt",
+			name: "SourceFileProducer",
+			bp: `spt_module {
+					name: "test_module",
+					a: "spt.txt",
+				}
+			`,
+			tag:      "",
+			expected: "spt.txt",
 		},
 		{
-			name:     "OutputFileProducer",
-			module:   &outputFileProducerTestModule{output: map[string]Path{"": PathForTesting("foo.txt")}},
-			expected: "foo.txt",
+			name: "OutputFileProviderEmptyStringTag",
+			bp: `oft_module {
+					name: "test_module",
+					a: "",
+					b: "empty.txt",
+				}
+		`,
+			tag:      "",
+			expected: "empty.txt",
 		},
 		{
-			name:     "OutputFileProducer_tag",
-			module:   &outputFileProducerTestModule{output: map[string]Path{"foo": PathForTesting("foo.txt")}},
+			name: "OutputFileProviderTag",
+			bp: `oft_module {
+					name: "test_module",
+					a: "foo",
+					b: "foo.txt",
+				}
+			`,
 			tag:      "foo",
 			expected: "foo.txt",
 		},
 		{
-			name: "OutputFileProducer_AllowMissingDependencies",
+			name: "OutputFileAllowMissingDependencies",
+			bp: `oft_module {
+				name: "test_module",
+			}
+		`,
+			tag:         "missing",
+			expected:    "missing_output_file/test_module",
+			missingDeps: []string{"test_module"},
 			config: func(config *config) {
 				config.TestProductVariables.Allow_missing_dependencies = boolPtr(true)
 			},
-			module:      &outputFileProducerTestModule{},
-			missingDeps: []string{"foo"},
-			expected:    "missing_output_file/foo",
 		},
 	}
+
 	for _, tt := range testcases {
-		config := TestConfig(buildDir, tt.env, "", nil)
-		if tt.config != nil {
-			tt.config(config.config)
-		}
-		ctx := &pathContextAddMissingDependenciesWrapper{
-			PathContext: PathContextForTesting(config),
-		}
-		got := OutputFileForModule(ctx, tt.module, tt.tag)
-		AssertPathRelativeToTopEquals(t, "expected source path", tt.expected, got)
-		AssertArrayString(t, "expected missing deps", tt.missingDeps, ctx.missingDeps)
+		t.Run(tt.name, func(t *testing.T) {
+			result := GroupFixturePreparers(
+				PrepareForTestWithDefaults,
+				FixtureRegisterWithContext(func(ctx RegistrationContext) {
+					ctx.RegisterModuleType("spt_module", sourceProducerTestModuleFactory)
+					ctx.RegisterModuleType("oft_module", outputFilesTestModuleFactory)
+				}),
+				FixtureWithRootAndroidBp(tt.bp),
+			).RunTest(t)
+
+			config := TestConfig(buildDir, tt.env, tt.bp, nil)
+			if tt.config != nil {
+				tt.config(config.config)
+			}
+			ctx := &pathContextAddMissingDependenciesWrapper{
+				PathContext:                PathContextForTesting(config),
+				OtherModuleProviderContext: result.TestContext.OtherModuleProviderAdaptor(),
+			}
+			got := OutputFileForModule(ctx, result.ModuleForTests("test_module", "").Module(), tt.tag)
+			AssertPathRelativeToTopEquals(t, "expected output path", tt.expected, got)
+			AssertArrayString(t, "expected missing deps", tt.missingDeps, ctx.missingDeps)
+		})
 	}
 }

@@ -84,6 +84,7 @@ type Rule struct {
 	Prerequisites *MakeString
 	RecipePos     Pos
 	Recipe        string
+	RecipeEndPos  Pos
 }
 
 func (x *Rule) Dump() string {
@@ -95,7 +96,7 @@ func (x *Rule) Dump() string {
 }
 
 func (x *Rule) Pos() Pos { return x.Target.Pos() }
-func (x *Rule) End() Pos { return Pos(int(x.RecipePos) + len(x.Recipe)) }
+func (x *Rule) End() Pos { return x.RecipeEndPos }
 
 type Variable struct {
 	Name *MakeString

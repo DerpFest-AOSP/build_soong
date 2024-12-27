@@ -27,7 +27,7 @@ import (
 type TestProperties struct {
 	// Disables the creation of a test-specific directory when used with
 	// relative_install_path. Useful if several tests need to be in the same
-	// directory, but test_per_src doesn't work.
+	// directory.
 	No_named_install_directory *bool
 
 	// the name of the test configuration (for example "AndroidTest.xml") that should be
@@ -116,7 +116,8 @@ func (test *testDecorator) compilerProps() []interface{} {
 }
 
 func (test *testDecorator) install(ctx ModuleContext) {
-	testInstallBase := "/data/local/tests/unrestricted"
+	// TODO: (b/167308193) Switch to /data/local/tests/unrestricted as the default install base.
+	testInstallBase := "/data/local/tmp"
 	if ctx.RustModule().InVendorOrProduct() {
 		testInstallBase = "/data/local/tests/vendor"
 	}

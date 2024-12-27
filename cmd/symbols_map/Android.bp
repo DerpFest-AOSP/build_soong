@@ -30,4 +30,5 @@ bootstrap_go_package {
     srcs: [
         "symbols_map_proto/symbols_map.pb.go",
     ],
+    visibility: ["//visibility:public"],
 }

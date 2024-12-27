@@ -283,7 +283,7 @@ func RegisterVisibilityRuleGatherer(ctx RegisterMutatorsContext) {
 
 // This must be registered after the deps have been resolved.
 func RegisterVisibilityRuleEnforcer(ctx RegisterMutatorsContext) {
-	ctx.TopDown("visibilityRuleEnforcer", visibilityRuleEnforcer).Parallel()
+	ctx.BottomUp("visibilityRuleEnforcer", visibilityRuleEnforcer).Parallel()
 }
 
 // Checks the per-module visibility rule lists before defaults expansion.
@@ -507,7 +507,7 @@ func splitRule(ctx BaseModuleContext, ruleExpression string, currentPkg, propert
 	return true, pkg, name
 }
 
-func visibilityRuleEnforcer(ctx TopDownMutatorContext) {
+func visibilityRuleEnforcer(ctx BottomUpMutatorContext) {
 	qualified := createVisibilityModuleReference(ctx.ModuleName(), ctx.ModuleDir(), ctx.Module())
 
 	// Visit all the dependencies making sure that this module has access to them all.

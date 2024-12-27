@@ -38,7 +38,7 @@ func (this *allBuildFlagDeclarationsSingleton) GenerateBuildActions(ctx android.
 	// Find all of the build_flag_declarations modules
 	var intermediateFiles android.Paths
 	ctx.VisitAllModules(func(module android.Module) {
-		decl, ok := android.SingletonModuleProvider(ctx, module, BuildFlagDeclarationsProviderKey)
+		decl, ok := android.OtherModuleProvider(ctx, module, BuildFlagDeclarationsProviderKey)
 		if !ok {
 			return
 		}

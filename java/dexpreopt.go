@@ -88,16 +88,9 @@ func (install dexpreopterInstall) ToMakeEntries() android.AndroidMkEntries {
 				entries.SetString("LOCAL_MODULE_PATH", install.installDirOnDevice.String())
 				entries.SetString("LOCAL_INSTALLED_MODULE_STEM", install.installFileOnDevice)
 				entries.SetString("LOCAL_NOT_AVAILABLE_FOR_PLATFORM", "false")
-				// Unset LOCAL_SOONG_INSTALLED_MODULE so that this does not default to the primary .apex file
-				// Without this, installation of the dexpreopt artifacts get skipped
-				entries.SetString("LOCAL_SOONG_INSTALLED_MODULE", "")
 			},
 		},
 	}
-}
-
-func (install dexpreopterInstall) PackageFile(ctx android.ModuleContext) android.PackagingSpec {
-	return ctx.PackageFile(install.installDirOnDevice, install.installFileOnDevice, install.outputPathOnHost)
 }
 
 type Dexpreopter struct {
@@ -154,25 +147,25 @@ type dexpreopter struct {
 type DexpreoptProperties struct {
 	Dex_preopt struct {
 		// If false, prevent dexpreopting.  Defaults to true.
-		Enabled *bool
+		Enabled proptools.Configurable[bool] `android:"replace_instead_of_append"`
 
 		// If true, generate an app image (.art file) for this module.
-		App_image *bool
+		App_image proptools.Configurable[bool] `android:"replace_instead_of_append"`
 
 		// If true, use a checked-in profile to guide optimization.  Defaults to false unless
 		// a matching profile is set or a profile is found in PRODUCT_DEX_PREOPT_PROFILE_DIR
 		// that matches the name of this module, in which case it is defaulted to true.
-		Profile_guided *bool
+		Profile_guided proptools.Configurable[bool] `android:"replace_instead_of_append"`
 
 		// If set, provides the path to profile relative to the Android.bp file.  If not set,
 		// defaults to searching for a file that matches the name of this module in the default
 		// profile location set by PRODUCT_DEX_PREOPT_PROFILE_DIR, or empty if not found.
-		Profile *string `android:"path"`
+		Profile proptools.Configurable[string] `android:"path,replace_instead_of_append"`
 
 		// If set to true, r8/d8 will use `profile` as input to generate a new profile that matches
 		// the optimized dex.
 		// The new profile will be subsequently used as the profile to dexpreopt the dex file.
-		Enable_profile_rewriting *bool
+		Enable_profile_rewriting proptools.Configurable[bool] `android:"replace_instead_of_append"`
 	}
 
 	Dex_preopt_result struct {
@@ -216,16 +209,25 @@ func disableSourceApexVariant(ctx android.BaseModuleContext) bool {
 			psi = prebuiltSelectionInfo
 		}
 	})
+
 	// Find the apex variant for this module
-	_, apexVariantsWithoutTestApexes, _ := android.ListSetDifference(apexInfo.InApexVariants, apexInfo.TestApexes)
+	apexVariantsWithoutTestApexes := []string{}
+	if apexInfo.BaseApexName != "" {
+		// This is a transitive dependency of an override_apex
+		apexVariantsWithoutTestApexes = append(apexVariantsWithoutTestApexes, apexInfo.BaseApexName)
+	} else {
+		_, variants, _ := android.ListSetDifference(apexInfo.InApexVariants, apexInfo.TestApexes)
+		apexVariantsWithoutTestApexes = append(apexVariantsWithoutTestApexes, variants...)
+	}
+	if apexInfo.ApexAvailableName != "" {
+		apexVariantsWithoutTestApexes = append(apexVariantsWithoutTestApexes, apexInfo.ApexAvailableName)
+	}
 	disableSource := false
 	// find the selected apexes
 	for _, apexVariant := range apexVariantsWithoutTestApexes {
-		for _, selected := range psi.GetSelectedModulesForApiDomain(apexVariant) {
-			// If the apex_contribution for this api domain contains a prebuilt apex, disable the source variant
-			if strings.HasPrefix(selected, "prebuilt_com.google.android") {
-				disableSource = true
-			}
+		if len(psi.GetSelectedModulesForApiDomain(apexVariant)) > 0 {
+			// If the apex_contribution for this api domain is non-empty, disable the source variant
+			disableSource = true
 		}
 	}
 	return disableSource
@@ -242,7 +244,7 @@ func (d *dexpreopter) dexpreoptDisabled(ctx android.BaseModuleContext, libName s
 		return true
 	}
 
-	if !BoolDefault(d.dexpreoptProperties.Dex_preopt.Enabled, true) {
+	if !d.dexpreoptProperties.Dex_preopt.Enabled.GetOrDefault(ctx, true) {
 		return true
 	}
 
@@ -359,7 +361,7 @@ func (d *Dexpreopter) DexpreoptPrebuiltApexSystemServerJars(ctx android.ModuleCo
 	d.dexpreopt(ctx, libraryName, dexJarFile)
 }
 
-func (d *dexpreopter) dexpreopt(ctx android.ModuleContext, libName string, dexJarFile android.WritablePath) {
+func (d *dexpreopter) dexpreopt(ctx android.ModuleContext, libName string, dexJarFile android.Path) {
 	global := dexpreopt.GetGlobalConfig(ctx)
 
 	// TODO(b/148690468): The check on d.installPath is to bail out in cases where
@@ -431,12 +433,12 @@ func (d *dexpreopter) dexpreopt(ctx android.ModuleContext, libName string, dexJa
 
 	if d.inputProfilePathOnHost != nil {
 		profileClassListing = android.OptionalPathForPath(d.inputProfilePathOnHost)
-	} else if BoolDefault(d.dexpreoptProperties.Dex_preopt.Profile_guided, true) && !forPrebuiltApex(ctx) {
+	} else if d.dexpreoptProperties.Dex_preopt.Profile_guided.GetOrDefault(ctx, true) && !forPrebuiltApex(ctx) {
 		// If enable_profile_rewriting is set, use the rewritten profile instead of the checked-in profile
-		if d.EnableProfileRewriting() {
+		if d.EnableProfileRewriting(ctx) {
 			profileClassListing = android.OptionalPathForPath(d.GetRewrittenProfile())
 			profileIsTextListing = true
-		} else if profile := d.GetProfile(); profile != "" {
+		} else if profile := d.GetProfile(ctx); profile != "" {
 			// If dex_preopt.profile_guided is not set, default it based on the existence of the
 			// dexprepot.profile option or the profile class listing.
 			profileClassListing = android.OptionalPathForPath(
@@ -455,6 +457,8 @@ func (d *dexpreopter) dexpreopt(ctx android.ModuleContext, libName string, dexJa
 	// A single apex can have multiple system server jars
 	// Use the dexJar to create a unique scope for each
 	dexJarStem := strings.TrimSuffix(dexJarFile.Base(), dexJarFile.Ext())
+
+	appImage := d.dexpreoptProperties.Dex_preopt.App_image.Get(ctx)
 
 	// Full dexpreopt config, used to create dexpreopt build rules.
 	dexpreoptConfig := &dexpreopt.ModuleConfig{
@@ -484,14 +488,15 @@ func (d *dexpreopter) dexpreopt(ctx android.ModuleContext, libName string, dexJa
 		PreoptBootClassPathDexFiles:     dexFiles.Paths(),
 		PreoptBootClassPathDexLocations: dexLocations,
 
-		NoCreateAppImage:    !BoolDefault(d.dexpreoptProperties.Dex_preopt.App_image, true),
-		ForceCreateAppImage: BoolDefault(d.dexpreoptProperties.Dex_preopt.App_image, false),
+		NoCreateAppImage:    !appImage.GetOrDefault(true),
+		ForceCreateAppImage: appImage.GetOrDefault(false),
 
 		PresignedPrebuilt: d.isPresignedPrebuilt,
 	}
 
 	d.configPath = android.PathForModuleOut(ctx, "dexpreopt", dexJarStem, "dexpreopt.config")
 	dexpreopt.WriteModuleConfig(ctx, dexpreoptConfig, d.configPath)
+	ctx.CheckbuildFile(d.configPath)
 
 	if d.dexpreoptDisabled(ctx, libName) {
 		return
@@ -583,16 +588,20 @@ func (d *dexpreopter) dexpreopt(ctx android.ModuleContext, libName string, dexJa
 				// Preopting of boot classpath jars in the ART APEX are handled in
 				// java/dexpreopt_bootjars.go, and other APEX jars are not preopted.
 				// The installs will be handled by Make as sub-modules of the java library.
-				d.builtInstalledForApex = append(d.builtInstalledForApex, dexpreopterInstall{
+				di := dexpreopterInstall{
 					name:                arch + "-" + installBase,
 					moduleName:          libName,
 					outputPathOnHost:    install.From,
 					installDirOnDevice:  installPath,
 					installFileOnDevice: installBase,
-				})
+				}
+				ctx.InstallFile(di.installDirOnDevice, di.installFileOnDevice, di.outputPathOnHost)
+				d.builtInstalledForApex = append(d.builtInstalledForApex, di)
+
 			}
 		} else if !d.preventInstall {
-			ctx.InstallFile(installPath, installBase, install.From)
+			// Install without adding to checkbuild to match behavior of previous Make-based checkbuild rules
+			ctx.InstallFileWithoutCheckbuild(installPath, installBase, install.From)
 		}
 	}
 
@@ -616,10 +625,8 @@ func getModuleInstallPathInfo(ctx android.ModuleContext, fullInstallPath string)
 	return installPath, relDir, installBase
 }
 
-// RuleBuilder.Install() adds output-to-install copy pairs to a list for Make. To share this
-// information with PackagingSpec in soong, call PackageFile for them.
-// The install path and the target install partition of the module must be the same.
-func packageFile(ctx android.ModuleContext, install android.RuleBuilderInstall) {
+// installFile will install the file if `install` path and the target install partition are the same.
+func installFile(ctx android.ModuleContext, install android.RuleBuilderInstall) {
 	installPath, relDir, name := getModuleInstallPathInfo(ctx, install.To)
 	// Empty name means the install partition is not for the target image.
 	// For the system image, files for "apex" and "system_other" are skipped here.
@@ -628,7 +635,7 @@ func packageFile(ctx android.ModuleContext, install android.RuleBuilderInstall) 
 	// TODO(b/320196894): Files for "system_other" are skipped because soong creates the system
 	// image only for now.
 	if name != "" {
-		ctx.PackageFile(installPath.Join(ctx, relDir), name, install.From)
+		ctx.InstallFile(installPath.Join(ctx, relDir), name, install.From)
 	}
 }
 
@@ -652,16 +659,16 @@ func (d *dexpreopter) disableDexpreopt() {
 	d.shouldDisableDexpreopt = true
 }
 
-func (d *dexpreopter) EnableProfileRewriting() bool {
-	return proptools.Bool(d.dexpreoptProperties.Dex_preopt.Enable_profile_rewriting)
+func (d *dexpreopter) EnableProfileRewriting(ctx android.BaseModuleContext) bool {
+	return d.dexpreoptProperties.Dex_preopt.Enable_profile_rewriting.GetOrDefault(ctx, false)
 }
 
-func (d *dexpreopter) GetProfile() string {
-	return proptools.String(d.dexpreoptProperties.Dex_preopt.Profile)
+func (d *dexpreopter) GetProfile(ctx android.BaseModuleContext) string {
+	return d.dexpreoptProperties.Dex_preopt.Profile.GetOrDefault(ctx, "")
 }
 
-func (d *dexpreopter) GetProfileGuided() bool {
-	return proptools.Bool(d.dexpreoptProperties.Dex_preopt.Profile_guided)
+func (d *dexpreopter) GetProfileGuided(ctx android.BaseModuleContext) bool {
+	return d.dexpreoptProperties.Dex_preopt.Profile_guided.GetOrDefault(ctx, false)
 }
 
 func (d *dexpreopter) GetRewrittenProfile() android.Path {

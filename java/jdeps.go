@@ -57,27 +57,19 @@ func (j *jdepsGeneratorSingleton) GenerateBuildActions(ctx android.SingletonCont
 			return
 		}
 
-		ideInfoProvider, ok := module.(android.IDEInfo)
+		ideInfoProvider, ok := android.OtherModuleProvider(ctx, module, android.IdeInfoProviderKey)
 		if !ok {
 			return
 		}
-		name := ideInfoProvider.BaseModuleName()
+		name := ideInfoProvider.BaseModuleName
 		ideModuleNameProvider, ok := module.(android.IDECustomizedModuleName)
 		if ok {
 			name = ideModuleNameProvider.IDECustomizedModuleName()
 		}
 
 		dpInfo := moduleInfos[name]
-		ideInfoProvider.IDEInfo(&dpInfo)
-		dpInfo.Deps = android.FirstUniqueStrings(dpInfo.Deps)
-		dpInfo.Srcs = android.FirstUniqueStrings(dpInfo.Srcs)
-		dpInfo.Aidl_include_dirs = android.FirstUniqueStrings(dpInfo.Aidl_include_dirs)
-		dpInfo.Jarjar_rules = android.FirstUniqueStrings(dpInfo.Jarjar_rules)
-		dpInfo.Jars = android.FirstUniqueStrings(dpInfo.Jars)
-		dpInfo.SrcJars = android.FirstUniqueStrings(dpInfo.SrcJars)
+		dpInfo = dpInfo.Merge(ideInfoProvider)
 		dpInfo.Paths = []string{ctx.ModuleDir(module)}
-		dpInfo.Static_libs = android.FirstUniqueStrings(dpInfo.Static_libs)
-		dpInfo.Libs = android.FirstUniqueStrings(dpInfo.Libs)
 		moduleInfos[name] = dpInfo
 
 		mkProvider, ok := module.(android.AndroidMkDataProvider)
@@ -89,7 +81,7 @@ func (j *jdepsGeneratorSingleton) GenerateBuildActions(ctx android.SingletonCont
 			dpInfo.Classes = append(dpInfo.Classes, data.Class)
 		}
 
-		if dep, ok := android.SingletonModuleProvider(ctx, module, JavaInfoProvider); ok {
+		if dep, ok := android.OtherModuleProvider(ctx, module, JavaInfoProvider); ok {
 			dpInfo.Installed_paths = append(dpInfo.Installed_paths, dep.ImplementationJars.Strings()...)
 		}
 		dpInfo.Classes = android.FirstUniqueStrings(dpInfo.Classes)

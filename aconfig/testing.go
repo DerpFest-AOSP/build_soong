@@ -23,7 +23,25 @@ import (
 var PrepareForTestWithAconfigBuildComponents = android.FixtureRegisterWithContext(RegisterBuildComponents)
 
 func runTest(t *testing.T, errorHandler android.FixtureErrorHandler, bp string) *android.TestResult {
-	return android.GroupFixturePreparers(PrepareForTestWithAconfigBuildComponents).
+	return PrepareForTest(t).
 		ExtendWithErrorHandler(errorHandler).
 		RunTestWithBp(t, bp)
+}
+
+func PrepareForTest(t *testing.T, preparers ...android.FixturePreparer) android.FixturePreparer {
+	preparers = append([]android.FixturePreparer{PrepareForTestWithAconfigBuildComponents}, preparers...)
+	return android.GroupFixturePreparers(preparers...)
+}
+
+func addBuildFlagsForTest(buildFlags map[string]string) android.FixturePreparer {
+	return android.GroupFixturePreparers(
+		android.FixtureModifyProductVariables(func(vars android.FixtureProductVariables) {
+			if vars.BuildFlags == nil {
+				vars.BuildFlags = make(map[string]string)
+			}
+			for k, v := range buildFlags {
+				vars.BuildFlags[k] = v
+			}
+		}),
+	)
 }

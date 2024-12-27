@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 
 	"github.com/google/blueprint"
@@ -174,6 +175,20 @@ func (m *testModuleConfigModule) validateTestSuites(ctx android.ModuleContext) b
 		return false
 	}
 
+	var extra_derived_suites []string
+	// Ensure all suites listed are also in base.
+	for _, s := range m.tradefedProperties.Test_suites {
+		if !slices.Contains(m.provider.TestSuites, s) {
+			extra_derived_suites = append(extra_derived_suites, s)
+		}
+	}
+	if len(extra_derived_suites) != 0 {
+		ctx.ModuleErrorf("Suites: [%s] listed but do not exist in base module: %s",
+			strings.Join(extra_derived_suites, ", "),
+			*m.tradefedProperties.Base)
+		return false
+	}
+
 	return true
 }
 
@@ -227,6 +242,7 @@ func (m *testModuleConfigModule) AndroidMkEntries() []android.AndroidMkEntries {
 
 				entries.SetBoolIfTrue("LOCAL_IS_UNIT_TEST", m.provider.IsUnitTest)
 				entries.AddCompatibilityTestSuites(m.tradefedProperties.Test_suites...)
+				entries.AddStrings("LOCAL_HOST_REQUIRED_MODULES", m.provider.HostRequiredModuleNames...)
 
 				// The app_prebuilt_internal.mk files try create a copy of the OutputFile as an .apk.
 				// Normally, this copies the "package.apk" from the intermediate directory here.

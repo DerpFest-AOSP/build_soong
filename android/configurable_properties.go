@@ -26,3 +26,9 @@ func CreateSelectOsToBool(cases map[string]*bool) proptools.Configurable[bool] {
 		resultCases,
 	)
 }
+
+func NewSimpleConfigurable[T proptools.ConfigurableElements](value T) proptools.Configurable[T] {
+	return proptools.NewConfigurable(nil, []proptools.ConfigurableCase[T]{
+		proptools.NewConfigurableCase(nil, &value),
+	})
+}

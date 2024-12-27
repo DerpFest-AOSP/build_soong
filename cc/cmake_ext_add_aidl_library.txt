@@ -1,3 +1,12 @@
+if ("${CMAKE_HOST_SYSTEM_PROCESSOR}" MATCHES "^(arm|aarch)")
+    set(PREBUILTS_BIN_DIR "${CMAKE_CURRENT_SOURCE_DIR}/prebuilts/host/linux_musl-arm64/bin")
+else()
+    set(PREBUILTS_BIN_DIR "${CMAKE_CURRENT_SOURCE_DIR}/prebuilts/host/linux-x86/bin")
+endif()
+if (NOT AIDL_BIN)
+    find_program(AIDL_BIN aidl REQUIRED HINTS "${PREBUILTS_BIN_DIR}")
+endif()
+
 function(add_aidl_library NAME LANG AIDLROOT SOURCES AIDLFLAGS)
     if (${CMAKE_VERSION} VERSION_GREATER_EQUAL "3.20")
         cmake_policy(SET CMP0116 NEW)
@@ -25,7 +34,7 @@ function(add_aidl_library NAME LANG AIDLROOT SOURCES AIDLFLAGS)
         endif()
 
         set(DEPFILE_ARG)
-        if (NOT ${CMAKE_GENERATOR} MATCHES "Unix Makefiles")
+        if (NOT ${CMAKE_GENERATOR} STREQUAL "Unix Makefiles")
             set(DEPFILE_ARG DEPFILE "${GEN_SOURCE}.d")
         endif()
 
@@ -57,7 +66,7 @@ function(add_aidl_library NAME LANG AIDLROOT SOURCES AIDLFLAGS)
         "${GEN_DIR}/include"
     )
 
-    if (${LANG} MATCHES "ndk")
+    if (${LANG} STREQUAL "ndk")
         set(BINDER_LIB_NAME "libbinder_ndk_sdk")
     else()
         set(BINDER_LIB_NAME "libbinder_sdk")

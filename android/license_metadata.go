@@ -33,7 +33,7 @@ var (
 	}, "args")
 )
 
-func buildLicenseMetadata(ctx ModuleContext, licenseMetadataFile WritablePath) {
+func buildLicenseMetadata(ctx *moduleContext, licenseMetadataFile WritablePath) {
 	base := ctx.Module().base()
 
 	if !base.Enabled(ctx) {
@@ -45,16 +45,15 @@ func buildLicenseMetadata(ctx ModuleContext, licenseMetadataFile WritablePath) {
 	}
 
 	var outputFiles Paths
-	if outputFileProducer, ok := ctx.Module().(OutputFileProducer); ok {
-		outputFiles, _ = outputFileProducer.OutputFiles("")
+	if outputFiles, err := outputFilesForModule(ctx, ctx.Module(), ""); err == nil {
 		outputFiles = PathsIfNonNil(outputFiles...)
 	}
 
 	// Only pass the last installed file to isContainerFromFileExtensions so a *.zip file in test data
 	// doesn't mark the whole module as a container.
 	var installFiles InstallPaths
-	if len(base.installFiles) > 0 {
-		installFiles = InstallPaths{base.installFiles[len(base.installFiles)-1]}
+	if len(ctx.installFiles) > 0 {
+		installFiles = InstallPaths{ctx.installFiles[len(ctx.installFiles)-1]}
 	}
 
 	isContainer := isContainerFromFileExtensions(installFiles, outputFiles)
@@ -93,7 +92,7 @@ func buildLicenseMetadata(ctx ModuleContext, licenseMetadataFile WritablePath) {
 
 			allDepMetadataArgs = append(allDepMetadataArgs, info.LicenseMetadataPath.String()+depAnnotations)
 
-			if depInstallFiles := dep.base().installFiles; len(depInstallFiles) > 0 {
+			if depInstallFiles := OtherModuleProviderOrDefault(ctx, dep, InstallFilesProvider).InstallFiles; len(depInstallFiles) > 0 {
 				allDepOutputFiles = append(allDepOutputFiles, depInstallFiles.Paths()...)
 			} else if depOutputFiles, err := outputFilesForModule(ctx, dep, ""); err == nil {
 				depOutputFiles = PathsIfNonNil(depOutputFiles...)
@@ -153,7 +152,7 @@ func buildLicenseMetadata(ctx ModuleContext, licenseMetadataFile WritablePath) {
 
 	// Install map
 	args = append(args,
-		JoinWithPrefix(proptools.NinjaAndShellEscapeListIncludingSpaces(base.licenseInstallMap), "-m "))
+		JoinWithPrefix(proptools.NinjaAndShellEscapeListIncludingSpaces(ctx.licenseInstallMap), "-m "))
 
 	// Built files
 	if len(outputFiles) > 0 {
@@ -163,7 +162,7 @@ func buildLicenseMetadata(ctx ModuleContext, licenseMetadataFile WritablePath) {
 
 	// Installed files
 	args = append(args,
-		JoinWithPrefix(proptools.NinjaAndShellEscapeListIncludingSpaces(base.installFiles.Strings()), "-i "))
+		JoinWithPrefix(proptools.NinjaAndShellEscapeListIncludingSpaces(ctx.installFiles.Strings()), "-i "))
 
 	if isContainer {
 		args = append(args, "--is_container")

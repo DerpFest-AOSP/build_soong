@@ -41,8 +41,15 @@ var (
 		"armv8-2a-dotprod": []string{
 			"-march=armv8.2-a+dotprod",
 		},
+		// On ARMv9 and later, Pointer Authentication Codes (PAC) are mandatory,
+		// so -fstack-protector is unnecessary.
 		"armv9-a": []string{
 			"-march=armv8.2-a+dotprod",
+			"-mbranch-protection=standard",
+			"-fno-stack-protector",
+		},
+		"armv9-2a": []string{
+			"-march=armv9.2-a",
 			"-mbranch-protection=standard",
 			"-fno-stack-protector",
 		},
@@ -111,11 +118,9 @@ func init() {
 
 	pctx.StaticVariable("Arm64Cppflags", strings.Join(arm64Cppflags, " "))
 
-	pctx.StaticVariable("Arm64Armv8ACflags", strings.Join(arm64ArchVariantCflags["armv8-a"], " "))
-	pctx.StaticVariable("Arm64Armv8ABranchProtCflags", strings.Join(arm64ArchVariantCflags["armv8-a-branchprot"], " "))
-	pctx.StaticVariable("Arm64Armv82ACflags", strings.Join(arm64ArchVariantCflags["armv8-2a"], " "))
-	pctx.StaticVariable("Arm64Armv82ADotprodCflags", strings.Join(arm64ArchVariantCflags["armv8-2a-dotprod"], " "))
-	pctx.StaticVariable("Arm64Armv9ACflags", strings.Join(arm64ArchVariantCflags["armv9-a"], " "))
+	for variant, cflags := range arm64ArchVariantCflags {
+		pctx.StaticVariable("Arm64"+variant+"VariantCflags", strings.Join(cflags, " "))
+	}
 
 	pctx.StaticVariable("Arm64CortexA53Cflags", strings.Join(arm64CpuVariantCflags["cortex-a53"], " "))
 	pctx.StaticVariable("Arm64CortexA55Cflags", strings.Join(arm64CpuVariantCflags["cortex-a55"], " "))
@@ -127,14 +132,6 @@ func init() {
 }
 
 var (
-	arm64ArchVariantCflagsVar = map[string]string{
-		"armv8-a":            "${config.Arm64Armv8ACflags}",
-		"armv8-a-branchprot": "${config.Arm64Armv8ABranchProtCflags}",
-		"armv8-2a":           "${config.Arm64Armv82ACflags}",
-		"armv8-2a-dotprod":   "${config.Arm64Armv82ADotprodCflags}",
-		"armv9-a":            "${config.Arm64Armv9ACflags}",
-	}
-
 	arm64CpuVariantCflagsVar = map[string]string{
 		"cortex-a53": "${config.Arm64CortexA53Cflags}",
 		"cortex-a55": "${config.Arm64CortexA55Cflags}",
@@ -204,18 +201,12 @@ func (toolchainArm64) LibclangRuntimeLibraryArch() string {
 }
 
 func arm64ToolchainFactory(arch android.Arch) Toolchain {
-	switch arch.ArchVariant {
-	case "armv8-a":
-	case "armv8-a-branchprot":
-	case "armv8-2a":
-	case "armv8-2a-dotprod":
-	case "armv9-a":
-		// Nothing extra for armv8-a/armv8-2a
-	default:
-		panic(fmt.Sprintf("Unknown ARM architecture version: %q", arch.ArchVariant))
+	// Error now rather than having a confusing Ninja error
+	if _, ok := arm64ArchVariantCflags[arch.ArchVariant]; !ok {
+		panic(fmt.Sprintf("Unknown ARM64 architecture version: %q", arch.ArchVariant))
 	}
 
-	toolchainCflags := []string{arm64ArchVariantCflagsVar[arch.ArchVariant]}
+	toolchainCflags := []string{"${config.Arm64" + arch.ArchVariant + "VariantCflags}"}
 	toolchainCflags = append(toolchainCflags,
 		variantOrDefault(arm64CpuVariantCflagsVar, arch.CpuVariant))
 

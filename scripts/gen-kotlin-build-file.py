@@ -37,7 +37,7 @@ def parse_args():
   parser.add_argument('--out', dest='out',
                       help='file to which the module.xml contents will be written.')
   parser.add_argument('--classpath', dest='classpath', action='append', default=[],
-                      help='classpath to pass to kotlinc.')
+                      help='file containing classpath to pass to kotlinc.')
   parser.add_argument('--name', dest='name',
                       help='name of the module.')
   parser.add_argument('--out_dir', dest='out_dir',
@@ -65,8 +65,8 @@ def main():
     f.write('  <module name="%s" type="java-production" outputDir="%s">\n' % (args.name, args.out_dir or ''))
 
     # Print classpath entries
-    for c in args.classpath:
-      for entry in c.split(':'):
+    for classpath_rsp_file in args.classpath:
+      for entry in NinjaRspFileReader(classpath_rsp_file):
         path = os.path.abspath(entry)
         f.write('    <classpath path="%s"/>\n' % path)
 

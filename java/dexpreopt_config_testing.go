@@ -1237,7 +1237,7 @@ func nestedCheckBootImageConfig(t *testing.T, result *android.TestResult, imageC
 
 	if !mutated {
 		dexBootJarModule := result.ModuleForTests("dex_bootjars", "android_common")
-		profileInstallInfo, _ := android.SingletonModuleProvider(result, dexBootJarModule.Module(), profileInstallInfoProvider)
+		profileInstallInfo, _ := android.OtherModuleProvider(result, dexBootJarModule.Module(), profileInstallInfoProvider)
 		assertInstallsEqual(t, "profileInstalls", expected.profileInstalls, profileInstallInfo.profileInstalls)
 		android.AssertStringEquals(t, "profileLicenseMetadataFile", expected.profileLicenseMetadataFile, profileInstallInfo.profileLicenseMetadataFile.RelativeToTop().String())
 	}

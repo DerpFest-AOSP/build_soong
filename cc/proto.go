@@ -19,6 +19,8 @@ import (
 	"github.com/google/blueprint/proptools"
 
 	"android/soong/android"
+
+	"strings"
 )
 
 const (
@@ -35,13 +37,21 @@ func genProto(ctx android.ModuleContext, protoFile android.Path, flags builderFl
 		srcSuffix = ".c"
 	}
 
+	srcInfix := "pb"
+	for _, value := range flags.proto.Flags {
+		if strings.HasPrefix(value, "--plugin=") && strings.HasSuffix(value, "protoc-gen-grpc-cpp-plugin") {
+			srcInfix = "grpc.pb"
+			break
+		}
+	}
+
 	if flags.proto.CanonicalPathFromRoot {
-		ccFile = android.GenPathWithExt(ctx, "proto", protoFile, "pb"+srcSuffix)
-		headerFile = android.GenPathWithExt(ctx, "proto", protoFile, "pb.h")
+		ccFile = android.GenPathWithExt(ctx, "proto", protoFile, srcInfix+srcSuffix)
+		headerFile = android.GenPathWithExt(ctx, "proto", protoFile, srcInfix+".h")
 	} else {
 		rel := protoFile.Rel()
-		ccFile = android.PathForModuleGen(ctx, "proto", pathtools.ReplaceExtension(rel, "pb"+srcSuffix))
-		headerFile = android.PathForModuleGen(ctx, "proto", pathtools.ReplaceExtension(rel, "pb.h"))
+		ccFile = android.PathForModuleGen(ctx, "proto", pathtools.ReplaceExtension(rel, srcInfix+srcSuffix))
+		headerFile = android.PathForModuleGen(ctx, "proto", pathtools.ReplaceExtension(rel, srcInfix+".h"))
 	}
 
 	protoDeps := flags.proto.Deps

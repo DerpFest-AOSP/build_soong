@@ -212,6 +212,14 @@ var _ android.ImageInterface = (*ShBinary)(nil)
 
 func (s *ShBinary) ImageMutatorBegin(ctx android.BaseModuleContext) {}
 
+func (s *ShBinary) VendorVariantNeeded(ctx android.BaseModuleContext) bool {
+	return s.InstallInVendor()
+}
+
+func (s *ShBinary) ProductVariantNeeded(ctx android.BaseModuleContext) bool {
+	return s.InstallInProduct()
+}
+
 func (s *ShBinary) CoreVariantNeeded(ctx android.BaseModuleContext) bool {
 	return !s.InstallInRecovery() && !s.InstallInRamdisk() && !s.InstallInVendorRamdisk() && !s.ModuleBase.InstallInVendor()
 }
@@ -233,14 +241,7 @@ func (s *ShBinary) RecoveryVariantNeeded(ctx android.BaseModuleContext) bool {
 }
 
 func (s *ShBinary) ExtraImageVariations(ctx android.BaseModuleContext) []string {
-	extraVariations := []string{}
-	if s.InstallInProduct() {
-		extraVariations = append(extraVariations, cc.ProductVariation)
-	}
-	if s.InstallInVendor() {
-		extraVariations = append(extraVariations, cc.VendorVariation)
-	}
-	return extraVariations
+	return nil
 }
 
 func (s *ShBinary) SetImageVariation(ctx android.BaseModuleContext, variation string) {
@@ -306,7 +307,7 @@ func (s *ShBinary) generateAndroidBuildActions(ctx android.ModuleContext) {
 func (s *ShBinary) GetSubname(ctx android.ModuleContext) string {
 	ret := ""
 	if s.properties.ImageVariation != "" {
-		if s.properties.ImageVariation != cc.VendorVariation {
+		if s.properties.ImageVariation != android.VendorVariation {
 			ret = "." + s.properties.ImageVariation
 		}
 	}

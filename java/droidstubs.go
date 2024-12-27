@@ -197,6 +197,10 @@ type DroidstubsProperties struct {
 	// a list of aconfig_declarations module names that the stubs generated in this module
 	// depend on.
 	Aconfig_declarations []string
+
+	// List of hard coded filegroups containing Metalava config files that are passed to every
+	// Metalava invocation that this module performs. See addMetalavaConfigFilesToCmd.
+	ConfigFiles []string `android:"path" blueprint:"mutated"`
 }
 
 // Used by xsd_config
@@ -259,6 +263,7 @@ func DroidstubsFactory() android.Module {
 
 	module.AddProperties(&module.properties,
 		&module.Javadoc.properties)
+	module.properties.ConfigFiles = getMetalavaConfigFilegroupReference()
 	module.initModuleAndImport(module)
 
 	InitDroiddocModule(module, android.HostAndDeviceSupported)
@@ -279,68 +284,9 @@ func DroidstubsHostFactory() android.Module {
 	module.AddProperties(&module.properties,
 		&module.Javadoc.properties)
 
+	module.properties.ConfigFiles = getMetalavaConfigFilegroupReference()
 	InitDroiddocModule(module, android.HostSupported)
 	return module
-}
-
-func getStubsTypeAndTag(tag string) (StubsType, string, error) {
-	if len(tag) == 0 {
-		return Everything, "", nil
-	}
-	if tag[0] != '.' {
-		return Unavailable, "", fmt.Errorf("tag must begin with \".\"")
-	}
-
-	stubsType := Everything
-	// Check if the tag has a stubs type prefix (e.g. ".exportable")
-	for st := Everything; st <= Exportable; st++ {
-		if strings.HasPrefix(tag, "."+st.String()) {
-			stubsType = st
-		}
-	}
-
-	return stubsType, strings.TrimPrefix(tag, "."+stubsType.String()), nil
-}
-
-// Droidstubs' tag supports specifying with the stubs type.
-// While supporting the pre-existing tags, it also supports tags with
-// the stubs type prefix. Some examples are shown below:
-// {.annotations.zip} - pre-existing behavior. Returns the path to the
-// annotation zip.
-// {.exportable} - Returns the path to the exportable stubs src jar.
-// {.exportable.annotations.zip} - Returns the path to the exportable
-// annotations zip file.
-// {.runtime.api_versions.xml} - Runtime stubs does not generate api versions
-// xml file. For unsupported combinations, the default everything output file
-// is returned.
-func (d *Droidstubs) OutputFiles(tag string) (android.Paths, error) {
-	stubsType, prefixRemovedTag, err := getStubsTypeAndTag(tag)
-	if err != nil {
-		return nil, err
-	}
-	switch prefixRemovedTag {
-	case "":
-		stubsSrcJar, err := d.StubsSrcJar(stubsType)
-		return android.Paths{stubsSrcJar}, err
-	case ".docs.zip":
-		docZip, err := d.DocZip(stubsType)
-		return android.Paths{docZip}, err
-	case ".api.txt", android.DefaultDistTag:
-		// This is the default dist path for dist properties that have no tag property.
-		apiFilePath, err := d.ApiFilePath(stubsType)
-		return android.Paths{apiFilePath}, err
-	case ".removed-api.txt":
-		removedApiFilePath, err := d.RemovedApiFilePath(stubsType)
-		return android.Paths{removedApiFilePath}, err
-	case ".annotations.zip":
-		annotationsZip, err := d.AnnotationsZip(stubsType)
-		return android.Paths{annotationsZip}, err
-	case ".api_versions.xml":
-		apiVersionsXmlFilePath, err := d.ApiVersionsXmlFilePath(stubsType)
-		return android.Paths{apiVersionsXmlFilePath}, err
-	default:
-		return nil, fmt.Errorf("unsupported module reference tag %q", tag)
-	}
 }
 
 func (d *Droidstubs) AnnotationsZip(stubsType StubsType) (ret android.Path, err error) {
@@ -754,7 +700,7 @@ func metalavaUseRbe(ctx android.ModuleContext) bool {
 }
 
 func metalavaCmd(ctx android.ModuleContext, rule *android.RuleBuilder, srcs android.Paths,
-	srcJarList android.Path, homeDir android.WritablePath, params stubsCommandConfigParams) *android.RuleBuilderCommand {
+	srcJarList android.Path, homeDir android.WritablePath, params stubsCommandConfigParams, configFiles android.Paths) *android.RuleBuilderCommand {
 	rule.Command().Text("rm -rf").Flag(homeDir.String())
 	rule.Command().Text("mkdir -p").Flag(homeDir.String())
 
@@ -798,7 +744,24 @@ func metalavaCmd(ctx android.ModuleContext, rule *android.RuleBuilder, srcs andr
 
 	cmd.Flag(config.MetalavaFlags)
 
+	addMetalavaConfigFilesToCmd(cmd, configFiles)
+
 	return cmd
+}
+
+// MetalavaConfigFilegroup is the name of the filegroup in build/soong/java/metalava that lists
+// the configuration files to pass to Metalava.
+const MetalavaConfigFilegroup = "metalava-config-files"
+
+// Get a reference to the MetalavaConfigFilegroup suitable for use in a property.
+func getMetalavaConfigFilegroupReference() []string {
+	return []string{":" + MetalavaConfigFilegroup}
+}
+
+// addMetalavaConfigFilesToCmd adds --config-file options to use the config files list in the
+// MetalavaConfigFilegroup filegroup.
+func addMetalavaConfigFilesToCmd(cmd *android.RuleBuilderCommand, configFiles android.Paths) {
+	cmd.FlagForEachInput("--config-file ", configFiles)
 }
 
 // Pass flagged apis related flags to metalava. When aconfig_declarations property is not
@@ -872,7 +835,10 @@ func (d *Droidstubs) commonMetalavaStubCmd(ctx android.ModuleContext, rule *andr
 	srcJarList := zipSyncCmd(ctx, rule, params.srcJarDir, d.Javadoc.srcJars)
 
 	homeDir := android.PathForModuleOut(ctx, params.stubConfig.stubsType.String(), "home")
-	cmd := metalavaCmd(ctx, rule, d.Javadoc.srcFiles, srcJarList, homeDir, params.stubConfig)
+
+	configFiles := android.PathsForModuleSrc(ctx, d.properties.ConfigFiles)
+
+	cmd := metalavaCmd(ctx, rule, d.Javadoc.srcFiles, srcJarList, homeDir, params.stubConfig, configFiles)
 	cmd.Implicits(d.Javadoc.implicits)
 
 	d.stubsFlags(ctx, cmd, params.stubsDir, params.stubConfig.stubsType, params.stubConfig.checkApi)
@@ -1003,6 +969,15 @@ func (d *Droidstubs) everythingOptionalCmd(ctx android.ModuleContext, cmd *andro
 		cmd.FlagForEachInput("--api-lint-previous-api ", newSince)
 		d.apiLintReport = android.PathForModuleOut(ctx, Everything.String(), "api_lint_report.txt")
 		cmd.FlagWithOutput("--report-even-if-suppressed ", d.apiLintReport) // TODO:  Change to ":api-lint"
+
+		// If UnflaggedApi issues have not already been configured then make sure that existing
+		// UnflaggedApi issues are reported as warnings but issues in new/changed code are treated as
+		// errors by the Build Warnings Aye Aye Analyzer in Gerrit.
+		// Once existing issues have been fixed this will be changed to error.
+		// TODO(b/362771529): Switch to --error
+		if !strings.Contains(cmd.String(), " UnflaggedApi ") {
+			cmd.Flag("--error-when-new UnflaggedApi")
+		}
 
 		// TODO(b/154317059): Clean up this allowlist by baselining and/or checking in last-released.
 		if d.Name() != "android.car-system-stubs-docs" &&
@@ -1363,6 +1338,46 @@ func (d *Droidstubs) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 
 		rule.Build("nullabilityWarningsCheck", "nullability warnings check")
 	}
+
+	d.setOutputFiles(ctx)
+}
+
+// This method sets the outputFiles property, which is used to set the
+// OutputFilesProvider later.
+// Droidstubs' tag supports specifying with the stubs type.
+// While supporting the pre-existing tags, it also supports tags with
+// the stubs type prefix. Some examples are shown below:
+// {.annotations.zip} - pre-existing behavior. Returns the path to the
+// annotation zip.
+// {.exportable} - Returns the path to the exportable stubs src jar.
+// {.exportable.annotations.zip} - Returns the path to the exportable
+// annotations zip file.
+// {.runtime.api_versions.xml} - Runtime stubs does not generate api versions
+// xml file. For unsupported combinations, the default everything output file
+// is returned.
+func (d *Droidstubs) setOutputFiles(ctx android.ModuleContext) {
+	tagToOutputFileFunc := map[string]func(StubsType) (android.Path, error){
+		"":                     d.StubsSrcJar,
+		".docs.zip":            d.DocZip,
+		".api.txt":             d.ApiFilePath,
+		android.DefaultDistTag: d.ApiFilePath,
+		".removed-api.txt":     d.RemovedApiFilePath,
+		".annotations.zip":     d.AnnotationsZip,
+		".api_versions.xml":    d.ApiVersionsXmlFilePath,
+	}
+	stubsTypeToPrefix := map[StubsType]string{
+		Everything: "",
+		Exportable: ".exportable",
+	}
+	for _, tag := range android.SortedKeys(tagToOutputFileFunc) {
+		for _, stubType := range android.SortedKeys(stubsTypeToPrefix) {
+			tagWithPrefix := stubsTypeToPrefix[stubType] + tag
+			outputFile, err := tagToOutputFileFunc[tag](stubType)
+			if err == nil {
+				ctx.SetOutputFiles(android.Paths{outputFile}, tagWithPrefix)
+			}
+		}
+	}
 }
 
 func (d *Droidstubs) createApiContribution(ctx android.DefaultableHookContext) {
@@ -1453,17 +1468,6 @@ type PrebuiltStubsSources struct {
 	stubsSrcJar android.Path
 }
 
-func (p *PrebuiltStubsSources) OutputFiles(tag string) (android.Paths, error) {
-	switch tag {
-	// prebuilt droidstubs does not output "exportable" stubs.
-	// Output the "everything" stubs srcjar file if the tag is ".exportable".
-	case "", ".exportable":
-		return android.Paths{p.stubsSrcJar}, nil
-	default:
-		return nil, fmt.Errorf("unsupported module reference tag %q", tag)
-	}
-}
-
 func (d *PrebuiltStubsSources) StubsSrcJar(_ StubsType) (android.Path, error) {
 	return d.stubsSrcJar, nil
 }
@@ -1502,6 +1506,11 @@ func (p *PrebuiltStubsSources) GenerateAndroidBuildActions(ctx android.ModuleCon
 		rule.Build("zip src", "Create srcjar from prebuilt source")
 		p.stubsSrcJar = outPath
 	}
+
+	ctx.SetOutputFiles(android.Paths{p.stubsSrcJar}, "")
+	// prebuilt droidstubs does not output "exportable" stubs.
+	// Output the "everything" stubs srcjar file if the tag is ".exportable".
+	ctx.SetOutputFiles(android.Paths{p.stubsSrcJar}, ".exportable")
 }
 
 func (p *PrebuiltStubsSources) Prebuilt() *android.Prebuilt {

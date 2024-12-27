@@ -216,6 +216,11 @@ func IsSystemServerClasspathFragmentContentDepTag(tag blueprint.DependencyTag) b
 	return tag == systemServerClasspathFragmentContentDepTag
 }
 
+// The dexpreopt artifacts of apex system server jars are installed onto system image.
+func (s systemServerClasspathFragmentContentDependencyTag) InstallDepNeeded() bool {
+	return true
+}
+
 func (s *SystemServerClasspathModule) ComponentDepsMutator(ctx android.BottomUpMutatorContext) {
 	module := ctx.Module()
 	_, isSourceModule := module.(*SystemServerClasspathModule)
@@ -234,7 +239,7 @@ func (s *SystemServerClasspathModule) ComponentDepsMutator(ctx android.BottomUpM
 }
 
 // Collect information for opening IDE project files in java/jdeps.go.
-func (s *SystemServerClasspathModule) IDEInfo(dpInfo *android.IdeInfo) {
+func (s *SystemServerClasspathModule) IDEInfo(ctx android.BaseModuleContext, dpInfo *android.IdeInfo) {
 	dpInfo.Deps = append(dpInfo.Deps, s.properties.Contents...)
 	dpInfo.Deps = append(dpInfo.Deps, s.properties.Standalone_contents...)
 }

@@ -86,20 +86,19 @@ endif`,
 	},
 	{
 		name: "Blank line in rule's command",
-		in:   `all:
+		in: `all:
 	echo first line
 
 	echo second line`,
 		out: []Node{
 			&Rule{
-				Target: SimpleMakeString("all", NoPos),
-				RecipePos: NoPos,
-				Recipe: "echo first line\necho second line",
+				Target:        SimpleMakeString("all", NoPos),
+				RecipePos:     NoPos,
+				Recipe:        "echo first line\necho second line",
 				Prerequisites: SimpleMakeString("", NoPos),
 			},
 		},
 	},
-
 }
 
 func TestParse(t *testing.T) {
@@ -123,5 +122,27 @@ func TestParse(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestRuleEnd(t *testing.T) {
+	name := "ruleEndTest"
+	in := `all:
+ifeq (A, A)
+	echo foo
+	echo foo
+	echo foo
+	echo foo
+endif
+	echo bar
+`
+	p := NewParser(name, bytes.NewBufferString(in))
+	got, errs := p.Parse()
+	if len(errs) != 0 {
+		t.Fatalf("Unexpected errors while parsing: %v", errs)
+	}
+
+	if got[0].End() < got[len(got) -1].Pos() {
+		t.Errorf("Rule's end (%d) is smaller than directive that inside of rule's start (%v)\n", got[0].End(), got[len(got) -1].Pos())
 	}
 }

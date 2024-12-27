@@ -114,17 +114,23 @@ func TestCCFuzzDepBundling(t *testing.T) {
 				srcs: ["foo.rs"],
 				shared_libs: ["libcc_transitive_dep"],
 			}
+			rust_ffi_static {
+				name: "libtest_fuzzing_static",
+				crate_name: "test_fuzzing",
+				srcs: ["foo.rs"],
+				shared_libs: ["libcc_transitive_dep"],
+			}
 			cc_fuzz {
 				name: "fuzz_shared_libtest",
 				shared_libs: ["libtest_fuzzing"],
 			}
 			cc_fuzz {
 				name: "fuzz_static_libtest",
-				static_rlibs: ["libtest_fuzzing"],
+				static_libs: ["libtest_fuzzing"],
 			}
 			cc_fuzz {
 				name: "fuzz_staticffi_libtest",
-				static_libs: ["libtest_fuzzing"],
+				static_libs: ["libtest_fuzzing_static"],
 			}
 	`)
 

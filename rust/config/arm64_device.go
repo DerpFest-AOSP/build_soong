@@ -35,8 +35,13 @@ var (
 		},
 		"armv8-2a":         []string{},
 		"armv8-2a-dotprod": []string{},
+
+		// branch-protection=bti,pac-ret is equivalent to Clang's mbranch-protection=standard
 		"armv9-a": []string{
-			// branch-protection=bti,pac-ret is equivalent to Clang's mbranch-protection=standard
+			"-Z branch-protection=bti,pac-ret",
+			"-Z stack-protector=none",
+		},
+		"armv9-2a": []string{
 			"-Z branch-protection=bti,pac-ret",
 			"-Z stack-protector=none",
 		},

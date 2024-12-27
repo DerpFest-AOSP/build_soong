@@ -29,7 +29,7 @@ var (
 	defaultBindgenFlags = []string{""}
 
 	// bindgen should specify its own Clang revision so updating Clang isn't potentially blocked on bindgen failures.
-	bindgenClangVersion = "clang-r510928"
+	bindgenClangVersion = "clang-r530567"
 
 	_ = pctx.VariableFunc("bindgenClangVersion", func(ctx android.PackageVarContext) string {
 		if override := ctx.Config().Getenv("LLVM_BINDGEN_PREBUILTS_VERSION"); override != "" {
@@ -364,7 +364,7 @@ func NewRustBindgen(hod android.HostOrDeviceSupported) (*Module, *bindgenDecorat
 		ClangProperties:    cc.RustBindgenClangProperties{},
 	}
 
-	module := NewSourceProviderModule(hod, bindgen, false, true)
+	module := NewSourceProviderModule(hod, bindgen, false, false)
 
 	android.AddLoadHook(module, func(ctx android.LoadHookContext) {
 		type stub_props struct {

@@ -35,7 +35,7 @@ func RegisterAppSetBuildComponents(ctx android.RegistrationContext) {
 
 type AndroidAppSetProperties struct {
 	// APK Set path
-	Set *string
+	Set *string `android:"path"`
 
 	// Specifies that this app should be installed to the priv-app directory,
 	// where the system will grant it additional privileges not available to

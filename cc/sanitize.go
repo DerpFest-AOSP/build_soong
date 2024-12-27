@@ -36,7 +36,6 @@ var (
 	asanCflags = []string{
 		"-fno-omit-frame-pointer",
 	}
-	asanLdflags = []string{"-Wl,-u,__asan_preinit"}
 
 	// DO NOT ADD MLLVM FLAGS HERE! ADD THEM BELOW TO hwasanCommonFlags.
 	hwasanCflags = []string{
@@ -80,8 +79,6 @@ var (
 
 	minimalRuntimeFlags = []string{"-fsanitize-minimal-runtime", "-fno-sanitize-trap=integer,undefined",
 		"-fno-sanitize-recover=integer,undefined"}
-	hwasanGlobalOptions = []string{"heap_history_size=1023", "stack_history_size=512",
-		"export_memory_stats=0", "max_malloc_fill_size=131072", "malloc_fill_byte=0"}
 	memtagStackCommonFlags = []string{"-march=armv8-a+memtag"}
 	memtagStackLlvmFlags   = []string{"-dom-tree-reachability-max-bbs-to-explore=128"}
 
@@ -179,7 +176,7 @@ func (t SanitizerType) registerMutators(ctx android.RegisterMutatorsContext) {
 	switch t {
 	case cfi, Hwasan, Asan, tsan, Fuzzer, scs, Memtag_stack:
 		sanitizer := &sanitizerSplitMutator{t}
-		ctx.TopDown(t.variationName()+"_markapexes", sanitizer.markSanitizableApexesMutator)
+		ctx.BottomUp(t.variationName()+"_markapexes", sanitizer.markSanitizableApexesMutator)
 		ctx.Transition(t.variationName(), sanitizer)
 	case Memtag_heap, Memtag_globals, intOverflow:
 		// do nothing
@@ -383,7 +380,19 @@ type SanitizeProperties struct {
 	Sanitize        SanitizeUserProps         `android:"arch_variant"`
 	SanitizeMutated sanitizeMutatedProperties `blueprint:"mutated"`
 
-	SanitizerEnabled  bool     `blueprint:"mutated"`
+	// ForceDisable is set by the version mutator to disable sanitization of stubs variants
+	ForceDisable bool `blueprint:"mutated"`
+
+	// SanitizerEnabled is set by begin() if any of the sanitize boolean properties are set after
+	// applying the logic that enables globally enabled sanitizers and disables any unsupported
+	// sanitizers.
+	// TODO(b/349906293): this has some unintuitive behavior.  It is set in begin() before the sanitize
+	//  mutator is run if any of the individual sanitizes  properties are set, and then the individual
+	//  sanitize properties are cleared in the non-sanitized variants, but this value is never cleared.
+	//  That results in SanitizerEnabled being set in variants that have no sanitizers enabled, causing
+	//  some of the sanitizer logic in flags() to be applied to the non-sanitized variant.
+	SanitizerEnabled bool `blueprint:"mutated"`
+
 	MinimalRuntimeDep bool     `blueprint:"mutated"`
 	BuiltinsDep       bool     `blueprint:"mutated"`
 	UbsanRuntimeDep   bool     `blueprint:"mutated"`
@@ -454,6 +463,10 @@ func (p *sanitizeMutatedProperties) copyUserPropertiesToMutated(userProps *Sanit
 func (sanitize *sanitize) begin(ctx BaseModuleContext) {
 	s := &sanitize.Properties.SanitizeMutated
 	s.copyUserPropertiesToMutated(&sanitize.Properties.Sanitize)
+
+	if sanitize.Properties.ForceDisable {
+		return
+	}
 
 	// Don't apply sanitizers to NDK code.
 	if ctx.useSdk() {
@@ -765,6 +778,10 @@ func toDisableUnsignedShiftBaseChange(flags []string) bool {
 }
 
 func (s *sanitize) flags(ctx ModuleContext, flags Flags) Flags {
+	if s.Properties.ForceDisable {
+		return flags
+	}
+
 	if !s.Properties.SanitizerEnabled && !s.Properties.UbsanRuntimeDep {
 		return flags
 	}
@@ -777,16 +794,17 @@ func (s *sanitize) flags(ctx ModuleContext, flags Flags) Flags {
 			flags.RequiredInstructionSet = "arm"
 		}
 		flags.Local.CFlags = append(flags.Local.CFlags, asanCflags...)
-		flags.Local.LdFlags = append(flags.Local.LdFlags, asanLdflags...)
 
 		if Bool(sanProps.Writeonly) {
 			flags.Local.CFlags = append(flags.Local.CFlags, "-mllvm", "-asan-instrument-reads=0")
 		}
 
 		if ctx.Host() {
-			// -nodefaultlibs (provided with libc++) prevents the driver from linking
-			// libraries needed with -fsanitize=address. http://b/18650275 (WAI)
-			flags.Local.LdFlags = append(flags.Local.LdFlags, "-Wl,--no-as-needed")
+			if !ctx.Darwin() { // ld64.lld doesn't know about '--no-as-needed'
+				// -nodefaultlibs (provided with libc++) prevents the driver from linking
+				// libraries needed with -fsanitize=address. http://b/18650275 (WAI)
+				flags.Local.LdFlags = append(flags.Local.LdFlags, "-Wl,--no-as-needed")
+			}
 		} else {
 			flags.Local.CFlags = append(flags.Local.CFlags, "-mllvm", "-asan-globals=0")
 			if ctx.bootstrap() {
@@ -1104,7 +1122,7 @@ func (s *sanitize) isSanitizerEnabled(t SanitizerType) bool {
 	if s == nil {
 		return false
 	}
-	if proptools.Bool(s.Properties.SanitizeMutated.Never) {
+	if s.Properties.ForceDisable || proptools.Bool(s.Properties.SanitizeMutated.Never) {
 		return false
 	}
 
@@ -1135,7 +1153,7 @@ type sanitizerSplitMutator struct {
 // If an APEX is sanitized or not depends on whether it contains at least one
 // sanitized module. Transition mutators cannot propagate information up the
 // dependency graph this way, so we need an auxiliary mutator to do so.
-func (s *sanitizerSplitMutator) markSanitizableApexesMutator(ctx android.TopDownMutatorContext) {
+func (s *sanitizerSplitMutator) markSanitizableApexesMutator(ctx android.BottomUpMutatorContext) {
 	if sanitizeable, ok := ctx.Module().(Sanitizeable); ok {
 		enabled := sanitizeable.IsSanitizerEnabled(ctx.Config(), s.sanitizer.name())
 		ctx.VisitDirectDeps(func(dep android.Module) {
@@ -1329,7 +1347,7 @@ func (s *sanitizerSplitMutator) Mutate(mctx android.BottomUpMutatorContext, vari
 }
 
 func (c *Module) SanitizeNever() bool {
-	return Bool(c.sanitize.Properties.SanitizeMutated.Never)
+	return c.sanitize.Properties.ForceDisable || Bool(c.sanitize.Properties.SanitizeMutated.Never)
 }
 
 func (c *Module) IsSanitizerExplicitlyDisabled(t SanitizerType) bool {
@@ -1337,9 +1355,12 @@ func (c *Module) IsSanitizerExplicitlyDisabled(t SanitizerType) bool {
 }
 
 // Propagate the ubsan minimal runtime dependency when there are integer overflow sanitized static dependencies.
-func sanitizerRuntimeDepsMutator(mctx android.TopDownMutatorContext) {
+func sanitizerRuntimeDepsMutator(mctx android.BottomUpMutatorContext) {
 	// Change this to PlatformSanitizable when/if non-cc modules support ubsan sanitizers.
 	if c, ok := mctx.Module().(*Module); ok && c.sanitize != nil {
+		if c.sanitize.Properties.ForceDisable {
+			return
+		}
 		isSanitizableDependencyTag := c.SanitizableDepTagChecker()
 		mctx.WalkDeps(func(child, parent android.Module) bool {
 			if !isSanitizableDependencyTag(mctx.OtherModuleDependencyTag(child)) {
@@ -1350,7 +1371,7 @@ func sanitizerRuntimeDepsMutator(mctx android.TopDownMutatorContext) {
 			if !ok || !d.static() {
 				return false
 			}
-			if d.sanitize != nil {
+			if d.sanitize != nil && !d.sanitize.Properties.ForceDisable {
 				if enableMinimalRuntime(d.sanitize) {
 					// If a static dependency is built with the minimal runtime,
 					// make sure we include the ubsan minimal runtime.
@@ -1385,6 +1406,10 @@ func sanitizerRuntimeMutator(mctx android.BottomUpMutatorContext) {
 		if !c.Enabled(mctx) {
 			return
 		}
+		if c.sanitize.Properties.ForceDisable {
+			return
+		}
+
 		var sanitizers []string
 		var diagSanitizers []string
 
@@ -1412,11 +1437,11 @@ func sanitizerRuntimeMutator(mctx android.BottomUpMutatorContext) {
 					//"null",
 					//"shift-base",
 					//"signed-integer-overflow",
-					// TODO(danalbert): Fix UB in libc++'s __tree so we can turn this on.
-					// https://llvm.org/PR19302
-					// http://reviews.llvm.org/D6974
-					// "object-size",
 				)
+
+				if mctx.Config().ReleaseBuildObjectSizeSanitizer() {
+					sanitizers = append(sanitizers, "object-size")
+				}
 			}
 			sanitizers = append(sanitizers, sanProps.Misc_undefined...)
 		}
@@ -1898,8 +1923,4 @@ func (txt *sanitizerLibrariesTxtModule) BaseDir() string {
 // PrebuiltEtcModule interface
 func (txt *sanitizerLibrariesTxtModule) SubDir() string {
 	return ""
-}
-
-func (txt *sanitizerLibrariesTxtModule) OutputFiles(tag string) (android.Paths, error) {
-	return android.Paths{txt.outputFile}, nil
 }

@@ -156,7 +156,7 @@ var (
 	turbine, turbineRE = pctx.RemoteStaticRules("turbine",
 		blueprint.RuleParams{
 			Command: `$reTemplate${config.JavaCmd} ${config.JavaVmFlags} -jar ${config.TurbineJar} $outputFlags ` +
-				`--sources @$out.rsp  --source_jars $srcJars ` +
+				`--sources @$out.rsp ` +
 				`--javacopts ${config.CommonJdkFlags} ` +
 				`$javacFlags -source $javaVersion -target $javaVersion -- $turbineFlags && ` +
 				`(for o in $outputs; do if cmp -s $${o}.tmp $${o} ; then rm $${o}.tmp ; else mv $${o}.tmp $${o} ; fi; done )`,
@@ -170,13 +170,13 @@ var (
 		},
 		&remoteexec.REParams{Labels: map[string]string{"type": "tool", "name": "turbine"},
 			ExecStrategy:    "${config.RETurbineExecStrategy}",
-			Inputs:          []string{"${config.TurbineJar}", "${out}.rsp", "$implicits"},
-			RSPFiles:        []string{"${out}.rsp"},
+			Inputs:          []string{"${config.TurbineJar}", "${out}.rsp", "$rbeInputs"},
+			RSPFiles:        []string{"$out.rsp", "$rspFiles"},
 			OutputFiles:     []string{"$rbeOutputs"},
 			ToolchainInputs: []string{"${config.JavaCmd}"},
 			Platform:        map[string]string{remoteexec.PoolKey: "${config.REJavaPool}"},
 		},
-		[]string{"javacFlags", "turbineFlags", "outputFlags", "javaVersion", "outputs", "rbeOutputs", "srcJars"}, []string{"implicits"})
+		[]string{"javacFlags", "turbineFlags", "outputFlags", "javaVersion", "outputs", "rbeOutputs"}, []string{"rbeInputs", "rspFiles"})
 
 	jar, jarRE = pctx.RemoteStaticRules("jar",
 		blueprint.RuleParams{
@@ -258,6 +258,20 @@ var (
 		},
 	)
 
+	ravenizer = pctx.AndroidStaticRule("ravenizer",
+		blueprint.RuleParams{
+			Command:     "rm -f $out && ${ravenizer} --in-jar $in --out-jar $out",
+			CommandDeps: []string{"${ravenizer}"},
+		},
+	)
+
+	apimapper = pctx.AndroidStaticRule("apimapper",
+		blueprint.RuleParams{
+			Command:     "${apimapper} --in-jar $in --out-jar $out",
+			CommandDeps: []string{"${apimapper}"},
+		},
+	)
+
 	zipalign = pctx.AndroidStaticRule("zipalign",
 		blueprint.RuleParams{
 			Command: "if ! ${config.ZipAlign} -c -p 4 $in > /dev/null; then " +
@@ -307,6 +321,8 @@ func init() {
 	pctx.Import("android/soong/java/config")
 
 	pctx.HostBinToolVariable("aconfig", "aconfig")
+	pctx.HostBinToolVariable("ravenizer", "ravenizer")
+	pctx.HostBinToolVariable("apimapper", "apimapper")
 	pctx.HostBinToolVariable("keep-flagged-apis", "keep-flagged-apis")
 }
 
@@ -428,53 +444,72 @@ func emitXrefRule(ctx android.ModuleContext, xrefFile android.WritablePath, idx 
 		})
 }
 
-func turbineFlags(ctx android.ModuleContext, flags javaBuilderFlags, dir string) (string, android.Paths) {
-	var deps android.Paths
+func turbineFlags(ctx android.ModuleContext, flags javaBuilderFlags, dir string, srcJars android.Paths) (string, android.Paths, android.Paths, android.Paths) {
+	var implicits android.Paths
+	var rbeInputs android.Paths
+	var rspFiles android.Paths
 
 	classpath := flags.classpath
 
-	var bootClasspath string
+	srcJarArgs := strings.Join(srcJars.Strings(), " ")
+	implicits = append(implicits, srcJars...)
+	const srcJarArgsLimit = 32 * 1024
+	if len(srcJarArgs) > srcJarArgsLimit {
+		srcJarRspFile := android.PathForModuleOut(ctx, "turbine", "srcjars.rsp")
+		android.WriteFileRule(ctx, srcJarRspFile, srcJarArgs)
+		srcJarArgs = "@" + srcJarRspFile.String()
+		implicits = append(implicits, srcJarRspFile)
+		rbeInputs = append(rbeInputs, srcJarRspFile)
+	} else {
+		rbeInputs = append(rbeInputs, srcJars...)
+	}
+
+	var bootClasspathFlags string
 	if flags.javaVersion.usesJavaModules() {
 		var systemModuleDeps android.Paths
-		bootClasspath, systemModuleDeps = flags.systemModules.FormTurbineSystemModulesPath(ctx.Device())
-		deps = append(deps, systemModuleDeps...)
+		bootClasspathFlags, systemModuleDeps = flags.systemModules.FormTurbineSystemModulesPath(ctx.Device())
+		implicits = append(implicits, systemModuleDeps...)
+		rbeInputs = append(rbeInputs, systemModuleDeps...)
 		classpath = append(flags.java9Classpath, classpath...)
 	} else {
-		deps = append(deps, flags.bootClasspath...)
+		implicits = append(implicits, flags.bootClasspath...)
+		rbeInputs = append(rbeInputs, flags.bootClasspath...)
 		if len(flags.bootClasspath) == 0 && ctx.Device() {
 			// explicitly specify -bootclasspath "" if the bootclasspath is empty to
 			// ensure turbine does not fall back to the default bootclasspath.
-			bootClasspath = `--bootclasspath ""`
+			bootClasspathFlags = `--bootclasspath ""`
 		} else {
-			bootClasspath = flags.bootClasspath.FormTurbineClassPath("--bootclasspath ")
+			bootClasspathFlags = flags.bootClasspath.FormTurbineClassPath("--bootclasspath ")
 		}
 	}
 
-	deps = append(deps, classpath...)
-	turbineFlags := bootClasspath + " " + classpath.FormTurbineClassPath("--classpath ")
-
-	const flagsLimit = 32 * 1024
-	if len(turbineFlags) > flagsLimit {
-		flagsRspFile := android.PathForModuleOut(ctx, dir, "turbine-flags.rsp")
-		android.WriteFileRule(ctx, flagsRspFile, turbineFlags)
-		turbineFlags = "@" + flagsRspFile.String()
-		deps = append(deps, flagsRspFile)
+	classpathFlags := classpath.FormTurbineClassPath("")
+	implicits = append(implicits, classpath...)
+	const classpathLimit = 32 * 1024
+	if len(classpathFlags) > classpathLimit {
+		classpathRspFile := android.PathForModuleOut(ctx, dir, "classpath.rsp")
+		android.WriteFileRule(ctx, classpathRspFile, classpathFlags)
+		classpathFlags = "@" + classpathRspFile.String()
+		implicits = append(implicits, classpathRspFile)
+		rspFiles = append(rspFiles, classpathRspFile)
+		rbeInputs = append(rbeInputs, classpathRspFile)
+	} else {
+		rbeInputs = append(rbeInputs, classpath...)
 	}
 
-	return turbineFlags, deps
+	turbineFlags := "--source_jars " + srcJarArgs + " " + bootClasspathFlags + " --classpath " + classpathFlags
+
+	return turbineFlags, implicits, rbeInputs, rspFiles
 }
 
 func TransformJavaToHeaderClasses(ctx android.ModuleContext, outputFile android.WritablePath,
 	srcFiles, srcJars android.Paths, flags javaBuilderFlags) {
 
-	turbineFlags, deps := turbineFlags(ctx, flags, "turbine")
-
-	deps = append(deps, srcJars...)
+	turbineFlags, implicits, rbeInputs, rspFiles := turbineFlags(ctx, flags, "turbine", srcJars)
 
 	rule := turbine
 	args := map[string]string{
 		"javacFlags":   flags.javacFlags,
-		"srcJars":      strings.Join(srcJars.Strings(), " "),
 		"javaVersion":  flags.javaVersion.String(),
 		"turbineFlags": turbineFlags,
 		"outputFlags":  "--output " + outputFile.String() + ".tmp",
@@ -482,15 +517,16 @@ func TransformJavaToHeaderClasses(ctx android.ModuleContext, outputFile android.
 	}
 	if ctx.Config().UseRBE() && ctx.Config().IsEnvTrue("RBE_TURBINE") {
 		rule = turbineRE
-		args["implicits"] = strings.Join(deps.Strings(), ",")
+		args["rbeInputs"] = strings.Join(rbeInputs.Strings(), ",")
 		args["rbeOutputs"] = outputFile.String() + ".tmp"
+		args["rspFiles"] = strings.Join(rspFiles.Strings(), ",")
 	}
 	ctx.Build(pctx, android.BuildParams{
 		Rule:        rule,
 		Description: "turbine",
 		Output:      outputFile,
 		Inputs:      srcFiles,
-		Implicits:   deps,
+		Implicits:   implicits,
 		Args:        args,
 	})
 }
@@ -499,11 +535,10 @@ func TransformJavaToHeaderClasses(ctx android.ModuleContext, outputFile android.
 func TurbineApt(ctx android.ModuleContext, outputSrcJar, outputResJar android.WritablePath,
 	srcFiles, srcJars android.Paths, flags javaBuilderFlags) {
 
-	turbineFlags, deps := turbineFlags(ctx, flags, "kapt")
+	turbineFlags, implicits, rbeInputs, rspFiles := turbineFlags(ctx, flags, "turbine-apt", srcJars)
 
-	deps = append(deps, srcJars...)
-
-	deps = append(deps, flags.processorPath...)
+	implicits = append(implicits, flags.processorPath...)
+	rbeInputs = append(rbeInputs, flags.processorPath...)
 	turbineFlags += " " + flags.processorPath.FormTurbineClassPath("--processorpath ")
 	turbineFlags += " --processors " + strings.Join(flags.processors, " ")
 
@@ -514,7 +549,6 @@ func TurbineApt(ctx android.ModuleContext, outputSrcJar, outputResJar android.Wr
 	rule := turbine
 	args := map[string]string{
 		"javacFlags":   flags.javacFlags,
-		"srcJars":      strings.Join(srcJars.Strings(), " "),
 		"javaVersion":  flags.javaVersion.String(),
 		"turbineFlags": turbineFlags,
 		"outputFlags":  outputFlags,
@@ -522,8 +556,9 @@ func TurbineApt(ctx android.ModuleContext, outputSrcJar, outputResJar android.Wr
 	}
 	if ctx.Config().UseRBE() && ctx.Config().IsEnvTrue("RBE_TURBINE") {
 		rule = turbineRE
-		args["implicits"] = strings.Join(deps.Strings(), ",")
+		args["rbeInputs"] = strings.Join(rbeInputs.Strings(), ",")
 		args["rbeOutputs"] = outputSrcJar.String() + ".tmp," + outputResJar.String() + ".tmp"
+		args["rspFiles"] = strings.Join(rspFiles.Strings(), ",")
 	}
 	ctx.Build(pctx, android.BuildParams{
 		Rule:            rule,
@@ -531,7 +566,7 @@ func TurbineApt(ctx android.ModuleContext, outputSrcJar, outputResJar android.Wr
 		Output:          outputs[0],
 		ImplicitOutputs: outputs[1:],
 		Inputs:          srcFiles,
-		Implicits:       deps,
+		Implicits:       implicits,
 		Args:            args,
 	})
 }
@@ -741,6 +776,16 @@ func TransformJetifier(ctx android.ModuleContext, outputFile android.WritablePat
 	ctx.Build(pctx, android.BuildParams{
 		Rule:        jetifier,
 		Description: "jetifier",
+		Output:      outputFile,
+		Input:       inputFile,
+	})
+}
+
+func TransformRavenizer(ctx android.ModuleContext, outputFile android.WritablePath,
+	inputFile android.Path) {
+	ctx.Build(pctx, android.BuildParams{
+		Rule:        ravenizer,
+		Description: "ravenizer",
 		Output:      outputFile,
 		Input:       inputFile,
 	})

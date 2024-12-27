@@ -53,11 +53,7 @@ func TestBootclasspathFragments_FragmentDependency(t *testing.T) {
 		java.FixtureConfigureBootJars("com.android.art:baz", "com.android.art:quuz"),
 		java.FixtureConfigureApexBootJars("someapex:foo", "someapex:bar"),
 		prepareForTestWithArtApex,
-		android.FixtureModifyProductVariables(func(variables android.FixtureProductVariables) {
-			variables.BuildFlags = map[string]string{
-				"RELEASE_HIDDEN_API_EXPORTABLE_STUBS": "true",
-			}
-		}),
+		android.PrepareForTestWithBuildFlag("RELEASE_HIDDEN_API_EXPORTABLE_STUBS", "true"),
 		java.PrepareForTestWithJavaSdkLibraryFiles,
 		java.FixtureWithLastReleaseApis("foo", "baz"),
 	).RunTestWithBp(t, `
@@ -108,6 +104,7 @@ func TestBootclasspathFragments_FragmentDependency(t *testing.T) {
 			test: {
 				enabled: true,
 			},
+			sdk_version: "core_current",
 		}
 
 		java_library {
@@ -156,7 +153,7 @@ func TestBootclasspathFragments_FragmentDependency(t *testing.T) {
 
 	// Check stub dex paths exported by art.
 	artFragment := result.Module("art-bootclasspath-fragment", "android_common")
-	artInfo, _ := android.SingletonModuleProvider(result, artFragment, java.HiddenAPIInfoProvider)
+	artInfo, _ := android.OtherModuleProvider(result, artFragment, java.HiddenAPIInfoProvider)
 
 	bazPublicStubs := "out/soong/.intermediates/baz.stubs.exportable/android_common/dex/baz.stubs.exportable.jar"
 	bazSystemStubs := "out/soong/.intermediates/baz.stubs.exportable.system/android_common/dex/baz.stubs.exportable.system.jar"
@@ -169,7 +166,7 @@ func TestBootclasspathFragments_FragmentDependency(t *testing.T) {
 
 	// Check stub dex paths exported by other.
 	otherFragment := result.Module("other-bootclasspath-fragment", "android_common")
-	otherInfo, _ := android.SingletonModuleProvider(result, otherFragment, java.HiddenAPIInfoProvider)
+	otherInfo, _ := android.OtherModuleProvider(result, otherFragment, java.HiddenAPIInfoProvider)
 
 	fooPublicStubs := "out/soong/.intermediates/foo.stubs.exportable/android_common/dex/foo.stubs.exportable.jar"
 	fooSystemStubs := "out/soong/.intermediates/foo.stubs.exportable.system/android_common/dex/foo.stubs.exportable.system.jar"
@@ -401,11 +398,20 @@ func TestBootclasspathFragmentInArtApex(t *testing.T) {
 
 			// Make sure that a preferred prebuilt with consistent contents doesn't affect the apex.
 			addPrebuilt(true, "foo", "bar"),
+			android.FixtureMergeMockFs(android.MockFS{
+				"apex_contributions/Android.bp": []byte(`
+				apex_contributions {
+					name: "prebuilt_art_contributions",
+					contents: ["prebuilt_com.android.art"],
+					api_domain: "com.android.art",
+				}
+			`)}),
+			android.PrepareForTestWithBuildFlag("RELEASE_APEX_CONTRIBUTIONS_ART", "prebuilt_art_contributions"),
 
 			java.FixtureSetBootImageInstallDirOnDevice("art", "apex/com.android.art/javalib"),
 		).RunTest(t)
 
-		ensureExactDeapexedContents(t, result.TestContext, "prebuilt_com.android.art", "android_common", []string{
+		ensureExactDeapexedContents(t, result.TestContext, "prebuilt_com.android.art", "android_common_com.android.art", []string{
 			"etc/boot-image.prof",
 			"javalib/bar.jar",
 			"javalib/foo.jar",
@@ -498,6 +504,7 @@ func TestBootclasspathFragmentInPrebuiltArtApex(t *testing.T) {
 		java.FixtureConfigureBootJars("com.android.art:foo", "com.android.art:bar"),
 		dexpreopt.FixtureSetTestOnlyArtBootImageJars("com.android.art:foo", "com.android.art:bar"),
 		java.FixtureSetBootImageInstallDirOnDevice("art", "apex/com.android.art/javalib"),
+		android.PrepareForTestWithBuildFlag("RELEASE_APEX_CONTRIBUTIONS_ART", "prebuilt_art_contributions"),
 	)
 
 	bp := `
@@ -555,6 +562,12 @@ func TestBootclasspathFragmentInPrebuiltArtApex(t *testing.T) {
 			src: "com.mycompany.android.art.apex",
 			exported_bootclasspath_fragments: ["art-bootclasspath-fragment"],
 		}
+	
+		apex_contributions {
+			name: "prebuilt_art_contributions",
+			contents: ["prebuilt_com.android.art"],
+			api_domain: "com.android.art",
+		}
 	`
 
 	t.Run("disabled alternative APEX", func(t *testing.T) {
@@ -564,26 +577,17 @@ func TestBootclasspathFragmentInPrebuiltArtApex(t *testing.T) {
 			`all_apex_contributions`,
 			`dex2oatd`,
 			`prebuilt_art-bootclasspath-fragment`,
-			`prebuilt_com.android.art.apex.selector`,
-			`prebuilt_com.android.art.deapexer`,
 		})
 
 		java.CheckModuleDependencies(t, result.TestContext, "art-bootclasspath-fragment", "android_common_com.android.art", []string{
 			`all_apex_contributions`,
 			`dex2oatd`,
 			`prebuilt_bar`,
-			`prebuilt_com.android.art.deapexer`,
 			`prebuilt_foo`,
 		})
 
 		module := result.ModuleForTests("dex_bootjars", "android_common")
 		checkCopiesToPredefinedLocationForArt(t, result.Config, module, "bar", "foo")
-	})
-
-	t.Run("enabled alternative APEX", func(t *testing.T) {
-		preparers.ExtendWithErrorHandler(android.FixtureExpectsAtLeastOneErrorMatchingPattern(
-			"Multiple installable prebuilt APEXes provide ambiguous deapexers: prebuilt_com.android.art and prebuilt_com.mycompany.android.art")).
-			RunTestWithBp(t, fmt.Sprintf(bp, ""))
 	})
 }
 
@@ -692,7 +696,7 @@ func TestBootclasspathFragmentContentsNoName(t *testing.T) {
 	// Make sure that the fragment provides the hidden API encoded dex jars to the APEX.
 	fragment := result.Module("mybootclasspathfragment", "android_common_apex10000")
 
-	info, _ := android.SingletonModuleProvider(result, fragment, java.BootclasspathFragmentApexContentInfoProvider)
+	info, _ := android.OtherModuleProvider(result, fragment, java.BootclasspathFragmentApexContentInfoProvider)
 
 	checkFragmentExportedDexJar := func(name string, expectedDexJar string) {
 		module := result.Module(name, "android_common_apex10000")
@@ -731,11 +735,7 @@ func TestBootclasspathFragment_HiddenAPIList(t *testing.T) {
 
 		java.PrepareForTestWithJavaSdkLibraryFiles,
 		java.FixtureWithLastReleaseApis("foo", "quuz"),
-		android.FixtureModifyProductVariables(func(variables android.FixtureProductVariables) {
-			variables.BuildFlags = map[string]string{
-				"RELEASE_HIDDEN_API_EXPORTABLE_STUBS": "true",
-			}
-		}),
+		android.PrepareForTestWithBuildFlag("RELEASE_HIDDEN_API_EXPORTABLE_STUBS", "true"),
 	).RunTestWithBp(t, `
 		apex {
 			name: "com.android.art",
@@ -757,6 +757,7 @@ func TestBootclasspathFragment_HiddenAPIList(t *testing.T) {
 			],
 			srcs: ["b.java"],
 			compile_dex: true,
+			sdk_version: "core_current",
 		}
 
 		java_sdk_library {
@@ -841,6 +842,7 @@ func TestBootclasspathFragment_HiddenAPIList(t *testing.T) {
 	`)
 
 	java.CheckModuleDependencies(t, result.TestContext, "mybootclasspathfragment", "android_common_apex10000", []string{
+		"all_apex_contributions",
 		"art-bootclasspath-fragment",
 		"bar",
 		"dex2oatd",
@@ -930,6 +932,7 @@ func TestBootclasspathFragment_AndroidNonUpdatable_FromSource(t *testing.T) {
 			],
 			srcs: ["b.java"],
 			compile_dex: true,
+			sdk_version: "core_current",
 		}
 
 		java_library {
@@ -1011,6 +1014,7 @@ func TestBootclasspathFragment_AndroidNonUpdatable_FromSource(t *testing.T) {
 	`)
 
 	java.CheckModuleDependencies(t, result.TestContext, "mybootclasspathfragment", "android_common_apex10000", []string{
+		"all_apex_contributions",
 		"android-non-updatable.stubs",
 		"android-non-updatable.stubs.module_lib",
 		"android-non-updatable.stubs.system",
@@ -1101,6 +1105,7 @@ func TestBootclasspathFragment_AndroidNonUpdatable_FromText(t *testing.T) {
 			],
 			srcs: ["b.java"],
 			compile_dex: true,
+			sdk_version: "core_current",
 		}
 
 		java_library {
@@ -1182,6 +1187,7 @@ func TestBootclasspathFragment_AndroidNonUpdatable_FromText(t *testing.T) {
 	`)
 
 	java.CheckModuleDependencies(t, result.TestContext, "mybootclasspathfragment", "android_common_apex10000", []string{
+		"all_apex_contributions",
 		"android-non-updatable.stubs",
 		"android-non-updatable.stubs.system",
 		"android-non-updatable.stubs.test",
@@ -1253,6 +1259,7 @@ func TestBootclasspathFragment_AndroidNonUpdatable_AlwaysUsePrebuiltSdks(t *test
 			],
 			srcs: ["b.java"],
 			compile_dex: true,
+			sdk_version: "core_current",
 		}
 
 		java_library {
@@ -1334,6 +1341,7 @@ func TestBootclasspathFragment_AndroidNonUpdatable_AlwaysUsePrebuiltSdks(t *test
 	`)
 
 	java.CheckModuleDependencies(t, result.TestContext, "mybootclasspathfragment", "android_common_apex10000", []string{
+		"all_apex_contributions",
 		"art-bootclasspath-fragment",
 		"bar",
 		"dex2oatd",

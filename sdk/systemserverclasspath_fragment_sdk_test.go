@@ -80,6 +80,7 @@ func testSnapshotWithSystemServerClasspathFragment(t *testing.T, sdk string, tar
 				dex_preopt: {
 					profile: "art-profile",
 				},
+				sdk_version: "current",
 			}
 		`),
 	).RunTest(t)
@@ -110,12 +111,14 @@ func TestSnapshotWithPartialSystemServerClasspathFragment(t *testing.T) {
 			apex_available: ["myapex"],
 			srcs: ["Test.java"],
 			min_sdk_version: "33", // Tiramisu
+			sdk_version: "current",
 		}
 		java_sdk_library {
 			name: "mysdklibrary-future",
 			apex_available: ["myapex"],
 			srcs: ["Test.java"],
 			min_sdk_version: "34", // UpsideDownCake
+			sdk_version: "current",
 		}
 		sdk {
 			name: "mysdk",
@@ -199,6 +202,7 @@ func TestSnapshotWithEmptySystemServerClasspathFragment(t *testing.T) {
 			apex_available: ["myapex"],
 			srcs: ["Test.java"],
 			min_sdk_version: "34", // UpsideDownCake
+			sdk_version: "current",
 		}
 		sdk {
 			name: "mysdk",

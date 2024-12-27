@@ -136,6 +136,11 @@ func (a *apexBundle) androidMkForFiles(w io.Writer, apexBundleName, moduleDir st
 		fmt.Fprintln(w, "LOCAL_SOONG_INSTALLED_MODULE :=", filepath.Join(modulePath, fi.stem()))
 		fmt.Fprintln(w, "LOCAL_SOONG_INSTALL_PAIRS :=", fi.builtFile.String()+":"+filepath.Join(modulePath, fi.stem()))
 		fmt.Fprintln(w, "LOCAL_PREBUILT_MODULE_FILE :=", fi.builtFile.String())
+		if fi.checkbuildTarget != nil {
+			fmt.Fprintln(w, "LOCAL_CHECKED_MODULE :=", fi.checkbuildTarget.String())
+		} else {
+			fmt.Fprintln(w, "LOCAL_CHECKED_MODULE :=", fi.builtFile.String())
+		}
 		fmt.Fprintln(w, "LOCAL_MODULE_CLASS :=", fi.class.nameInMake())
 		if fi.module != nil {
 			// This apexFile's module comes from Soong

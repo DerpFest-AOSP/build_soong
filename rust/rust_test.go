@@ -60,6 +60,7 @@ var rustMockedFiles = android.MockFS{
 // testRust returns a TestContext in which a basic environment has been setup.
 // This environment contains a few mocked files. See rustMockedFiles for the list of these files.
 func testRust(t *testing.T, bp string) *android.TestContext {
+	t.Helper()
 	skipTestIfOsNotSupported(t)
 	result := android.GroupFixturePreparers(
 		prepareForRustTest,
@@ -447,23 +448,30 @@ func TestRustRlibs(t *testing.T) {
 			export_include_dirs: ["foo_includes"]
 		}
 
+		rust_ffi_rlib {
+			name: "libbuzz",
+			crate_name: "buzz",
+			srcs: ["src/lib.rs"],
+			export_include_dirs: ["buzz_includes"]
+		}
+
 		cc_library_shared {
 			name: "libcc_shared",
 			srcs:["foo.c"],
-			static_rlibs: ["libbar"],
+			static_libs: ["libbar"],
 		}
 
 		cc_library_static {
 			name: "libcc_static",
 			srcs:["foo.c"],
-			static_rlibs: ["libfoo"],
+			static_libs: ["libbuzz"],
+			whole_static_libs: ["libfoo"],
 		}
 
 		cc_binary {
 			name: "ccBin",
 			srcs:["foo.c"],
-			static_rlibs: ["libbar"],
-			static_libs: ["libcc_static"],
+			static_libs: ["libcc_static", "libbar"],
 		}
 		`)
 
@@ -514,10 +522,13 @@ func TestRustRlibs(t *testing.T) {
 			"-Ibar_includes", ccbin_cc.Args)
 	}
 
-	// Make sure that direct dependencies and indirect dependencies are
+	// Make sure that direct dependencies and indirect whole static dependencies are
 	// propagating correctly to the generated rlib.
 	if !strings.Contains(ccbin_rustc.Args["libFlags"], "--extern foo=") {
-		t.Errorf("Missing indirect dependency libfoo when writing generated Rust staticlib: %#v", ccbin_rustc.Args["libFlags"])
+		t.Errorf("Missing indirect whole_static_lib dependency libfoo when writing generated Rust staticlib: %#v", ccbin_rustc.Args["libFlags"])
+	}
+	if strings.Contains(ccbin_rustc.Args["libFlags"], "--extern buzz=") {
+		t.Errorf("Indirect static_lib dependency libbuzz found when writing generated Rust staticlib: %#v", ccbin_rustc.Args["libFlags"])
 	}
 	if !strings.Contains(ccbin_rustc.Args["libFlags"], "--extern bar=") {
 		t.Errorf("Missing direct dependency libbar when writing generated Rust staticlib: %#v", ccbin_rustc.Args["libFlags"])

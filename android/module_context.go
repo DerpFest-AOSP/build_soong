@@ -85,7 +85,9 @@ type ModuleBuildParams BuildParams
 type ModuleContext interface {
 	BaseModuleContext
 
-	blueprintModuleContext() blueprint.ModuleContext
+	// BlueprintModuleContext returns the blueprint.ModuleContext that the ModuleContext wraps.  It may only be
+	// used by the golang module types that need to call into the bootstrap module types.
+	BlueprintModuleContext() blueprint.ModuleContext
 
 	// Deprecated: use ModuleContext.Build instead.
 	ModuleBuild(pctx PackageContext, params ModuleBuildParams)
@@ -107,68 +109,79 @@ type ModuleContext interface {
 	// InstallExecutable creates a rule to copy srcPath to name in the installPath directory,
 	// with the given additional dependencies.  The file is marked executable after copying.
 	//
-	// The installed file will be returned by FilesToInstall(), and the PackagingSpec for the
-	// installed file will be returned by PackagingSpecs() on this module or by
-	// TransitivePackagingSpecs() on modules that depend on this module through dependency tags
-	// for which IsInstallDepNeeded returns true.
+	// The installed file can be accessed by InstallFilesInfo.InstallFiles, and the PackagingSpec
+	// for the installed file can be accessed by InstallFilesInfo.PackagingSpecs on this module
+	// or by InstallFilesInfo.TransitivePackagingSpecs on modules that depend on this module through
+	// dependency tags for which IsInstallDepNeeded returns true.
 	InstallExecutable(installPath InstallPath, name string, srcPath Path, deps ...InstallPath) InstallPath
 
 	// InstallFile creates a rule to copy srcPath to name in the installPath directory,
 	// with the given additional dependencies.
 	//
+	// The installed file can be accessed by InstallFilesInfo.InstallFiles, and the PackagingSpec
+	// for the installed file can be accessed by InstallFilesInfo.PackagingSpecs on this module
+	// or by InstallFilesInfo.TransitivePackagingSpecs on modules that depend on this module through
+	// dependency tags for which IsInstallDepNeeded returns true.
+	InstallFile(installPath InstallPath, name string, srcPath Path, deps ...InstallPath) InstallPath
+
+	// InstallFileWithoutCheckbuild creates a rule to copy srcPath to name in the installPath directory,
+	// with the given additional dependencies, but does not add the file to the list of files to build
+	// during `m checkbuild`.
+	//
 	// The installed file will be returned by FilesToInstall(), and the PackagingSpec for the
 	// installed file will be returned by PackagingSpecs() on this module or by
 	// TransitivePackagingSpecs() on modules that depend on this module through dependency tags
 	// for which IsInstallDepNeeded returns true.
-	InstallFile(installPath InstallPath, name string, srcPath Path, deps ...InstallPath) InstallPath
+	InstallFileWithoutCheckbuild(installPath InstallPath, name string, srcPath Path, deps ...InstallPath) InstallPath
 
 	// InstallFileWithExtraFilesZip creates a rule to copy srcPath to name in the installPath
 	// directory, and also unzip a zip file containing extra files to install into the same
 	// directory.
 	//
-	// The installed file will be returned by FilesToInstall(), and the PackagingSpec for the
-	// installed file will be returned by PackagingSpecs() on this module or by
-	// TransitivePackagingSpecs() on modules that depend on this module through dependency tags
-	// for which IsInstallDepNeeded returns true.
+	// The installed file can be accessed by InstallFilesInfo.InstallFiles, and the PackagingSpec
+	// for the installed file can be accessed by InstallFilesInfo.PackagingSpecs on this module
+	// or by InstallFilesInfo.TransitivePackagingSpecs on modules that depend on this module through
+	// dependency tags for which IsInstallDepNeeded returns true.
 	InstallFileWithExtraFilesZip(installPath InstallPath, name string, srcPath Path, extraZip Path, deps ...InstallPath) InstallPath
 
 	// InstallSymlink creates a rule to create a symlink from src srcPath to name in the installPath
 	// directory.
 	//
-	// The installed symlink will be returned by FilesToInstall(), and the PackagingSpec for the
-	// installed file will be returned by PackagingSpecs() on this module or by
-	// TransitivePackagingSpecs() on modules that depend on this module through dependency tags
-	// for which IsInstallDepNeeded returns true.
+	// The installed symlink can be accessed by InstallFilesInfo.InstallFiles, and the PackagingSpec
+	// for the installed file can be accessed by InstallFilesInfo.PackagingSpecs on this module
+	// or by InstallFilesInfo.TransitivePackagingSpecs on modules that depend on this module through
+	// dependency tags for which IsInstallDepNeeded returns true.
 	InstallSymlink(installPath InstallPath, name string, srcPath InstallPath) InstallPath
 
 	// InstallAbsoluteSymlink creates a rule to create an absolute symlink from src srcPath to name
 	// in the installPath directory.
 	//
-	// The installed symlink will be returned by FilesToInstall(), and the PackagingSpec for the
-	// installed file will be returned by PackagingSpecs() on this module or by
-	// TransitivePackagingSpecs() on modules that depend on this module through dependency tags
-	// for which IsInstallDepNeeded returns true.
+	// The installed symlink can be accessed by InstallFilesInfo.InstallFiles, and the PackagingSpec
+	// for the installed file can be accessed by InstallFilesInfo.PackagingSpecs on this module
+	// or by InstallFilesInfo.TransitivePackagingSpecs on modules that depend on this module through
+	// dependency tags for which IsInstallDepNeeded returns true.
 	InstallAbsoluteSymlink(installPath InstallPath, name string, absPath string) InstallPath
 
 	// InstallTestData creates rules to install test data (e.g. data files used during a test) into
 	// the installPath directory.
 	//
-	// The installed files will be returned by FilesToInstall(), and the PackagingSpec for the
-	// installed files will be returned by PackagingSpecs() on this module or by
-	// TransitivePackagingSpecs() on modules that depend on this module through dependency tags
-	// for which IsInstallDepNeeded returns true.
+	// The installed files can be accessed by InstallFilesInfo.InstallFiles, and the PackagingSpec
+	// for the installed files can be accessed by InstallFilesInfo.PackagingSpecs on this module
+	// or by InstallFilesInfo.TransitivePackagingSpecs on modules that depend on this module through
+	// dependency tags for which IsInstallDepNeeded returns true.
 	InstallTestData(installPath InstallPath, data []DataPath) InstallPaths
 
 	// PackageFile creates a PackagingSpec as if InstallFile was called, but without creating
 	// the rule to copy the file.  This is useful to define how a module would be packaged
 	// without installing it into the global installation directories.
 	//
-	// The created PackagingSpec for the will be returned by PackagingSpecs() on this module or by
-	// TransitivePackagingSpecs() on modules that depend on this module through dependency tags
-	// for which IsInstallDepNeeded returns true.
+	// The created PackagingSpec can be accessed by InstallFilesInfo.PackagingSpecs on this module
+	// or by InstallFilesInfo.TransitivePackagingSpecs on modules that depend on this module through
+	// dependency tags for which IsInstallDepNeeded returns true.
 	PackageFile(installPath InstallPath, name string, srcPath Path) PackagingSpec
 
-	CheckbuildFile(srcPath Path)
+	CheckbuildFile(srcPaths ...Path)
+	UncheckedModule()
 
 	InstallInData() bool
 	InstallInTestcases() bool
@@ -183,12 +196,11 @@ type ModuleContext interface {
 	InstallInVendor() bool
 	InstallForceOS() (*OsType, *ArchType)
 
-	RequiredModuleNames(ctx ConfigAndErrorContext) []string
+	RequiredModuleNames(ctx ConfigurableEvaluatorContext) []string
 	HostRequiredModuleNames() []string
 	TargetRequiredModuleNames() []string
 
 	ModuleSubDir() string
-	SoongConfigTraceHash() string
 
 	Variable(pctx PackageContext, name, value string)
 	Rule(pctx PackageContext, name string, params blueprint.RuleParams, argNames ...string) blueprint.Rule
@@ -216,19 +228,58 @@ type ModuleContext interface {
 	// SetOutputFiles stores the outputFiles to outputFiles property, which is used
 	// to set the OutputFilesProvider later.
 	SetOutputFiles(outputFiles Paths, tag string)
+
+	GetOutputFiles() OutputFilesInfo
+
+	// SetLicenseInstallMap stores the set of dependency module:location mappings for files in an
+	// apex container for use when generation the license metadata file.
+	SetLicenseInstallMap(installMap []string)
+
+	// ComplianceMetadataInfo returns a ComplianceMetadataInfo instance for different module types to dump metadata,
+	// which usually happens in GenerateAndroidBuildActions() of a module type.
+	// See android.ModuleBase.complianceMetadataInfo
+	ComplianceMetadataInfo() *ComplianceMetadataInfo
+
+	// Get the information about the containers this module belongs to.
+	getContainersInfo() ContainersInfo
+	setContainersInfo(info ContainersInfo)
+
+	setAconfigPaths(paths Paths)
 }
 
 type moduleContext struct {
 	bp blueprint.ModuleContext
 	baseModuleContext
-	packagingSpecs  []PackagingSpec
-	installFiles    InstallPaths
-	checkbuildFiles Paths
-	module          Module
-	phonies         map[string]Paths
+	packagingSpecs   []PackagingSpec
+	installFiles     InstallPaths
+	checkbuildFiles  Paths
+	checkbuildTarget Path
+	uncheckedModule  bool
+	module           Module
+	phonies          map[string]Paths
+	// outputFiles stores the output of a module by tag and is used to set
+	// the OutputFilesProvider in GenerateBuildActions
+	outputFiles OutputFilesInfo
 
-	katiInstalls []katiInstall
-	katiSymlinks []katiInstall
+	TransitiveInstallFiles *DepSet[InstallPath]
+
+	// set of dependency module:location mappings used to populate the license metadata for
+	// apex containers.
+	licenseInstallMap []string
+
+	// The path to the generated license metadata file for the module.
+	licenseMetadataFile WritablePath
+
+	katiInstalls katiInstalls
+	katiSymlinks katiInstalls
+	// katiInitRcInstalls and katiVintfInstalls track the install rules created by Soong that are
+	// allowed to have duplicates across modules and variants.
+	katiInitRcInstalls           katiInstalls
+	katiVintfInstalls            katiInstalls
+	initRcPaths                  Paths
+	vintfFragmentsPaths          Paths
+	installedInitRcPaths         InstallPaths
+	installedVintfFragmentsPaths InstallPaths
 
 	testData []DataPath
 
@@ -236,6 +287,21 @@ type moduleContext struct {
 	buildParams []BuildParams
 	ruleParams  map[blueprint.Rule]blueprint.RuleParams
 	variables   map[string]string
+
+	// moduleInfoJSON can be filled out by GenerateAndroidBuildActions to write a JSON file that will
+	// be included in the final module-info.json produced by Make.
+	moduleInfoJSON *ModuleInfoJSON
+
+	// containersInfo stores the information about the containers and the information of the
+	// apexes the module belongs to.
+	containersInfo ContainersInfo
+
+	// Merged Aconfig files for all transitive deps.
+	aconfigFilePaths Paths
+
+	// complianceMetadataInfo is for different module types to dump metadata.
+	// See android.ModuleContext interface.
+	complianceMetadataInfo *ComplianceMetadataInfo
 }
 
 var _ ModuleContext = &moduleContext{}
@@ -357,7 +423,7 @@ func (m *moduleContext) Build(pctx PackageContext, params BuildParams) {
 }
 
 func (m *moduleContext) Phony(name string, deps ...Path) {
-	addPhony(m.config, name, deps...)
+	m.phonies[name] = append(m.phonies[name], deps...)
 }
 
 func (m *moduleContext) GetMissingDependencies() []string {
@@ -375,10 +441,6 @@ func (m *moduleContext) GetDirectDepWithTag(name string, tag blueprint.Dependenc
 
 func (m *moduleContext) ModuleSubDir() string {
 	return m.bp.ModuleSubDir()
-}
-
-func (m *moduleContext) SoongConfigTraceHash() string {
-	return m.module.base().commonProperties.SoongConfigTraceHash
 }
 
 func (m *moduleContext) InstallInData() bool {
@@ -465,17 +527,22 @@ func (m *moduleContext) requiresFullInstall() bool {
 
 func (m *moduleContext) InstallFile(installPath InstallPath, name string, srcPath Path,
 	deps ...InstallPath) InstallPath {
-	return m.installFile(installPath, name, srcPath, deps, false, true, nil)
+	return m.installFile(installPath, name, srcPath, deps, false, true, true, nil)
+}
+
+func (m *moduleContext) InstallFileWithoutCheckbuild(installPath InstallPath, name string, srcPath Path,
+	deps ...InstallPath) InstallPath {
+	return m.installFile(installPath, name, srcPath, deps, false, true, false, nil)
 }
 
 func (m *moduleContext) InstallExecutable(installPath InstallPath, name string, srcPath Path,
 	deps ...InstallPath) InstallPath {
-	return m.installFile(installPath, name, srcPath, deps, true, true, nil)
+	return m.installFile(installPath, name, srcPath, deps, true, true, true, nil)
 }
 
 func (m *moduleContext) InstallFileWithExtraFilesZip(installPath InstallPath, name string, srcPath Path,
 	extraZip Path, deps ...InstallPath) InstallPath {
-	return m.installFile(installPath, name, srcPath, deps, false, true, &extraFilesZip{
+	return m.installFile(installPath, name, srcPath, deps, false, true, true, &extraFilesZip{
 		zip: extraZip,
 		dir: installPath,
 	})
@@ -487,11 +554,16 @@ func (m *moduleContext) PackageFile(installPath InstallPath, name string, srcPat
 }
 
 func (m *moduleContext) getAconfigPaths() *Paths {
-	return &m.module.base().aconfigFilePaths
+	return &m.aconfigFilePaths
+}
+
+func (m *moduleContext) setAconfigPaths(paths Paths) {
+	m.aconfigFilePaths = paths
 }
 
 func (m *moduleContext) packageFile(fullInstallPath InstallPath, srcPath Path, executable bool) PackagingSpec {
 	licenseFiles := m.Module().EffectiveLicenseFiles()
+	overrides := CopyOf(m.Module().base().commonProperties.Overrides)
 	spec := PackagingSpec{
 		relPathInPackage:      Rel(m, fullInstallPath.PartitionDir(), fullInstallPath.String()),
 		srcPath:               srcPath,
@@ -502,13 +574,15 @@ func (m *moduleContext) packageFile(fullInstallPath InstallPath, srcPath Path, e
 		skipInstall:           m.skipInstall(),
 		aconfigPaths:          m.getAconfigPaths(),
 		archType:              m.target.Arch.ArchType,
+		overrides:             &overrides,
+		owner:                 m.ModuleName(),
 	}
 	m.packagingSpecs = append(m.packagingSpecs, spec)
 	return spec
 }
 
 func (m *moduleContext) installFile(installPath InstallPath, name string, srcPath Path, deps []InstallPath,
-	executable bool, hooks bool, extraZip *extraFilesZip) InstallPath {
+	executable bool, hooks bool, checkbuild bool, extraZip *extraFilesZip) InstallPath {
 
 	fullInstallPath := installPath.Join(m, name)
 	if hooks {
@@ -516,9 +590,9 @@ func (m *moduleContext) installFile(installPath InstallPath, name string, srcPat
 	}
 
 	if m.requiresFullInstall() {
-		deps = append(deps, InstallPaths(m.module.base().installFilesDepSet.ToList())...)
-		deps = append(deps, m.module.base().installedInitRcPaths...)
-		deps = append(deps, m.module.base().installedVintfFragmentsPaths...)
+		deps = append(deps, InstallPaths(m.TransitiveInstallFiles.ToList())...)
+		deps = append(deps, m.installedInitRcPaths...)
+		deps = append(deps, m.installedVintfFragmentsPaths...)
 
 		var implicitDeps, orderOnlyDeps Paths
 
@@ -575,7 +649,9 @@ func (m *moduleContext) installFile(installPath InstallPath, name string, srcPat
 
 	m.packageFile(fullInstallPath, srcPath, executable)
 
-	m.checkbuildFiles = append(m.checkbuildFiles, srcPath)
+	if checkbuild {
+		m.checkbuildFiles = append(m.checkbuildFiles, srcPath)
+	}
 
 	return fullInstallPath
 }
@@ -616,9 +692,9 @@ func (m *moduleContext) InstallSymlink(installPath InstallPath, name string, src
 		}
 
 		m.installFiles = append(m.installFiles, fullInstallPath)
-		m.checkbuildFiles = append(m.checkbuildFiles, srcPath)
 	}
 
+	overrides := CopyOf(m.Module().base().commonProperties.Overrides)
 	m.packagingSpecs = append(m.packagingSpecs, PackagingSpec{
 		relPathInPackage: Rel(m, fullInstallPath.PartitionDir(), fullInstallPath.String()),
 		srcPath:          nil,
@@ -628,6 +704,8 @@ func (m *moduleContext) InstallSymlink(installPath InstallPath, name string, src
 		skipInstall:      m.skipInstall(),
 		aconfigPaths:     m.getAconfigPaths(),
 		archType:         m.target.Arch.ArchType,
+		overrides:        &overrides,
+		owner:            m.ModuleName(),
 	})
 
 	return fullInstallPath
@@ -663,6 +741,7 @@ func (m *moduleContext) InstallAbsoluteSymlink(installPath InstallPath, name str
 		m.installFiles = append(m.installFiles, fullInstallPath)
 	}
 
+	overrides := CopyOf(m.Module().base().commonProperties.Overrides)
 	m.packagingSpecs = append(m.packagingSpecs, PackagingSpec{
 		relPathInPackage: Rel(m, fullInstallPath.PartitionDir(), fullInstallPath.String()),
 		srcPath:          nil,
@@ -672,6 +751,8 @@ func (m *moduleContext) InstallAbsoluteSymlink(installPath InstallPath, name str
 		skipInstall:      m.skipInstall(),
 		aconfigPaths:     m.getAconfigPaths(),
 		archType:         m.target.Arch.ArchType,
+		overrides:        &overrides,
+		owner:            m.ModuleName(),
 	})
 
 	return fullInstallPath
@@ -683,50 +764,71 @@ func (m *moduleContext) InstallTestData(installPath InstallPath, data []DataPath
 	ret := make(InstallPaths, 0, len(data))
 	for _, d := range data {
 		relPath := d.ToRelativeInstallPath()
-		installed := m.installFile(installPath, relPath, d.SrcPath, nil, false, false, nil)
+		installed := m.installFile(installPath, relPath, d.SrcPath, nil, false, false, true, nil)
 		ret = append(ret, installed)
 	}
 
 	return ret
 }
 
-func (m *moduleContext) CheckbuildFile(srcPath Path) {
-	m.checkbuildFiles = append(m.checkbuildFiles, srcPath)
+// CheckbuildFile specifies the output files that should be built by checkbuild.
+func (m *moduleContext) CheckbuildFile(srcPaths ...Path) {
+	m.checkbuildFiles = append(m.checkbuildFiles, srcPaths...)
 }
 
-func (m *moduleContext) blueprintModuleContext() blueprint.ModuleContext {
+// UncheckedModule marks the current module has having no files that should be built by checkbuild.
+func (m *moduleContext) UncheckedModule() {
+	m.uncheckedModule = true
+}
+
+func (m *moduleContext) BlueprintModuleContext() blueprint.ModuleContext {
 	return m.bp
 }
 
 func (m *moduleContext) LicenseMetadataFile() Path {
-	return m.module.base().licenseMetadataFile
+	return m.licenseMetadataFile
 }
 
 func (m *moduleContext) ModuleInfoJSON() *ModuleInfoJSON {
-	if moduleInfoJSON := m.module.base().moduleInfoJSON; moduleInfoJSON != nil {
+	if moduleInfoJSON := m.moduleInfoJSON; moduleInfoJSON != nil {
 		return moduleInfoJSON
 	}
 	moduleInfoJSON := &ModuleInfoJSON{}
-	m.module.base().moduleInfoJSON = moduleInfoJSON
+	m.moduleInfoJSON = moduleInfoJSON
 	return moduleInfoJSON
 }
 
 func (m *moduleContext) SetOutputFiles(outputFiles Paths, tag string) {
 	if tag == "" {
-		if len(m.module.base().outputFiles.DefaultOutputFiles) > 0 {
+		if len(m.outputFiles.DefaultOutputFiles) > 0 {
 			m.ModuleErrorf("Module %s default OutputFiles cannot be overwritten", m.ModuleName())
 		}
-		m.module.base().outputFiles.DefaultOutputFiles = outputFiles
+		m.outputFiles.DefaultOutputFiles = outputFiles
 	} else {
-		if m.module.base().outputFiles.TaggedOutputFiles == nil {
-			m.module.base().outputFiles.TaggedOutputFiles = make(map[string]Paths)
+		if m.outputFiles.TaggedOutputFiles == nil {
+			m.outputFiles.TaggedOutputFiles = make(map[string]Paths)
 		}
-		if _, exists := m.module.base().outputFiles.TaggedOutputFiles[tag]; exists {
+		if _, exists := m.outputFiles.TaggedOutputFiles[tag]; exists {
 			m.ModuleErrorf("Module %s OutputFiles at tag %s cannot be overwritten", m.ModuleName(), tag)
 		} else {
-			m.module.base().outputFiles.TaggedOutputFiles[tag] = outputFiles
+			m.outputFiles.TaggedOutputFiles[tag] = outputFiles
 		}
 	}
+}
+
+func (m *moduleContext) GetOutputFiles() OutputFilesInfo {
+	return m.outputFiles
+}
+
+func (m *moduleContext) SetLicenseInstallMap(installMap []string) {
+	m.licenseInstallMap = append(m.licenseInstallMap, installMap...)
+}
+
+func (m *moduleContext) ComplianceMetadataInfo() *ComplianceMetadataInfo {
+	if m.complianceMetadataInfo == nil {
+		m.complianceMetadataInfo = NewComplianceMetadataInfo()
+	}
+	return m.complianceMetadataInfo
 }
 
 // Returns a list of paths expanded from globs and modules referenced using ":module" syntax.  The property must
@@ -755,7 +857,7 @@ func (m *moduleContext) ExpandOptionalSource(srcFile *string, _ string) Optional
 	return OptionalPath{}
 }
 
-func (m *moduleContext) RequiredModuleNames(ctx ConfigAndErrorContext) []string {
+func (m *moduleContext) RequiredModuleNames(ctx ConfigurableEvaluatorContext) []string {
 	return m.module.RequiredModuleNames(ctx)
 }
 
@@ -765,4 +867,12 @@ func (m *moduleContext) HostRequiredModuleNames() []string {
 
 func (m *moduleContext) TargetRequiredModuleNames() []string {
 	return m.module.TargetRequiredModuleNames()
+}
+
+func (m *moduleContext) getContainersInfo() ContainersInfo {
+	return m.containersInfo
+}
+
+func (m *moduleContext) setContainersInfo(info ContainersInfo) {
+	m.containersInfo = info
 }

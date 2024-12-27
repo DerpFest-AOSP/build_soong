@@ -96,6 +96,10 @@ func (d *DeviceHostConverter) GenerateAndroidBuildActions(ctx android.ModuleCont
 		ctx.PropertyErrorf("libs", "at least one dependency is required")
 	}
 
+	var transitiveHeaderJars []*android.DepSet[android.Path]
+	var transitiveImplementationJars []*android.DepSet[android.Path]
+	var transitiveResourceJars []*android.DepSet[android.Path]
+
 	ctx.VisitDirectDepsWithTag(deviceHostConverterDepTag, func(m android.Module) {
 		if dep, ok := android.OtherModuleProvider(ctx, m, JavaInfoProvider); ok {
 			d.headerJars = append(d.headerJars, dep.HeaderJars...)
@@ -105,6 +109,16 @@ func (d *DeviceHostConverter) GenerateAndroidBuildActions(ctx android.ModuleCont
 
 			d.srcJarArgs = append(d.srcJarArgs, dep.SrcJarArgs...)
 			d.srcJarDeps = append(d.srcJarDeps, dep.SrcJarDeps...)
+
+			if dep.TransitiveStaticLibsHeaderJars != nil {
+				transitiveHeaderJars = append(transitiveHeaderJars, dep.TransitiveStaticLibsHeaderJars)
+			}
+			if dep.TransitiveStaticLibsImplementationJars != nil {
+				transitiveImplementationJars = append(transitiveImplementationJars, dep.TransitiveStaticLibsImplementationJars)
+			}
+			if dep.TransitiveStaticLibsResourceJars != nil {
+				transitiveResourceJars = append(transitiveResourceJars, dep.TransitiveStaticLibsResourceJars)
+			}
 		} else {
 			ctx.PropertyErrorf("libs", "module %q cannot be used as a dependency", ctx.OtherModuleName(m))
 		}
@@ -130,14 +144,18 @@ func (d *DeviceHostConverter) GenerateAndroidBuildActions(ctx android.ModuleCont
 		d.combinedHeaderJar = d.headerJars[0]
 	}
 
-	android.SetProvider(ctx, JavaInfoProvider, JavaInfo{
-		HeaderJars:                     d.headerJars,
-		ImplementationAndResourcesJars: d.implementationAndResourceJars,
-		ImplementationJars:             d.implementationJars,
-		ResourceJars:                   d.resourceJars,
-		SrcJarArgs:                     d.srcJarArgs,
-		SrcJarDeps:                     d.srcJarDeps,
-		StubsLinkType:                  Implementation,
+	android.SetProvider(ctx, JavaInfoProvider, &JavaInfo{
+		HeaderJars:                             d.headerJars,
+		LocalHeaderJars:                        d.headerJars,
+		TransitiveStaticLibsHeaderJars:         android.NewDepSet(android.PREORDER, nil, transitiveHeaderJars),
+		TransitiveStaticLibsImplementationJars: android.NewDepSet(android.PREORDER, nil, transitiveImplementationJars),
+		TransitiveStaticLibsResourceJars:       android.NewDepSet(android.PREORDER, nil, transitiveResourceJars),
+		ImplementationAndResourcesJars:         d.implementationAndResourceJars,
+		ImplementationJars:                     d.implementationJars,
+		ResourceJars:                           d.resourceJars,
+		SrcJarArgs:                             d.srcJarArgs,
+		SrcJarDeps:                             d.srcJarDeps,
+		StubsLinkType:                          Implementation,
 		// TODO: Not sure if aconfig flags that have been moved between device and host variants
 		// make sense.
 	})
@@ -187,4 +205,12 @@ func (d *DeviceHostConverter) AndroidMk() android.AndroidMkData {
 			},
 		},
 	}
+}
+
+// implement the following interface for IDE completion.
+var _ android.IDEInfo = (*DeviceHostConverter)(nil)
+
+func (d *DeviceHostConverter) IDEInfo(ctx android.BaseModuleContext, ideInfo *android.IdeInfo) {
+	ideInfo.Deps = append(ideInfo.Deps, d.properties.Libs...)
+	ideInfo.Libs = append(ideInfo.Libs, d.properties.Libs...)
 }

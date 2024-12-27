@@ -650,7 +650,7 @@ func (l *lintSingleton) generateLintReportZips(ctx android.SingletonContext) {
 		}
 
 		if apex, ok := m.(android.ApexModule); ok && apex.NotAvailableForPlatform() {
-			apexInfo, _ := android.SingletonModuleProvider(ctx, m, android.ApexInfoProvider)
+			apexInfo, _ := android.OtherModuleProvider(ctx, m, android.ApexInfoProvider)
 			if apexInfo.IsForPlatform() {
 				// There are stray platform variants of modules in apexes that are not available for
 				// the platform, and they sometimes can't be built.  Don't depend on them.

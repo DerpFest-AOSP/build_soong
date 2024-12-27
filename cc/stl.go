@@ -177,7 +177,7 @@ func (stl *stl) deps(ctx BaseModuleContext, deps Deps) Deps {
 		} else {
 			deps.StaticLibs = append(deps.StaticLibs, stl.Properties.SelectedStl, "ndk_libc++abi")
 		}
-		deps.StaticLibs = append(deps.StaticLibs, "ndk_libunwind")
+		deps.StaticLibs = append(deps.StaticLibs, "libunwind")
 	default:
 		panic(fmt.Errorf("Unknown stl: %q", stl.Properties.SelectedStl))
 	}

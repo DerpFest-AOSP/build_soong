@@ -124,8 +124,8 @@ func parseFinalizedPrebuiltPath(ctx android.LoadHookContext, p string, allowIncr
 	return
 }
 
-func prebuiltApiModuleName(mctx android.LoadHookContext, module, scope, version string) string {
-	return fmt.Sprintf("%s_%s_%s_%s", mctx.ModuleName(), scope, version, module)
+func prebuiltApiModuleName(moduleName, module, scope, version string) string {
+	return fmt.Sprintf("%s_%s_%s_%s", moduleName, scope, version, module)
 }
 func createImport(mctx android.LoadHookContext, module, scope, version, path, sdkVersion string, compileDex bool) {
 	props := struct {
@@ -135,7 +135,7 @@ func createImport(mctx android.LoadHookContext, module, scope, version, path, sd
 		Installable *bool
 		Compile_dex *bool
 	}{
-		Name:        proptools.StringPtr(prebuiltApiModuleName(mctx, module, scope, version)),
+		Name:        proptools.StringPtr(prebuiltApiModuleName(mctx.ModuleName(), module, scope, version)),
 		Jars:        []string{path},
 		Sdk_version: proptools.StringPtr(sdkVersion),
 		Installable: proptools.BoolPtr(false),
@@ -257,8 +257,8 @@ func createSystemModules(mctx android.LoadHookContext, version, scope string) {
 		Name *string
 		Libs []string
 	}{}
-	props.Name = proptools.StringPtr(prebuiltApiModuleName(mctx, "system_modules", scope, version))
-	props.Libs = append(props.Libs, prebuiltApiModuleName(mctx, "core-for-system-modules", scope, version))
+	props.Name = proptools.StringPtr(prebuiltApiModuleName(mctx.ModuleName(), "system_modules", scope, version))
+	props.Libs = append(props.Libs, prebuiltApiModuleName(mctx.ModuleName(), "core-for-system-modules", scope, version))
 
 	mctx.CreateModule(systemModulesImportFactory, &props)
 }

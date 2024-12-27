@@ -16,6 +16,7 @@ package cc
 
 import (
 	"path/filepath"
+	"strings"
 
 	"github.com/google/blueprint/proptools"
 
@@ -48,7 +49,7 @@ type prebuiltLinkerProperties struct {
 	Source_module_name *string
 
 	// a prebuilt library or binary. Can reference a genrule module that generates an executable file.
-	Srcs []string `android:"path,arch_variant"`
+	Srcs proptools.Configurable[[]string] `android:"path,arch_variant"`
 
 	Sanitized Sanitized `android:"arch_variant"`
 
@@ -75,10 +76,6 @@ func (p *prebuiltLinker) prebuilt() *android.Prebuilt {
 	return &p.Prebuilt
 }
 
-func (p *prebuiltLinker) PrebuiltSrcs() []string {
-	return p.properties.Srcs
-}
-
 type prebuiltLibraryInterface interface {
 	libraryInterface
 	prebuiltLinkerInterface
@@ -99,10 +96,6 @@ func (p *prebuiltLibraryLinker) linkerDeps(ctx DepsContext, deps Deps) Deps {
 	return p.libraryDecorator.linkerDeps(ctx, deps)
 }
 
-func (p *prebuiltLibraryLinker) linkerFlags(ctx ModuleContext, flags Flags) Flags {
-	return flags
-}
-
 func (p *prebuiltLibraryLinker) linkerProps() []interface{} {
 	return p.libraryDecorator.linkerProps()
 }
@@ -121,6 +114,30 @@ func (p *prebuiltLibraryLinker) link(ctx ModuleContext,
 
 	// TODO(ccross): verify shared library dependencies
 	srcs := p.prebuiltSrcs(ctx)
+	stubInfo := addStubDependencyProviders(ctx)
+
+	// Stub variants will create a stub .so file from stub .c files
+	if p.buildStubs() && objs.objFiles != nil {
+		// TODO (b/275273834): Make objs.objFiles == nil a hard error when the symbol files have been added to module sdk.
+
+		// The map.txt files of libclang_rt.* contain version information, but the checked in .so files do not.
+		// e.g. libclang_rt.* libs impl
+		// $ nm -D prebuilts/../libclang_rt.hwasan-aarch64-android.so
+		// __hwasan_init
+
+		// stubs generated from .map.txt
+		// $ nm -D out/soong/.intermediates/../<stubs>/libclang_rt.hwasan-aarch64-android.so
+		// __hwasan_init@@LIBCLANG_RT_ASAN
+
+		// Special-case libclang_rt.* libs to account for this discrepancy.
+		// TODO (spandandas): Remove this special case https://r.android.com/3236596 has been submitted, and a new set of map.txt
+		// files of libclang_rt.* libs have been generated.
+		if strings.Contains(ctx.ModuleName(), "libclang_rt.") {
+			p.versionScriptPath = android.OptionalPathForPath(nil)
+		}
+		return p.linkShared(ctx, flags, deps, objs)
+	}
+
 	if len(srcs) > 0 {
 		if len(srcs) > 1 {
 			ctx.PropertyErrorf("srcs", "multiple prebuilt source files")
@@ -205,19 +222,18 @@ func (p *prebuiltLibraryLinker) link(ctx ModuleContext,
 				TableOfContents: p.tocFile,
 			})
 
-			// TODO(b/220898484): Mainline module sdk prebuilts of stub libraries use a stub
-			// library as their source and must not be installed, but other prebuilts like
-			// libclang_rt.* libraries set `stubs` property because they are LLNDK libraries,
-			// but use an implementation library as their source and need to be installed.
-			// This discrepancy should be resolved without the prefix hack below.
-			isModuleSdkPrebuilts := android.HasAnyPrefix(ctx.ModuleDir(), []string{
-				"prebuilts/runtime/mainline/", "prebuilts/module_sdk/"})
-			if p.hasStubsVariants() && !p.buildStubs() && !ctx.Host() && isModuleSdkPrebuilts {
-				ctx.Module().MakeUninstallable()
-			}
-
 			return outputFile
 		}
+	} else if p.shared() && len(stubInfo) > 0 {
+		// This is a prebuilt which does not have any implementation (nil `srcs`), but provides APIs.
+		// Provide the latest (i.e. `current`) stubs to reverse dependencies.
+		latestStub := stubInfo[len(stubInfo)-1].SharedLibraryInfo.SharedLibrary
+		android.SetProvider(ctx, SharedLibraryInfoProvider, SharedLibraryInfo{
+			SharedLibrary: latestStub,
+			Target:        ctx.Target(),
+		})
+
+		return latestStub
 	}
 
 	if p.header() {
@@ -237,14 +253,14 @@ func (p *prebuiltLibraryLinker) link(ctx ModuleContext,
 
 func (p *prebuiltLibraryLinker) prebuiltSrcs(ctx android.BaseModuleContext) []string {
 	sanitize := ctx.Module().(*Module).sanitize
-	srcs := p.properties.Srcs
+	srcs := p.properties.Srcs.GetOrDefault(ctx, nil)
 	srcs = append(srcs, srcsForSanitizer(sanitize, p.properties.Sanitized)...)
 	if p.static() {
-		srcs = append(srcs, p.libraryDecorator.StaticProperties.Static.Srcs...)
+		srcs = append(srcs, p.libraryDecorator.StaticProperties.Static.Srcs.GetOrDefault(ctx, nil)...)
 		srcs = append(srcs, srcsForSanitizer(sanitize, p.libraryDecorator.StaticProperties.Static.Sanitized)...)
 	}
 	if p.shared() {
-		srcs = append(srcs, p.libraryDecorator.SharedProperties.Shared.Srcs...)
+		srcs = append(srcs, p.libraryDecorator.SharedProperties.Shared.Srcs.GetOrDefault(ctx, nil)...)
 		srcs = append(srcs, srcsForSanitizer(sanitize, p.libraryDecorator.SharedProperties.Shared.Sanitized)...)
 	}
 	return srcs
@@ -259,7 +275,7 @@ func (p *prebuiltLibraryLinker) nativeCoverage() bool {
 }
 
 func (p *prebuiltLibraryLinker) disablePrebuilt() {
-	p.properties.Srcs = nil
+	p.properties.Srcs = proptools.NewConfigurable[[]string](nil, nil)
 	p.properties.Sanitized.None.Srcs = nil
 	p.properties.Sanitized.Address.Srcs = nil
 	p.properties.Sanitized.Hwaddress.Srcs = nil
@@ -272,11 +288,11 @@ func (p *prebuiltLibraryLinker) implementationModuleName(name string) string {
 
 func NewPrebuiltLibrary(hod android.HostOrDeviceSupported, srcsProperty string) (*Module, *libraryDecorator) {
 	module, library := NewLibrary(hod)
-	module.compiler = nil
 
 	prebuilt := &prebuiltLibraryLinker{
 		libraryDecorator: library,
 	}
+	module.compiler = prebuilt
 	module.linker = prebuilt
 	module.library = prebuilt
 
@@ -293,6 +309,13 @@ func NewPrebuiltLibrary(hod android.HostOrDeviceSupported, srcsProperty string) 
 	}
 
 	return module, library
+}
+
+func (p *prebuiltLibraryLinker) compile(ctx ModuleContext, flags Flags, deps PathDeps) Objects {
+	if p.buildStubs() && p.stubsVersion() != "" {
+		return p.compileModuleLibApiStubs(ctx, flags, deps)
+	}
+	return Objects{}
 }
 
 // cc_prebuilt_library installs a precompiled shared library that are
@@ -427,7 +450,7 @@ func (p *prebuiltBinaryLinker) hostToolPath() android.OptionalPath {
 func (p *prebuiltBinaryLinker) link(ctx ModuleContext,
 	flags Flags, deps PathDeps, objs Objects) android.Path {
 	// TODO(ccross): verify shared library dependencies
-	if len(p.properties.Srcs) > 0 {
+	if len(p.properties.Srcs.GetOrDefault(ctx, nil)) > 0 {
 		fileName := p.getStem(ctx) + flags.Toolchain.ExecutableSuffix()
 		in := p.Prebuilt.SingleSourcePath(ctx)
 		outputFile := android.PathForModuleOut(ctx, fileName)
@@ -511,7 +534,7 @@ func NewPrebuiltBinary(hod android.HostOrDeviceSupported) (*Module, *binaryDecor
 
 	module.AddProperties(&prebuilt.properties)
 
-	android.InitPrebuiltModule(module, &prebuilt.properties.Srcs)
+	android.InitConfigurablePrebuiltModule(module, &prebuilt.properties.Srcs)
 	return module, binary
 }
 

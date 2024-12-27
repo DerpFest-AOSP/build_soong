@@ -39,7 +39,7 @@ import "build_flags_common.proto";
 //      com.android.mypackage is a valid name while com.android.myPackage,
 //      com.android.1mypackage are invalid
 
-message flag_declaration_artifact {
+message FlagDeclarationArtifact {
   // The name of the flag.
   // See # name for format detail
   optional string name = 1;
@@ -58,7 +58,7 @@ message flag_declaration_artifact {
   optional string declaration_path = 5;
 
   // Workflow for this flag.
-  optional workflow workflow = 205;
+  optional Workflow workflow = 205;
 
   // The container for this flag.  This overrides any default container given
   // in the release_config_map message.
@@ -69,7 +69,7 @@ message flag_declaration_artifact {
   reserved 207;
 }
 
-message flag_declaration_artifacts {
+message FlagDeclarationArtifacts {
   // The artifacts
-  repeated flag_declaration_artifact flag_declaration_artifacts = 1;
+  repeated FlagDeclarationArtifact flag_declaration_artifact_list = 1;
 }

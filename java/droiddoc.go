@@ -54,7 +54,7 @@ type JavadocProperties struct {
 	Filter_packages []string
 
 	// list of java libraries that will be in the classpath.
-	Libs []string `android:"arch_variant"`
+	Libs proptools.Configurable[[]string] `android:"arch_variant"`
 
 	// If set to false, don't allow this module(-docs.zip) to be exported. Defaults to true.
 	Installable *bool
@@ -223,17 +223,6 @@ type Javadoc struct {
 	exportableStubsSrcJar android.WritablePath
 }
 
-func (j *Javadoc) OutputFiles(tag string) (android.Paths, error) {
-	switch tag {
-	case "":
-		return android.Paths{j.stubsSrcJar}, nil
-	case ".docs.zip":
-		return android.Paths{j.docZip}, nil
-	default:
-		return nil, fmt.Errorf("unsupported module reference tag %q", tag)
-	}
-}
-
 // javadoc converts .java source files to documentation using javadoc.
 func JavadocFactory() android.Module {
 	module := &Javadoc{}
@@ -253,8 +242,6 @@ func JavadocHostFactory() android.Module {
 	InitDroiddocModule(module, android.HostSupported)
 	return module
 }
-
-var _ android.OutputFileProducer = (*Javadoc)(nil)
 
 func (j *Javadoc) SdkVersion(ctx android.EarlyModuleContext) android.SdkSpec {
 	return android.SdkSpecFrom(ctx, String(j.properties.Sdk_version))
@@ -287,7 +274,7 @@ func (j *Javadoc) addDeps(ctx android.BottomUpMutatorContext) {
 		}
 	}
 
-	ctx.AddVariationDependencies(nil, libTag, j.properties.Libs...)
+	ctx.AddVariationDependencies(nil, libTag, j.properties.Libs.GetOrDefault(ctx, nil)...)
 }
 
 func (j *Javadoc) collectAidlFlags(ctx android.ModuleContext, deps deps) droiddocBuilderFlags {
@@ -378,16 +365,19 @@ func (j *Javadoc) collectDeps(ctx android.ModuleContext) deps {
 		case bootClasspathTag:
 			if dep, ok := android.OtherModuleProvider(ctx, module, JavaInfoProvider); ok {
 				deps.bootClasspath = append(deps.bootClasspath, dep.ImplementationJars...)
-			} else if sm, ok := module.(SystemModulesProvider); ok {
+			} else if sm, ok := android.OtherModuleProvider(ctx, module, SystemModulesProvider); ok {
 				// A system modules dependency has been added to the bootclasspath
 				// so add its libs to the bootclasspath.
-				deps.bootClasspath = append(deps.bootClasspath, sm.HeaderJars()...)
+				deps.bootClasspath = append(deps.bootClasspath, sm.HeaderJars...)
 			} else {
 				panic(fmt.Errorf("unknown dependency %q for %q", otherName, ctx.ModuleName()))
 			}
 		case libTag, sdkLibTag:
-			if dep, ok := module.(SdkLibraryDependency); ok {
-				deps.classpath = append(deps.classpath, dep.SdkHeaderJars(ctx, j.SdkVersion(ctx))...)
+			if _, ok := module.(SdkLibraryDependency); ok {
+				sdkInfo, _ := android.OtherModuleProvider(ctx, module, SdkLibraryInfoProvider)
+				generatingLibsString := android.PrettyConcat(
+					getGeneratingLibs(ctx, j.SdkVersion(ctx), module.Name(), sdkInfo), true, "or")
+				ctx.ModuleErrorf("cannot depend directly on java_sdk_library %q; try depending on %s instead", module.Name(), generatingLibsString)
 			} else if dep, ok := android.OtherModuleProvider(ctx, module, JavaInfoProvider); ok {
 				deps.classpath = append(deps.classpath, dep.HeaderJars...)
 				deps.aidlIncludeDirs = append(deps.aidlIncludeDirs, dep.AidlIncludeDirs...)
@@ -409,9 +399,12 @@ func (j *Javadoc) collectDeps(ctx android.ModuleContext) deps {
 			if deps.systemModules != nil {
 				panic("Found two system module dependencies")
 			}
-			sm := module.(SystemModulesProvider)
-			outputDir, outputDeps := sm.OutputDirAndDeps()
-			deps.systemModules = &systemModules{outputDir, outputDeps}
+			if sm, ok := android.OtherModuleProvider(ctx, module, SystemModulesProvider); ok {
+				deps.systemModules = &systemModules{sm.OutputDir, sm.OutputDirDeps}
+			} else {
+				ctx.PropertyErrorf("boot classpath dependency %q does not provide SystemModulesProvider",
+					ctx.OtherModuleName(module))
+			}
 		case aconfigDeclarationTag:
 			if dep, ok := android.OtherModuleProvider(ctx, module, android.AconfigDeclarationsProviderKey); ok {
 				deps.aconfigProtoFiles = append(deps.aconfigProtoFiles, dep.IntermediateCacheOutputPath)
@@ -585,6 +578,9 @@ func (j *Javadoc) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 	zipSyncCleanupCmd(rule, srcJarDir)
 
 	rule.Build("javadoc", "javadoc")
+
+	ctx.SetOutputFiles(android.Paths{j.stubsSrcJar}, "")
+	ctx.SetOutputFiles(android.Paths{j.docZip}, ".docs.zip")
 }
 
 // Droiddoc
@@ -614,15 +610,6 @@ func DroiddocHostFactory() android.Module {
 
 	InitDroiddocModule(module, android.HostSupported)
 	return module
-}
-
-func (d *Droiddoc) OutputFiles(tag string) (android.Paths, error) {
-	switch tag {
-	case "", ".docs.zip":
-		return android.Paths{d.Javadoc.docZip}, nil
-	default:
-		return nil, fmt.Errorf("unsupported module reference tag %q", tag)
-	}
 }
 
 func (d *Droiddoc) DepsMutator(ctx android.BottomUpMutatorContext) {
@@ -876,6 +863,9 @@ func (d *Droiddoc) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 	zipSyncCleanupCmd(rule, srcJarDir)
 
 	rule.Build("javadoc", desc)
+
+	ctx.SetOutputFiles(android.Paths{d.Javadoc.docZip}, "")
+	ctx.SetOutputFiles(android.Paths{d.Javadoc.docZip}, ".docs.zip")
 }
 
 // Exported Droiddoc Directory

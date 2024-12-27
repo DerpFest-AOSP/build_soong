@@ -20,10 +20,14 @@ bootstrap_go_package {
     name: "soong-testing-code_metadata_internal_proto",
     pkgPath: "android/soong/testing/code_metadata_internal_proto",
     deps: [
-            "golang-protobuf-reflect-protoreflect",
-            "golang-protobuf-runtime-protoimpl",
-        ],
+        "golang-protobuf-reflect-protoreflect",
+        "golang-protobuf-runtime-protoimpl",
+    ],
     srcs: [
         "code_metadata_internal.pb.go",
+    ],
+    visibility: [
+        "//build/make/tools/metadata",
+        "//build/soong:__subpackages__",
     ],
 }

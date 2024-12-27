@@ -11,12 +11,15 @@ bootstrap_go_package {
         "soong-android",
     ],
     srcs: [
-        "prebuilt_etc.go",
         "install_symlink.go",
+        "otacerts_zip.go",
+        "prebuilt_etc.go",
     ],
     testSrcs: [
         "prebuilt_etc_test.go",
         "install_symlink_test.go",
     ],
     pluginFor: ["soong_build"],
+    // Used by plugins
+    visibility: ["//visibility:public"],
 }

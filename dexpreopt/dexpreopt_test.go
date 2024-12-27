@@ -153,7 +153,7 @@ func TestDexPreoptSystemOther(t *testing.T) {
 			moduleTests: []moduleTest{
 				{module: systemModule, expectedPartition: "system_other/system"},
 				{module: systemProductModule, expectedPartition: "system_other/system/product"},
-				{module: productModule, expectedPartition: "product"},
+				{module: productModule, expectedPartition: "system_other/product"},
 			},
 		},
 	}

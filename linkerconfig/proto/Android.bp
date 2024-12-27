@@ -15,6 +15,7 @@ cc_library_static {
         "//apex_available:platform",
         "//apex_available:anyapex",
     ],
+    visibility: ["//system/linkerconfig"],
 }
 
 python_library_host {

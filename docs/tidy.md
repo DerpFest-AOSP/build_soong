@@ -38,7 +38,7 @@ For example, in
 clang-tidy is enabled explicitly and with a different check list:
 ```
 cc_defaults {
-    name: "bpf_defaults",
+    name: "bpf_cc_defaults",
     // snipped
     tidy: true,
     tidy_checks: [
@@ -52,7 +52,7 @@ cc_defaults {
 }
 ```
 That means in normal builds, even without `WITH_TIDY=1`,
-the modules that use `bpf_defaults` _should_ run clang-tidy
+the modules that use `bpf_cc_defaults` _should_ run clang-tidy
 over C/C++ source files with the given `tidy_checks`.
 
 However since clang-tidy warnings and its runtime cost might

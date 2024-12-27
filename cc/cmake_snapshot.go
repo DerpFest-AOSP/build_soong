@@ -15,7 +15,6 @@
 package cc
 
 import (
-	"android/soong/android"
 	"bytes"
 	_ "embed"
 	"fmt"
@@ -24,6 +23,8 @@ import (
 	"sort"
 	"strings"
 	"text/template"
+
+	"android/soong/android"
 
 	"github.com/google/blueprint"
 	"github.com/google/blueprint/proptools"
@@ -50,8 +51,10 @@ var cmakeExtAddAidlLibrary string
 var cmakeExtAppendFlags string
 
 var defaultUnportableFlags []string = []string{
+	"-Wno-c99-designator",
 	"-Wno-class-memaccess",
 	"-Wno-exit-time-destructors",
+	"-Winconsistent-missing-override",
 	"-Wno-inconsistent-missing-override",
 	"-Wreorder-init-list",
 	"-Wno-reorder-init-list",
@@ -61,8 +64,19 @@ var defaultUnportableFlags []string = []string{
 }
 
 var ignoredSystemLibs []string = []string{
+	"crtbegin_dynamic",
+	"crtend_android",
+	"libc",
 	"libc++",
 	"libc++_static",
+	"libc++demangle",
+	"libc_musl",
+	"libc_musl_crtbegin_so",
+	"libc_musl_crtbegin_static",
+	"libc_musl_crtend",
+	"libc_musl_crtend_so",
+	"libdl",
+	"libm",
 	"prebuilt_libclang_rt.builtins",
 	"prebuilt_libclang_rt.ubsan_minimal",
 }
@@ -83,8 +97,14 @@ type LibraryMappingProperty struct {
 }
 
 type CmakeSnapshotProperties struct {
-	// Modules to add to the snapshot package. Their dependencies are pulled in automatically.
-	Modules []string
+	// Host modules to add to the snapshot package. Their dependencies are pulled in automatically.
+	Modules_host []string
+
+	// System modules to add to the snapshot package. Their dependencies are pulled in automatically.
+	Modules_system []string
+
+	// Vendor modules to add to the snapshot package. Their dependencies are pulled in automatically.
+	Modules_vendor []string
 
 	// Host prebuilts to bundle with the snapshot. These are tools needed to build outside Android.
 	Prebuilts []string
@@ -141,11 +161,7 @@ func parseTemplate(templateContents string) *template.Template {
 			return list.String()
 		},
 		"toStrings": func(files android.Paths) []string {
-			strings := make([]string, len(files))
-			for idx, file := range files {
-				strings[idx] = file.String()
-			}
-			return strings
+			return files.Strings()
 		},
 		"concat5": func(list1 []string, list2 []string, list3 []string, list4 []string, list5 []string) []string {
 			return append(append(append(append(list1, list2...), list3...), list4...), list5...)
@@ -282,12 +298,19 @@ func executeTemplate(templ *template.Template, buffer *bytes.Buffer, data any) s
 }
 
 func (m *CmakeSnapshot) DepsMutator(ctx android.BottomUpMutatorContext) {
-	variations := []blueprint.Variation{
-		{"os", "linux_glibc"},
-		{"arch", "x86_64"},
+	deviceVariations := ctx.Config().AndroidFirstDeviceTarget.Variations()
+	deviceSystemVariations := append(deviceVariations, blueprint.Variation{"image", ""})
+	deviceVendorVariations := append(deviceVariations, blueprint.Variation{"image", "vendor"})
+	hostVariations := ctx.Config().BuildOSTarget.Variations()
+
+	ctx.AddVariationDependencies(hostVariations, cmakeSnapshotModuleTag, m.Properties.Modules_host...)
+	ctx.AddVariationDependencies(deviceSystemVariations, cmakeSnapshotModuleTag, m.Properties.Modules_system...)
+	ctx.AddVariationDependencies(deviceVendorVariations, cmakeSnapshotModuleTag, m.Properties.Modules_vendor...)
+
+	if len(m.Properties.Prebuilts) > 0 {
+		prebuilts := append(m.Properties.Prebuilts, "libc++")
+		ctx.AddVariationDependencies(hostVariations, cmakeSnapshotPrebuiltTag, prebuilts...)
 	}
-	ctx.AddVariationDependencies(variations, cmakeSnapshotModuleTag, m.Properties.Modules...)
-	ctx.AddVariationDependencies(variations, cmakeSnapshotPrebuiltTag, m.Properties.Prebuilts...)
 }
 
 func (m *CmakeSnapshot) GenerateAndroidBuildActions(ctx android.ModuleContext) {
@@ -340,8 +363,11 @@ func (m *CmakeSnapshot) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 		if slices.Contains(ignoredSystemLibs, moduleName) {
 			return false // system libs built in-tree for Android
 		}
+		if dep.IsPrebuilt() {
+			return false // prebuilts are not supported
+		}
 		if dep.compiler == nil {
-			return false // unsupported module type (e.g. prebuilt)
+			return false // unsupported module type
 		}
 		isAidlModule := dep.compiler.baseCompilerProps().AidlInterface.Lang != ""
 
@@ -405,7 +431,8 @@ func (m *CmakeSnapshot) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 
 	// Merging CMakeLists.txt contents for every module directory
 	var makefilesList android.Paths
-	for moduleDir, fragments := range moduleDirs {
+	for _, moduleDir := range android.SortedKeys(moduleDirs) {
+		fragments := moduleDirs[moduleDir]
 		moduleCmakePath := android.PathForModuleGen(ctx, moduleDir, "CMakeLists.txt")
 		makefilesList = append(makefilesList, moduleCmakePath)
 		sort.Strings(fragments)
@@ -445,8 +472,9 @@ func (m *CmakeSnapshot) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 	// Packaging all sources into the zip file
 	if m.Properties.Include_sources {
 		var sourcesList android.Paths
-		for _, file := range sourceFiles {
-			sourcesList = append(sourcesList, file)
+		for _, file := range android.SortedKeys(sourceFiles) {
+			path := sourceFiles[file]
+			sourcesList = append(sourcesList, path)
 		}
 
 		sourcesRspFile := android.PathForModuleObj(ctx, ctx.ModuleName()+"_sources.rsp")
@@ -464,7 +492,8 @@ func (m *CmakeSnapshot) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 		var prebuiltsList android.Paths
 
 		ctx.VisitDirectDepsWithTag(cmakeSnapshotPrebuiltTag, func(dep android.Module) {
-			for _, file := range dep.FilesToInstall() {
+			for _, file := range android.OtherModuleProviderOrDefault(
+				ctx, dep, android.InstallFilesProvider).InstallFiles {
 				prebuiltsList = append(prebuiltsList, file)
 			}
 		})
@@ -478,15 +507,8 @@ func (m *CmakeSnapshot) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 
 	// Finish generating the final zip file
 	zipRule.Build(m.zipPath.String(), "archiving "+ctx.ModuleName())
-}
 
-func (m *CmakeSnapshot) OutputFiles(tag string) (android.Paths, error) {
-	switch tag {
-	case "":
-		return android.Paths{m.zipPath}, nil
-	default:
-		return nil, fmt.Errorf("unsupported module reference tag %q", tag)
-	}
+	ctx.SetOutputFiles(android.Paths{m.zipPath}, "")
 }
 
 func (m *CmakeSnapshot) AndroidMkEntries() []android.AndroidMkEntries {

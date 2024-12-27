@@ -1183,9 +1183,6 @@ type pathForModuleSrcOutputFileProviderModule struct {
 		Outs   []string
 		Tagged []string
 	}
-
-	outs   Paths
-	tagged Paths
 }
 
 func pathForModuleSrcOutputFileProviderModuleFactory() Module {
@@ -1196,24 +1193,17 @@ func pathForModuleSrcOutputFileProviderModuleFactory() Module {
 }
 
 func (p *pathForModuleSrcOutputFileProviderModule) GenerateAndroidBuildActions(ctx ModuleContext) {
+	var outs, taggedOuts Paths
 	for _, out := range p.props.Outs {
-		p.outs = append(p.outs, PathForModuleOut(ctx, out))
+		outs = append(outs, PathForModuleOut(ctx, out))
 	}
 
 	for _, tagged := range p.props.Tagged {
-		p.tagged = append(p.tagged, PathForModuleOut(ctx, tagged))
+		taggedOuts = append(taggedOuts, PathForModuleOut(ctx, tagged))
 	}
-}
 
-func (p *pathForModuleSrcOutputFileProviderModule) OutputFiles(tag string) (Paths, error) {
-	switch tag {
-	case "":
-		return p.outs, nil
-	case ".tagged":
-		return p.tagged, nil
-	default:
-		return nil, fmt.Errorf("unsupported tag %q", tag)
-	}
+	ctx.SetOutputFiles(outs, "")
+	ctx.SetOutputFiles(taggedOuts, ".tagged")
 }
 
 type pathForModuleSrcTestCase struct {

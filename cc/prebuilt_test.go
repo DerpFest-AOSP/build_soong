@@ -385,112 +385,6 @@ func TestPrebuiltLibrarySanitized(t *testing.T) {
 	assertString(t, static2.OutputFile().Path().Base(), "libf.hwasan.a")
 }
 
-func TestPrebuiltStubNoinstall(t *testing.T) {
-	testFunc := func(t *testing.T, expectLibfooOnSystemLib bool, fs android.MockFS) {
-		result := android.GroupFixturePreparers(
-			prepareForPrebuiltTest,
-			android.PrepareForTestWithMakevars,
-			android.FixtureMergeMockFs(fs),
-		).RunTest(t)
-
-		ldRule := result.ModuleForTests("installedlib", "android_arm64_armv8-a_shared").Rule("ld")
-		android.AssertStringDoesContain(t, "", ldRule.Args["libFlags"], "android_arm64_armv8-a_shared/libfoo.so")
-
-		installRules := result.InstallMakeRulesForTesting(t)
-		var installedlibRule *android.InstallMakeRule
-		for i, rule := range installRules {
-			if rule.Target == "out/target/product/test_device/system/lib/installedlib.so" {
-				if installedlibRule != nil {
-					t.Errorf("Duplicate install rules for %s", rule.Target)
-				}
-				installedlibRule = &installRules[i]
-			}
-		}
-		if installedlibRule == nil {
-			t.Errorf("No install rule found for installedlib")
-			return
-		}
-
-		if expectLibfooOnSystemLib {
-			android.AssertStringListContains(t,
-				"installedlib doesn't have install dependency on libfoo impl",
-				installedlibRule.OrderOnlyDeps,
-				"out/target/product/test_device/system/lib/libfoo.so")
-		} else {
-			android.AssertStringListDoesNotContain(t,
-				"installedlib has install dependency on libfoo stub",
-				installedlibRule.Deps,
-				"out/target/product/test_device/system/lib/libfoo.so")
-			android.AssertStringListDoesNotContain(t,
-				"installedlib has order-only install dependency on libfoo stub",
-				installedlibRule.OrderOnlyDeps,
-				"out/target/product/test_device/system/lib/libfoo.so")
-		}
-	}
-
-	prebuiltLibfooBp := []byte(`
-		cc_prebuilt_library {
-			name: "libfoo",
-			prefer: true,
-			srcs: ["libfoo.so"],
-			stubs: {
-				versions: ["1"],
-			},
-		}
-	`)
-
-	installedlibBp := []byte(`
-		cc_library {
-			name: "installedlib",
-			shared_libs: ["libfoo"],
-		}
-	`)
-
-	t.Run("prebuilt stub (without source): no install", func(t *testing.T) {
-		testFunc(
-			t,
-			/*expectLibfooOnSystemLib=*/ false,
-			android.MockFS{
-				"prebuilts/module_sdk/art/current/Android.bp": prebuiltLibfooBp,
-				"Android.bp": installedlibBp,
-			},
-		)
-	})
-
-	disabledSourceLibfooBp := []byte(`
-		cc_library {
-			name: "libfoo",
-			enabled: false,
-			stubs: {
-				versions: ["1"],
-			},
-		}
-	`)
-
-	t.Run("prebuilt stub (with disabled source): no install", func(t *testing.T) {
-		testFunc(
-			t,
-			/*expectLibfooOnSystemLib=*/ false,
-			android.MockFS{
-				"prebuilts/module_sdk/art/current/Android.bp": prebuiltLibfooBp,
-				"impl/Android.bp": disabledSourceLibfooBp,
-				"Android.bp":      installedlibBp,
-			},
-		)
-	})
-
-	t.Run("prebuilt impl (with `stubs` property set): install", func(t *testing.T) {
-		testFunc(
-			t,
-			/*expectLibfooOnSystemLib=*/ true,
-			android.MockFS{
-				"impl/Android.bp": prebuiltLibfooBp,
-				"Android.bp":      installedlibBp,
-			},
-		)
-	})
-}
-
 func TestPrebuiltBinaryNoSrcsNoError(t *testing.T) {
 	const bp = `
 cc_prebuilt_binary {
@@ -582,11 +476,7 @@ func TestMultiplePrebuilts(t *testing.T) {
 			android.FixtureRegisterWithContext(func(ctx android.RegistrationContext) {
 				android.RegisterApexContributionsBuildComponents(ctx)
 			}),
-			android.FixtureModifyProductVariables(func(variables android.FixtureProductVariables) {
-				variables.BuildFlags = map[string]string{
-					"RELEASE_APEX_CONTRIBUTIONS_ADSERVICES": "myapex_contributions",
-				}
-			}),
+			android.PrepareForTestWithBuildFlag("RELEASE_APEX_CONTRIBUTIONS_ADSERVICES", "myapex_contributions"),
 		)
 		ctx := testPrebuilt(t, fmt.Sprintf(bp, tc.selectedDependencyName), map[string][]byte{
 			"libbar.so": nil,
@@ -680,11 +570,7 @@ func TestMultiplePrebuiltsPreferredUsingLegacyFlags(t *testing.T) {
 			android.FixtureRegisterWithContext(func(ctx android.RegistrationContext) {
 				android.RegisterApexContributionsBuildComponents(ctx)
 			}),
-			android.FixtureModifyProductVariables(func(variables android.FixtureProductVariables) {
-				variables.BuildFlags = map[string]string{
-					"RELEASE_APEX_CONTRIBUTIONS_ADSERVICES": "myapex_contributions",
-				}
-			}),
+			android.PrepareForTestWithBuildFlag("RELEASE_APEX_CONTRIBUTIONS_ADSERVICES", "myapex_contributions"),
 		)
 		if tc.expectedErr != "" {
 			preparer = preparer.ExtendWithErrorHandler(android.FixtureExpectsAtLeastOneErrorMatchingPattern(tc.expectedErr))
@@ -744,11 +630,7 @@ func TestMissingVariantInModuleSdk(t *testing.T) {
 		android.FixtureRegisterWithContext(func(ctx android.RegistrationContext) {
 			android.RegisterApexContributionsBuildComponents(ctx)
 		}),
-		android.FixtureModifyProductVariables(func(variables android.FixtureProductVariables) {
-			variables.BuildFlags = map[string]string{
-				"RELEASE_APEX_CONTRIBUTIONS_ADSERVICES": "myapex_contributions",
-			}
-		}),
+		android.PrepareForTestWithBuildFlag("RELEASE_APEX_CONTRIBUTIONS_ADSERVICES", "myapex_contributions"),
 	)
 	ctx := testPrebuilt(t, bp, map[string][]byte{
 		"libbar.so": nil,

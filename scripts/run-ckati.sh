@@ -73,12 +73,12 @@ prebuilts/build-tools/linux-x86/bin/ckati \
   --writable out/ \
   -f build/make/core/main.mk \
   "${tracing[@]}" \
-  ANDROID_JAVA_HOME=prebuilts/jdk/jdk17/linux-x86 \
+  ANDROID_JAVA_HOME=prebuilts/jdk/jdk21/linux-x86 \
   ASAN_SYMBOLIZER_PATH=$PWD/prebuilts/clang/host/linux-x86/llvm-binutils-stable/llvm-symbolizer \
   BUILD_DATETIME_FILE="$timestamp_file" \
   BUILD_HOSTNAME=$(hostname) \
   BUILD_USERNAME="$USER" \
-  JAVA_HOME=$PWD/prebuilts/jdk/jdk17/linux-x86 \
+  JAVA_HOME=$PWD/prebuilts/jdk/jdk21/linux-x86 \
   KATI_PACKAGE_MK_DIR="{$out}/target/product/${target_device}/CONFIG/kati_packaging" \
   OUT_DIR="$out" \
   PATH="$PWD/prebuilts/build-tools/path/linux-x86:$PWD/${out}/.path" \

@@ -220,6 +220,10 @@ type BaseModuleContext interface {
 	// EvaluateConfiguration makes ModuleContext a valid proptools.ConfigurableEvaluator, so this context
 	// can be used to evaluate the final value of Configurable properties.
 	EvaluateConfiguration(condition proptools.ConfigurableCondition, property string) proptools.ConfigurableValue
+
+	// HasMutatorFinished returns true if the given mutator has finished running.
+	// It will panic if given an invalid mutator name.
+	HasMutatorFinished(mutatorName string) bool
 }
 
 type baseModuleContext struct {
@@ -268,6 +272,10 @@ func (b *baseModuleContext) provider(provider blueprint.AnyProviderKey) (any, bo
 
 func (b *baseModuleContext) setProvider(provider blueprint.AnyProviderKey, value any) {
 	b.bp.SetProvider(provider, value)
+}
+
+func (b *baseModuleContext) HasMutatorFinished(mutatorName string) bool {
+	return b.bp.HasMutatorFinished(mutatorName)
 }
 
 func (b *baseModuleContext) GetDirectDepWithTag(name string, tag blueprint.DependencyTag) blueprint.Module {

@@ -1,8 +1,10 @@
 package android
 
 import (
-	"android/soong/android/team_proto"
+	"path"
 	"path/filepath"
+
+	"android/soong/android/team_proto"
 
 	"google.golang.org/protobuf/proto"
 )
@@ -93,7 +95,7 @@ func (t *allTeamsSingleton) GenerateBuildActions(ctx SingletonContext) {
 		}
 
 		testModInfo := TestModuleInformation{}
-		if tmi, ok := SingletonModuleProvider(ctx, module, TestOnlyProviderKey); ok {
+		if tmi, ok := OtherModuleProvider(ctx, module, TestOnlyProviderKey); ok {
 			testModInfo = tmi
 		}
 
@@ -151,6 +153,11 @@ func (t *allTeamsSingleton) lookupTeamForAllModules() *team_proto.AllTeams {
 			teamProperties, found = t.teams[teamName]
 		} else {
 			teamProperties, found = t.lookupDefaultTeam(m.bpFile)
+		}
+		// Deal with one blueprint file including another by looking up the default
+		// in the main Android.bp rather than one listed with "build = [My.bp]"
+		if !found {
+			teamProperties, found = t.lookupDefaultTeam(path.Join(path.Dir(m.bpFile), "Android.bp"))
 		}
 
 		trendy_team_id := ""

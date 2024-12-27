@@ -6,14 +6,10 @@ enable_testing()
 set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(AddAidlLibrary)
 include(AppendCxxFlagsIfSupported)
+include(FindThreads)
 
 if (NOT ANDROID_BUILD_TOP)
     set(ANDROID_BUILD_TOP "${CMAKE_CURRENT_SOURCE_DIR}")
-endif()
-
-set(PREBUILTS_BIN_DIR "${CMAKE_CURRENT_SOURCE_DIR}/prebuilts/host/linux-x86/bin")
-if (NOT AIDL_BIN)
-    find_program(AIDL_BIN aidl REQUIRED HINTS "${PREBUILTS_BIN_DIR}")
 endif()
 
 <<cflagsList .M.Name "_CFLAGS" .M.Properties.Cflags .M.Properties.Unportable_flags .M.Properties.Cflags_ignored>>
@@ -25,6 +21,7 @@ find_package(<<.>> REQUIRED)
 add_subdirectory("${ANDROID_BUILD_TOP}/<<.>>" "<<.>>/build" EXCLUDE_FROM_ALL)
 <<end>>
 add_compile_options(${<<.M.Name>>_CFLAGS})
+link_libraries(${CMAKE_THREAD_LIBS_INIT})
 <<range $moduleDir, $value := .ModuleDirs ->>
 add_subdirectory(<<$moduleDir>>)
 <<end>>

@@ -98,8 +98,9 @@ func (h *hiddenAPI) initHiddenAPI(ctx android.ModuleContext, dexJar OptionalDexJ
 	// processing.
 	classesJars := android.Paths{classesJar}
 	ctx.VisitDirectDepsWithTag(hiddenApiAnnotationsTag, func(dep android.Module) {
-		javaInfo, _ := android.OtherModuleProvider(ctx, dep, JavaInfoProvider)
-		classesJars = append(classesJars, javaInfo.ImplementationJars...)
+		if javaInfo, ok := android.OtherModuleProvider(ctx, dep, JavaInfoProvider); ok {
+			classesJars = append(classesJars, javaInfo.ImplementationJars...)
+		}
 	})
 	h.classesJarPaths = classesJars
 
@@ -151,7 +152,7 @@ func isModuleInBootClassPath(ctx android.BaseModuleContext, module android.Modul
 //
 // Otherwise, it creates a copy of the supplied dex file into which it has encoded the hiddenapi
 // flags and returns this instead of the supplied dex jar.
-func (h *hiddenAPI) hiddenAPIEncodeDex(ctx android.ModuleContext, dexJar android.OutputPath) android.OutputPath {
+func (h *hiddenAPI) hiddenAPIEncodeDex(ctx android.ModuleContext, dexJar android.Path) android.Path {
 
 	if !h.active {
 		return dexJar

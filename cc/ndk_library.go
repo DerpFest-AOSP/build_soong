@@ -103,8 +103,17 @@ type libraryProperties struct {
 	// https://github.com/android-ndk/ndk/issues/265.
 	Unversioned_until *string
 
-	// Headers presented by this library to the Public API Surface
+	// DO NOT USE THIS
+	// NDK libraries should not export their headers. Headers belonging to NDK
+	// libraries should be added to the NDK with an ndk_headers module.
 	Export_header_libs []string
+
+	// Do not add other export_* properties without consulting with danalbert@.
+	// Consumers of ndk_library modules should emulate the typical NDK build
+	// behavior as closely as possible (that is, all NDK APIs are exposed to
+	// builds via --sysroot). Export behaviors used in Soong will not be present
+	// for app developers as they don't use Soong, and reliance on these export
+	// behaviors can mask issues with the NDK sysroot.
 }
 
 type stubDecorator struct {
@@ -116,6 +125,7 @@ type stubDecorator struct {
 	parsedCoverageXmlPath android.ModuleOutPath
 	installPath           android.Path
 	abiDumpPath           android.OutputPath
+	hasAbiDump            bool
 	abiDiffPaths          android.Paths
 
 	apiLevel         android.ApiLevel
@@ -133,7 +143,7 @@ func (stub *stubDecorator) implementationModuleName(name string) string {
 	return strings.TrimSuffix(name, ndkLibrarySuffix)
 }
 
-func ndkLibraryVersions(ctx android.BaseMutatorContext, from android.ApiLevel) []string {
+func ndkLibraryVersions(ctx android.BaseModuleContext, from android.ApiLevel) []string {
 	var versions []android.ApiLevel
 	versionStrs := []string{}
 	for _, version := range ctx.Config().AllSupportedApiLevels() {
@@ -147,7 +157,7 @@ func ndkLibraryVersions(ctx android.BaseMutatorContext, from android.ApiLevel) [
 	return versionStrs
 }
 
-func (this *stubDecorator) stubsVersions(ctx android.BaseMutatorContext) []string {
+func (this *stubDecorator) stubsVersions(ctx android.BaseModuleContext) []string {
 	if !ctx.Module().Enabled(ctx) {
 		return nil
 	}
@@ -321,12 +331,27 @@ func (this *stubDecorator) findPrebuiltAbiDump(ctx ModuleContext,
 }
 
 // Feature flag.
-func canDumpAbi(config android.Config) bool {
+func (this *stubDecorator) canDumpAbi(ctx ModuleContext) bool {
 	if runtime.GOOS == "darwin" {
 		return false
 	}
+	if strings.HasPrefix(ctx.ModuleDir(), "bionic/") {
+		// Bionic has enough uncommon implementation details like ifuncs and asm
+		// code that the ABI tracking here has a ton of false positives. That's
+		// causing pretty extreme friction for development there, so disabling
+		// it until the workflow can be improved.
+		//
+		// http://b/358653811
+		return false
+	}
+
+	if this.apiLevel.IsCurrent() {
+		// "current" (AKA 10000) is not tracked.
+		return false
+	}
+
 	// http://b/156513478
-	return config.ReleaseNdkAbiMonitored()
+	return ctx.Config().ReleaseNdkAbiMonitored()
 }
 
 // Feature flag to disable diffing against prebuilts.
@@ -339,6 +364,7 @@ func (this *stubDecorator) dumpAbi(ctx ModuleContext, symbolList android.Path) {
 	this.abiDumpPath = getNdkAbiDumpInstallBase(ctx).Join(ctx,
 		this.apiLevel.String(), ctx.Arch().ArchType.String(),
 		this.libraryName(ctx), "abi.stg")
+	this.hasAbiDump = true
 	headersList := getNdkABIHeadersFile(ctx)
 	ctx.Build(pctx, android.BuildParams{
 		Rule:        stg,
@@ -403,41 +429,45 @@ func (this *stubDecorator) diffAbi(ctx ModuleContext) {
 	// Also ensure that the ABI of the next API level (if there is one) matches
 	// this API level. *New* ABI is allowed, but any changes to APIs that exist
 	// in this API level are disallowed.
-	if !this.apiLevel.IsCurrent() && prebuiltAbiDump.Valid() {
+	if prebuiltAbiDump.Valid() {
 		nextApiLevel := findNextApiLevel(ctx, this.apiLevel)
 		if nextApiLevel == nil {
 			panic(fmt.Errorf("could not determine which API level follows "+
 				"non-current API level %s", this.apiLevel))
 		}
-		nextAbiDiffPath := android.PathForModuleOut(ctx,
-			"abidiff_next.timestamp")
-		nextAbiDump := this.findPrebuiltAbiDump(ctx, *nextApiLevel)
-		missingNextPrebuiltError := fmt.Sprintf(
-			missingPrebuiltErrorTemplate, this.libraryName(ctx),
-			nextAbiDump.InvalidReason())
-		if !nextAbiDump.Valid() {
-			ctx.Build(pctx, android.BuildParams{
-				Rule:   android.ErrorRule,
-				Output: nextAbiDiffPath,
-				Args: map[string]string{
-					"error": missingNextPrebuiltError,
-				},
-			})
-		} else {
-			ctx.Build(pctx, android.BuildParams{
-				Rule: stgdiff,
-				Description: fmt.Sprintf(
-					"Comparing ABI to the next API level %s %s",
-					prebuiltAbiDump, nextAbiDump),
-				Output: nextAbiDiffPath,
-				Inputs: android.Paths{
-					prebuiltAbiDump.Path(), nextAbiDump.Path()},
-				Args: map[string]string{
-					"args": "--format=small --ignore=interface_addition",
-				},
-			})
+
+		// "current" ABI is not tracked.
+		if !nextApiLevel.IsCurrent() {
+			nextAbiDiffPath := android.PathForModuleOut(ctx,
+				"abidiff_next.timestamp")
+			nextAbiDump := this.findPrebuiltAbiDump(ctx, *nextApiLevel)
+			missingNextPrebuiltError := fmt.Sprintf(
+				missingPrebuiltErrorTemplate, this.libraryName(ctx),
+				nextAbiDump.InvalidReason())
+			if !nextAbiDump.Valid() {
+				ctx.Build(pctx, android.BuildParams{
+					Rule:   android.ErrorRule,
+					Output: nextAbiDiffPath,
+					Args: map[string]string{
+						"error": missingNextPrebuiltError,
+					},
+				})
+			} else {
+				ctx.Build(pctx, android.BuildParams{
+					Rule: stgdiff,
+					Description: fmt.Sprintf(
+						"Comparing ABI to the next API level %s %s",
+						prebuiltAbiDump, nextAbiDump),
+					Output: nextAbiDiffPath,
+					Inputs: android.Paths{
+						prebuiltAbiDump.Path(), nextAbiDump.Path()},
+					Args: map[string]string{
+						"args": "--format=small --ignore=interface_addition",
+					},
+				})
+			}
+			this.abiDiffPaths = append(this.abiDiffPaths, nextAbiDiffPath)
 		}
-		this.abiDiffPaths = append(this.abiDiffPaths, nextAbiDiffPath)
 	}
 }
 
@@ -460,7 +490,7 @@ func (c *stubDecorator) compile(ctx ModuleContext, flags Flags, deps PathDeps) O
 	nativeAbiResult := parseNativeAbiDefinition(ctx, symbolFile, c.apiLevel, "")
 	objs := compileStubLibrary(ctx, flags, nativeAbiResult.stubSrc)
 	c.versionScriptPath = nativeAbiResult.versionScript
-	if canDumpAbi(ctx.Config()) {
+	if c.canDumpAbi(ctx) {
 		c.dumpAbi(ctx, nativeAbiResult.symbolList)
 		if canDiffAbi(ctx.Config()) {
 			c.diffAbi(ctx)
@@ -475,7 +505,8 @@ func (c *stubDecorator) compile(ctx ModuleContext, flags Flags, deps PathDeps) O
 // Add a dependency on the header modules of this ndk_library
 func (linker *stubDecorator) linkerDeps(ctx DepsContext, deps Deps) Deps {
 	return Deps{
-		HeaderLibs: linker.properties.Export_header_libs,
+		ReexportHeaderLibHeaders: linker.properties.Export_header_libs,
+		HeaderLibs:               linker.properties.Export_header_libs,
 	}
 }
 

@@ -21,4 +21,6 @@ bootstrap_go_package {
         "sysprop_test.go",
     ],
     pluginFor: ["soong_build"],
+    // Used by plugins
+    visibility: ["//visibility:public"],
 }

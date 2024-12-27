@@ -20,6 +20,7 @@ bootstrap_go_package {
     name: "soong-elf",
     pkgPath: "android/soong/elf",
     srcs: [
+        "build_id_dir.go",
         "elf.go",
     ],
     testSrcs: [

@@ -25,7 +25,7 @@ func getModuleHeaderJarsAsRelativeToTopPaths(result *android.TestResult, moduleN
 	paths := []string{}
 	for _, moduleName := range moduleNames {
 		module := result.Module(moduleName, "android_common")
-		info, _ := android.SingletonModuleProvider(result, module, JavaInfoProvider)
+		info, _ := android.OtherModuleProvider(result, module, JavaInfoProvider)
 		paths = append(paths, info.HeaderJars.RelativeToTop().Strings()...)
 	}
 	return paths
@@ -182,11 +182,7 @@ func TestMultipleSystemModulesPrebuilts(t *testing.T) {
 	for _, tc := range testCases {
 		res := android.GroupFixturePreparers(
 			prepareForJavaTest,
-			android.FixtureModifyProductVariables(func(variables android.FixtureProductVariables) {
-				variables.BuildFlags = map[string]string{
-					"RELEASE_APEX_CONTRIBUTIONS_ADSERVICES": "myapex_contributions",
-				}
-			}),
+			android.PrepareForTestWithBuildFlag("RELEASE_APEX_CONTRIBUTIONS_ADSERVICES", "myapex_contributions"),
 		).RunTestWithBp(t, fmt.Sprintf(bp, tc.selectedDependencyName))
 
 		// check that rdep gets the correct variation of system_modules

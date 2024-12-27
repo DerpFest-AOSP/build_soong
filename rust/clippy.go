@@ -38,11 +38,14 @@ func (c *clippy) props() []interface{} {
 }
 
 func (c *clippy) flags(ctx ModuleContext, flags Flags, deps PathDeps) (Flags, PathDeps) {
-	enabled, lints, err := config.ClippyLintsForDir(ctx.ModuleDir(), c.Properties.Clippy_lints)
+	dirEnabled, lints, err := config.ClippyLintsForDir(ctx.ModuleDir(), c.Properties.Clippy_lints)
 	if err != nil {
 		ctx.PropertyErrorf("clippy_lints", err.Error())
 	}
-	flags.Clippy = enabled
+
+	envDisable := ctx.Config().IsEnvTrue("SOONG_DISABLE_CLIPPY")
+
+	flags.Clippy = dirEnabled && !envDisable
 	flags.ClippyFlags = append(flags.ClippyFlags, lints)
 	return flags, deps
 }

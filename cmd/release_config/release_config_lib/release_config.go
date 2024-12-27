@@ -192,6 +192,7 @@ func (config *ReleaseConfig) GenerateReleaseConfig(configs *ReleaseConfigs) erro
 
 	workflowManual := rc_proto.Workflow(rc_proto.Workflow_MANUAL)
 	myDirsMap := make(map[int]bool)
+	myValueDirsMap := make(map[int]bool)
 	if isBuildPrefix && releasePlatformVersion != nil {
 		if MarshalValue(releasePlatformVersion.Value) != strings.ToUpper(config.Name) {
 			value := FlagValue{
@@ -226,8 +227,18 @@ func (config *ReleaseConfig) GenerateReleaseConfig(configs *ReleaseConfigs) erro
 			config.PriorStagesMap[priorStage] = true
 		}
 		myDirsMap[contrib.DeclarationIndex] = true
-		if config.AconfigFlagsOnly && len(contrib.FlagValues) > 0 {
-			return fmt.Errorf("%s does not allow build flag overrides", config.Name)
+		// This path *could* provide a value for this release config.
+		myValueDirsMap[contrib.DeclarationIndex] = true
+		if config.AconfigFlagsOnly {
+			// AconfigFlagsOnly allows very very few build flag values, all of them are part of aconfig flags.
+			allowedFlags := map[string]bool{
+				"RELEASE_ACONFIG_EXTRA_RELEASE_CONFIGS": true,
+			}
+			for _, fv := range contrib.FlagValues {
+				if !allowedFlags[*fv.proto.Name] {
+					return fmt.Errorf("%s does not allow build flag overrides", config.Name)
+				}
+			}
 		}
 		for _, value := range contrib.FlagValues {
 			name := *value.proto.Name
@@ -235,10 +246,13 @@ func (config *ReleaseConfig) GenerateReleaseConfig(configs *ReleaseConfigs) erro
 			if !ok {
 				return fmt.Errorf("Setting value for undefined flag %s in %s\n", name, value.path)
 			}
+			// Record that flag declarations from fa.DeclarationIndex were included in this release config.
 			myDirsMap[fa.DeclarationIndex] = true
+			// Do not set myValueDirsMap, since it just records that we *could* provide values here.
 			if fa.DeclarationIndex > contrib.DeclarationIndex {
 				// Setting location is to the left of declaration.
-				return fmt.Errorf("Setting value for flag %s not allowed in %s\n", name, value.path)
+				return fmt.Errorf("Setting value for flag %s (declared in %s) not allowed in %s\n",
+					name, filepath.Dir(configs.ReleaseConfigMaps[fa.DeclarationIndex].path), value.path)
 			}
 			if isRoot && *fa.FlagDeclaration.Workflow != workflowManual {
 				// The "root" release config can only contain workflow: MANUAL flags.
@@ -256,7 +270,7 @@ func (config *ReleaseConfig) GenerateReleaseConfig(configs *ReleaseConfigs) erro
 	myAconfigValueSets := []string{}
 	myAconfigValueSetsMap := map[string]bool{}
 	for _, v := range strings.Split(releaseAconfigValueSets.Value.GetStringValue(), " ") {
-		if myAconfigValueSetsMap[v] {
+		if v == "" || myAconfigValueSetsMap[v] {
 			continue
 		}
 		myAconfigValueSetsMap[v] = true
@@ -265,9 +279,30 @@ func (config *ReleaseConfig) GenerateReleaseConfig(configs *ReleaseConfigs) erro
 	releaseAconfigValueSets.Value = &rc_proto.Value{Val: &rc_proto.Value_StringValue{strings.TrimSpace(strings.Join(myAconfigValueSets, " "))}}
 
 	directories := []string{}
+	valueDirectories := []string{}
+	// These path prefixes are exclusive for a release config.
+	// "A release config shall exist in at most one of these."
+	// If we find a benefit to generalizing this, we can do so at that time.
+	exclusiveDirPrefixes := []string{
+		"build/release",
+		"vendor/google_shared/build/release",
+	}
+	var exclusiveDir string
 	for idx, confDir := range configs.configDirs {
 		if _, ok := myDirsMap[idx]; ok {
 			directories = append(directories, confDir)
+		}
+		if _, ok := myValueDirsMap[idx]; ok {
+			for _, dir := range exclusiveDirPrefixes {
+				if strings.HasPrefix(confDir, dir) {
+					if exclusiveDir != "" && !strings.HasPrefix(exclusiveDir, dir) {
+						return fmt.Errorf("%s is declared in both %s and %s",
+							config.Name, exclusiveDir, confDir)
+					}
+					exclusiveDir = confDir
+				}
+			}
+			valueDirectories = append(valueDirectories, confDir)
 		}
 	}
 
@@ -282,13 +317,13 @@ func (config *ReleaseConfig) GenerateReleaseConfig(configs *ReleaseConfigs) erro
 			if _, ok := config.PartitionBuildFlags[container]; !ok {
 				config.PartitionBuildFlags[container] = &rc_proto.FlagArtifacts{}
 			}
-			config.PartitionBuildFlags[container].FlagArtifacts = append(config.PartitionBuildFlags[container].FlagArtifacts, artifact)
+			config.PartitionBuildFlags[container].Flags = append(config.PartitionBuildFlags[container].Flags, artifact)
 		}
 	}
 	config.ReleaseConfigArtifact = &rc_proto.ReleaseConfigArtifact{
 		Name:       proto.String(config.Name),
 		OtherNames: config.OtherNames,
-		FlagArtifacts: func() []*rc_proto.FlagArtifact {
+		Flags: func() []*rc_proto.FlagArtifact {
 			ret := []*rc_proto.FlagArtifact{}
 			flagNames := []string{}
 			for k := range config.FlagArtifacts {
@@ -308,6 +343,7 @@ func (config *ReleaseConfig) GenerateReleaseConfig(configs *ReleaseConfigs) erro
 		AconfigValueSets: myAconfigValueSets,
 		Inherits:         myInherits,
 		Directories:      directories,
+		ValueDirectories: valueDirectories,
 		PriorStages:      SortedMapKeys(config.PriorStagesMap),
 	}
 
@@ -320,6 +356,23 @@ func (config *ReleaseConfig) WriteMakefile(outFile, targetRelease string, config
 	makeVars := make(map[string]string)
 
 	myFlagArtifacts := config.FlagArtifacts.Clone()
+
+	// Add any RELEASE_ACONFIG_EXTRA_RELEASE_CONFIGS variables.
+	var extraAconfigReleaseConfigs []string
+	if extraAconfigValueSetsValue, ok := config.FlagArtifacts["RELEASE_ACONFIG_EXTRA_RELEASE_CONFIGS"]; ok {
+		if val := MarshalValue(extraAconfigValueSetsValue.Value); len(val) > 0 {
+			extraAconfigReleaseConfigs = strings.Split(val, " ")
+		}
+	}
+	for _, rcName := range extraAconfigReleaseConfigs {
+		rc, err := configs.GetReleaseConfig(rcName)
+		if err != nil {
+			return err
+		}
+		myFlagArtifacts["RELEASE_ACONFIG_VALUE_SETS_"+rcName] = rc.FlagArtifacts["RELEASE_ACONFIG_VALUE_SETS"]
+		myFlagArtifacts["RELEASE_ACONFIG_FLAG_DEFAULT_PERMISSION_"+rcName] = rc.FlagArtifacts["RELEASE_ACONFIG_FLAG_DEFAULT_PERMISSION"]
+	}
+
 	// Sort the flags by name first.
 	names := myFlagArtifacts.SortedFlagNames()
 	partitions := make(map[string][]string)
@@ -386,7 +439,7 @@ func (config *ReleaseConfig) WriteMakefile(outFile, targetRelease string, config
 func (config *ReleaseConfig) WritePartitionBuildFlags(outDir string) error {
 	var err error
 	for partition, flags := range config.PartitionBuildFlags {
-		slices.SortFunc(flags.FlagArtifacts, func(a, b *rc_proto.FlagArtifact) int {
+		slices.SortFunc(flags.Flags, func(a, b *rc_proto.FlagArtifact) int {
 			return cmp.Compare(*a.FlagDeclaration.Name, *b.FlagDeclaration.Name)
 		})
 		// The json file name must not be modified as this is read from

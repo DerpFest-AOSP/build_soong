@@ -16,7 +16,6 @@ bootstrap_go_package {
         "soong-etc",
         "soong-fuzz",
         "soong-genrule",
-        "soong-multitree",
         "soong-testing",
         "soong-tradefed",
     ],
@@ -65,7 +64,6 @@ bootstrap_go_package {
         "library.go",
         "library_headers.go",
         "library_sdk_member.go",
-        "library_stub.go",
         "native_bridge_sdk_trait.go",
         "object.go",
         "test.go",
@@ -73,7 +71,6 @@ bootstrap_go_package {
         "ndk_abi.go",
         "ndk_headers.go",
         "ndk_library.go",
-        "ndk_prebuilt.go",
         "ndk_sysroot.go",
 
         "llndk_library.go",
@@ -119,4 +116,6 @@ bootstrap_go_package {
         "cmake_module_cc.txt",
     ],
     pluginFor: ["soong_build"],
+    // Used by plugins
+    visibility: ["//visibility:public"],
 }

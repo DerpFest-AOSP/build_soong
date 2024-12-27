@@ -16,7 +16,6 @@ package android
 
 import (
 	"github.com/google/blueprint"
-	"github.com/google/blueprint/bootstrap"
 )
 
 var (
@@ -119,9 +118,4 @@ func init() {
 	pctx.VariableFunc("RBEWrapper", func(ctx PackageVarContext) string {
 		return ctx.Config().RBEWrapper()
 	})
-}
-
-// GlobToListFileRule creates a rule that writes a list of files matching a pattern to a file.
-func GlobToListFileRule(ctx ModuleContext, pattern string, excludes []string, file WritablePath) {
-	bootstrap.GlobFile(ctx.blueprintModuleContext(), pattern, excludes, file.String())
 }

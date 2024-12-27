@@ -22,18 +22,20 @@ import (
 	"android/soong/cc"
 )
 
-// Test that cc modules can link against vendor_available rust_ffi_rlib/rust_ffi_static libraries.
+// Test that cc modules can depend on vendor_available rust_ffi_rlib/rust_ffi_static libraries.
 func TestVendorLinkage(t *testing.T) {
 	ctx := testRust(t, `
 			cc_binary {
 				name: "fizz_vendor_available",
-				static_libs: ["libfoo_vendor_static"],
-				static_rlibs: ["libfoo_vendor"],
+				static_libs: [
+					"libfoo_vendor",
+					"libfoo_vendor_static"
+				],
 				vendor_available: true,
 			}
 			cc_binary {
 				name: "fizz_soc_specific",
-				static_rlibs: ["libfoo_vendor"],
+				static_libs: ["libfoo_vendor"],
 				soc_specific: true,
 			}
 			rust_ffi_rlib {
@@ -52,8 +54,8 @@ func TestVendorLinkage(t *testing.T) {
 
 	vendorBinary := ctx.ModuleForTests("fizz_vendor_available", "android_vendor_arm64_armv8-a").Module().(*cc.Module)
 
-	if !android.InList("libfoo_vendor_static.vendor", vendorBinary.Properties.AndroidMkStaticLibs) {
-		t.Errorf("vendorBinary should have a dependency on libfoo_vendor_static.vendor: %#v", vendorBinary.Properties.AndroidMkStaticLibs)
+	if android.InList("libfoo_vendor_static.vendor", vendorBinary.Properties.AndroidMkStaticLibs) {
+		t.Errorf("vendorBinary should not have a staticlib dependency on libfoo_vendor_static.vendor: %#v", vendorBinary.Properties.AndroidMkStaticLibs)
 	}
 }
 
@@ -110,8 +112,10 @@ func TestVendorRamdiskLinkage(t *testing.T) {
 	ctx := testRust(t, `
 			cc_library_shared {
 				name: "libcc_vendor_ramdisk",
-				static_rlibs: ["libfoo_vendor_ramdisk"],
-				static_libs: ["libfoo_static_vendor_ramdisk"],
+				static_libs: [
+					"libfoo_vendor_ramdisk",
+					"libfoo_static_vendor_ramdisk"
+				],
 				system_shared_libs: [],
 				vendor_ramdisk_available: true,
 			}
@@ -131,8 +135,8 @@ func TestVendorRamdiskLinkage(t *testing.T) {
 
 	vendorRamdiskLibrary := ctx.ModuleForTests("libcc_vendor_ramdisk", "android_vendor_ramdisk_arm64_armv8-a_shared").Module().(*cc.Module)
 
-	if !android.InList("libfoo_static_vendor_ramdisk.vendor_ramdisk", vendorRamdiskLibrary.Properties.AndroidMkStaticLibs) {
-		t.Errorf("libcc_vendor_ramdisk should have a dependency on libfoo_static_vendor_ramdisk")
+	if android.InList("libfoo_static_vendor_ramdisk.vendor_ramdisk", vendorRamdiskLibrary.Properties.AndroidMkStaticLibs) {
+		t.Errorf("libcc_vendor_ramdisk should not have a dependency on the libfoo_static_vendor_ramdisk static library")
 	}
 }
 

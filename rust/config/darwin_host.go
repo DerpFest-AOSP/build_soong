@@ -15,13 +15,14 @@
 package config
 
 import (
+	"runtime"
 	"strings"
 
 	"android/soong/android"
 )
 
 var (
-	DarwinRustFlags     = []string{}
+	DarwinRustFlags     = []string{"-C split-debuginfo=off"}
 	DarwinRustLinkFlags = []string{
 		"-B${cc_config.MacToolPath}",
 	}
@@ -35,13 +36,15 @@ func init() {
 	registerToolchainFactory(android.Darwin, android.Arm64, darwinArm64ToolchainFactory)
 	registerToolchainFactory(android.Darwin, android.X86_64, darwinX8664ToolchainFactory)
 
-	pctx.StaticVariable("DarwinToolchainRustFlags", strings.Join(DarwinRustFlags, " "))
-	pctx.StaticVariable("DarwinToolchainLinkFlags", strings.Join(DarwinRustLinkFlags, " "))
+	if runtime.GOOS == "darwin" {
+		pctx.StaticVariable("DarwinToolchainRustFlags", strings.Join(DarwinRustFlags, " "))
+		pctx.StaticVariable("DarwinToolchainLinkFlags", strings.Join(DarwinRustLinkFlags, " "))
 
-	pctx.StaticVariable("DarwinToolchainArm64RustFlags", strings.Join(darwinArm64Rustflags, " "))
-	pctx.StaticVariable("DarwinToolchainArm64LinkFlags", strings.Join(darwinArm64Linkflags, " "))
-	pctx.StaticVariable("DarwinToolchainX8664RustFlags", strings.Join(darwinX8664Rustflags, " "))
-	pctx.StaticVariable("DarwinToolchainX8664LinkFlags", strings.Join(darwinX8664Linkflags, " "))
+		pctx.StaticVariable("DarwinToolchainArm64RustFlags", strings.Join(darwinArm64Rustflags, " "))
+		pctx.StaticVariable("DarwinToolchainArm64LinkFlags", strings.Join(darwinArm64Linkflags, " "))
+		pctx.StaticVariable("DarwinToolchainX8664RustFlags", strings.Join(darwinX8664Rustflags, " "))
+		pctx.StaticVariable("DarwinToolchainX8664LinkFlags", strings.Join(darwinX8664Linkflags, " "))
+	}
 
 }
 

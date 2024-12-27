@@ -22,6 +22,7 @@ import (
 	"sync"
 	"text/template"
 
+	"android/soong/elf"
 	"android/soong/ui/metrics"
 )
 
@@ -210,9 +211,38 @@ func checkRAM(ctx Context, config Config) {
 	}
 }
 
+func abfsBuildStarted(ctx Context, config Config) {
+	abfsBox := config.PrebuiltBuildTool("abfsbox")
+	cmdArgs := []string{"build-started", "--"}
+	cmdArgs = append(cmdArgs, config.Arguments()...)
+	cmd := Command(ctx, config, "abfsbox", abfsBox, cmdArgs...)
+	cmd.Sandbox = noSandbox
+	cmd.RunAndPrintOrFatal()
+}
+
+func abfsBuildFinished(ctx Context, config Config, finished bool) {
+	var errMsg string
+	if !finished {
+		errMsg = "build was interrupted"
+	}
+	abfsBox := config.PrebuiltBuildTool("abfsbox")
+	cmdArgs := []string{"build-finished", "-e", errMsg, "--"}
+	cmdArgs = append(cmdArgs, config.Arguments()...)
+	cmd := Command(ctx, config, "abfsbox", abfsBox, cmdArgs...)
+	cmd.RunAndPrintOrFatal()
+}
+
 // Build the tree. Various flags in `config` govern which components of
 // the build to run.
 func Build(ctx Context, config Config) {
+	done := false
+	if config.UseABFS() {
+		abfsBuildStarted(ctx, config)
+		defer func() {
+			abfsBuildFinished(ctx, config, done)
+		}()
+	}
+
 	ctx.Verboseln("Starting build with args:", config.Arguments())
 	ctx.Verboseln("Environment:", config.Environment().Environ())
 
@@ -344,10 +374,22 @@ func Build(ctx Context, config Config) {
 			installCleanIfNecessary(ctx, config)
 		}
 		runNinjaForBuild(ctx, config)
+		updateBuildIdDir(ctx, config)
 	}
 
 	if what&RunDistActions != 0 {
 		runDistActions(ctx, config)
+	}
+	done = true
+}
+
+func updateBuildIdDir(ctx Context, config Config) {
+	ctx.BeginTrace(metrics.RunShutdownTool, "update_build_id_dir")
+	defer ctx.EndTrace()
+
+	symbolsDir := filepath.Join(config.ProductOut(), "symbols")
+	if err := elf.UpdateBuildIdDir(symbolsDir); err != nil {
+		ctx.Printf("failed to update %s/.build-id: %v", symbolsDir, err)
 	}
 }
 

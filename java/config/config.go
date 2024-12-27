@@ -50,6 +50,7 @@ var (
 		"services",
 		"android.car",
 		"android.car7",
+		"android.car.builtin.impl",
 		"conscrypt",
 		"core-icu4j",
 		"core-oj",
@@ -147,6 +148,7 @@ func init() {
 	pctx.SourcePathVariable("JmodCmd", "${JavaToolchain}/jmod")
 	pctx.SourcePathVariable("JrtFsJar", "${JavaHome}/lib/jrt-fs.jar")
 	pctx.SourcePathVariable("JavaKytheExtractorJar", "prebuilts/build-tools/common/framework/javac_extractor.jar")
+	pctx.SourcePathVariable("KotlinKytheExtractor", "prebuilts/build-tools/${hostPrebuiltTag}/bin/kotlinc_extractor")
 	pctx.SourcePathVariable("Ziptime", "prebuilts/build-tools/${hostPrebuiltTag}/bin/ziptime")
 
 	pctx.SourcePathVariable("ResourceProcessorBusyBox", "prebuilts/bazel/common/android_tools/android_tools/all_android_tools_deploy.jar")

@@ -96,12 +96,6 @@ func TestUnusedSingletonModule(t *testing.T) {
 	}
 }
 
-func testVariantSingletonModuleMutator(ctx BottomUpMutatorContext) {
-	if _, ok := ctx.Module().(*testSingletonModule); ok {
-		ctx.CreateVariations("a", "b")
-	}
-}
-
 func TestVariantSingletonModule(t *testing.T) {
 	if testing.Short() {
 		t.Skip("test fails with data race enabled")
@@ -116,7 +110,11 @@ func TestVariantSingletonModule(t *testing.T) {
 		prepareForSingletonModuleTest,
 		FixtureRegisterWithContext(func(ctx RegistrationContext) {
 			ctx.PreDepsMutators(func(ctx RegisterMutatorsContext) {
-				ctx.BottomUp("test_singleton_module_mutator", testVariantSingletonModuleMutator)
+				ctx.Transition("test_singleton_module_mutator", &testTransitionMutator{
+					split: func(ctx BaseModuleContext) []string {
+						return []string{"a", "b"}
+					},
+				})
 			})
 		}),
 	).

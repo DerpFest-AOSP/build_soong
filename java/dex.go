@@ -91,6 +91,10 @@ type DexProperties struct {
 
 	// Exclude kotlinc generate files: *.kotlin_module, *.kotlin_builtins. Defaults to false.
 	Exclude_kotlinc_generated_files *bool
+
+	// Disable dex container (also known as "multi-dex").
+	// This may be necessary as a temporary workaround to mask toolchain bugs (see b/341652226).
+	No_dex_container *bool
 }
 
 type dexer struct {
@@ -104,7 +108,7 @@ type dexer struct {
 	resourcesInput          android.OptionalPath
 	resourcesOutput         android.OptionalPath
 
-	providesTransitiveHeaderJars
+	providesTransitiveHeaderJarsForR8
 }
 
 func (d *dexer) effectiveOptimizeEnabled() bool {
@@ -116,7 +120,7 @@ func (d *DexProperties) resourceShrinkingEnabled(ctx android.ModuleContext) bool
 }
 
 func (d *DexProperties) optimizedResourceShrinkingEnabled(ctx android.ModuleContext) bool {
-	return d.resourceShrinkingEnabled(ctx) && Bool(d.Optimize.Optimized_shrink_resources)
+	return d.resourceShrinkingEnabled(ctx) && BoolDefault(d.Optimize.Optimized_shrink_resources, ctx.Config().UseOptimizedResourceShrinkingByDefault())
 }
 
 func (d *dexer) optimizeOrObfuscateEnabled() bool {
@@ -180,7 +184,7 @@ var r8, r8RE = pctx.MultiCommandRemoteStaticRules("r8",
 		"$r8Template": &remoteexec.REParams{
 			Labels:          map[string]string{"type": "compile", "compiler": "r8"},
 			Inputs:          []string{"$implicits", "${config.R8Jar}"},
-			OutputFiles:     []string{"${outUsage}", "${outConfig}", "${outDict}", "${resourcesOutput}"},
+			OutputFiles:     []string{"${outUsage}", "${outConfig}", "${outDict}", "${resourcesOutput}", "${outR8ArtProfile}"},
 			ExecStrategy:    "${config.RER8ExecStrategy}",
 			ToolchainInputs: []string{"${config.JavaCmd}"},
 			Platform:        map[string]string{remoteexec.PoolKey: "${config.REJavaPool}"},
@@ -200,7 +204,7 @@ var r8, r8RE = pctx.MultiCommandRemoteStaticRules("r8",
 			Platform:     map[string]string{remoteexec.PoolKey: "${config.REJavaPool}"},
 		},
 	}, []string{"outDir", "outDict", "outConfig", "outUsage", "outUsageZip", "outUsageDir",
-		"r8Flags", "zipFlags", "mergeZipsFlags", "resourcesOutput"}, []string{"implicits"})
+		"r8Flags", "zipFlags", "mergeZipsFlags", "resourcesOutput", "outR8ArtProfile"}, []string{"implicits"})
 
 func (d *dexer) dexCommonFlags(ctx android.ModuleContext,
 	dexParams *compileDexParams) (flags []string, deps android.Paths) {
@@ -240,6 +244,16 @@ func (d *dexer) dexCommonFlags(ctx android.ModuleContext,
 	effectiveVersion, err := dexParams.minSdkVersion.EffectiveVersion(ctx)
 	if err != nil {
 		ctx.PropertyErrorf("min_sdk_version", "%s", err)
+	}
+	if !Bool(d.dexProperties.No_dex_container) && effectiveVersion.FinalOrFutureInt() >= 36 {
+		// W is 36, but we have not bumped the SDK version yet, so check for both.
+		if ctx.Config().PlatformSdkVersion().FinalInt() >= 36 ||
+			ctx.Config().PlatformSdkCodename() == "Wear" {
+			// TODO(b/329465418): Skip this module since it causes issue with app DRM
+			if ctx.ModuleName() != "framework-minus-apex" {
+				flags = append([]string{"-JDcom.android.tools.r8.dexContainerExperiment"}, flags...)
+			}
+		}
 	}
 
 	// If the specified SDK level is 10000, then configure the compiler to use the
@@ -285,28 +299,32 @@ func (d *dexer) r8Flags(ctx android.ModuleContext, dexParams *compileDexParams) 
 	// - suppress ProGuard warnings of referencing symbols unknown to the lower SDK version.
 	// - prevent ProGuard stripping subclass in the support library that extends class added in the higher SDK version.
 	// See b/20667396
-	var proguardRaiseDeps classpath
-	ctx.VisitDirectDepsWithTag(proguardRaiseTag, func(m android.Module) {
-		dep, _ := android.OtherModuleProvider(ctx, m, JavaInfoProvider)
-		proguardRaiseDeps = append(proguardRaiseDeps, dep.RepackagedHeaderJars...)
-	})
+	// TODO(b/360905238): Remove SdkSystemServer exception after resolving missing class references.
+	if !dexParams.sdkVersion.Stable() || dexParams.sdkVersion.Kind == android.SdkSystemServer {
+		var proguardRaiseDeps classpath
+		ctx.VisitDirectDepsWithTag(proguardRaiseTag, func(m android.Module) {
+			if dep, ok := android.OtherModuleProvider(ctx, m, JavaInfoProvider); ok {
+				proguardRaiseDeps = append(proguardRaiseDeps, dep.RepackagedHeaderJars...)
+			}
+		})
+		r8Flags = append(r8Flags, proguardRaiseDeps.FormJavaClassPath("-libraryjars"))
+		r8Deps = append(r8Deps, proguardRaiseDeps...)
+	}
 
-	r8Flags = append(r8Flags, proguardRaiseDeps.FormJavaClassPath("-libraryjars"))
-	r8Deps = append(r8Deps, proguardRaiseDeps...)
 	r8Flags = append(r8Flags, flags.bootClasspath.FormJavaClassPath("-libraryjars"))
 	r8Deps = append(r8Deps, flags.bootClasspath...)
 	r8Flags = append(r8Flags, flags.dexClasspath.FormJavaClassPath("-libraryjars"))
 	r8Deps = append(r8Deps, flags.dexClasspath...)
 
 	transitiveStaticLibsLookupMap := map[android.Path]bool{}
-	if d.transitiveStaticLibsHeaderJars != nil {
-		for _, jar := range d.transitiveStaticLibsHeaderJars.ToList() {
+	if d.transitiveStaticLibsHeaderJarsForR8 != nil {
+		for _, jar := range d.transitiveStaticLibsHeaderJarsForR8.ToList() {
 			transitiveStaticLibsLookupMap[jar] = true
 		}
 	}
 	transitiveHeaderJars := android.Paths{}
-	if d.transitiveLibsHeaderJars != nil {
-		for _, jar := range d.transitiveLibsHeaderJars.ToList() {
+	if d.transitiveLibsHeaderJarsForR8 != nil {
+		for _, jar := range d.transitiveLibsHeaderJarsForR8.ToList() {
 			if _, ok := transitiveStaticLibsLookupMap[jar]; ok {
 				// don't include a lib if it is already packaged in the current JAR as a static lib
 				continue
@@ -382,7 +400,7 @@ func (d *dexer) r8Flags(ctx android.ModuleContext, dexParams *compileDexParams) 
 		r8Flags = append(r8Flags, "--resource-input", d.resourcesInput.Path().String())
 		r8Deps = append(r8Deps, d.resourcesInput.Path())
 		r8Flags = append(r8Flags, "--resource-output", d.resourcesOutput.Path().String())
-		if Bool(opt.Optimized_shrink_resources) {
+		if d.dexProperties.optimizedResourceShrinkingEnabled(ctx) {
 			r8Flags = append(r8Flags, "--optimized-resource-shrinking")
 		}
 	}
@@ -424,7 +442,7 @@ func (d *dexer) addArtProfile(ctx android.ModuleContext, dexParams *compileDexPa
 }
 
 // Return the compiled dex jar and (optional) profile _after_ r8 optimization
-func (d *dexer) compileDex(ctx android.ModuleContext, dexParams *compileDexParams) (android.OutputPath, *android.OutputPath) {
+func (d *dexer) compileDex(ctx android.ModuleContext, dexParams *compileDexParams) (android.Path, android.Path) {
 
 	// Compile classes.jar into classes.dex and then javalib.jar
 	javalibJar := android.PathForModuleOut(ctx, "dex", dexParams.jarName).OutputPath
@@ -463,13 +481,6 @@ func (d *dexer) compileDex(ctx android.ModuleContext, dexParams *compileDexParam
 			proguardConfiguration,
 		}
 		r8Flags, r8Deps, r8ArtProfileOutputPath := d.r8Flags(ctx, dexParams)
-		if r8ArtProfileOutputPath != nil {
-			artProfileOutputPath = r8ArtProfileOutputPath
-			implicitOutputs = append(
-				implicitOutputs,
-				artProfileOutputPath,
-			)
-		}
 		rule := r8
 		args := map[string]string{
 			"r8Flags":        strings.Join(append(commonFlags, r8Flags...), " "),
@@ -482,6 +493,17 @@ func (d *dexer) compileDex(ctx android.ModuleContext, dexParams *compileDexParam
 			"outDir":         outDir.String(),
 			"mergeZipsFlags": mergeZipsFlags,
 		}
+		if r8ArtProfileOutputPath != nil {
+			artProfileOutputPath = r8ArtProfileOutputPath
+			implicitOutputs = append(
+				implicitOutputs,
+				artProfileOutputPath,
+			)
+			// Add the implicit r8 Art profile output to args so that r8RE knows
+			// about this implicit output
+			args["outR8ArtProfile"] = artProfileOutputPath.String()
+		}
+
 		if ctx.Config().UseRBE() && ctx.Config().IsEnvTrue("RBE_R8") {
 			rule = r8RE
 			args["implicits"] = strings.Join(r8Deps.Strings(), ",")

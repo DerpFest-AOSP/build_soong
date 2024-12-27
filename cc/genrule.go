@@ -79,6 +79,14 @@ var _ android.ImageInterface = (*GenruleExtraProperties)(nil)
 
 func (g *GenruleExtraProperties) ImageMutatorBegin(ctx android.BaseModuleContext) {}
 
+func (g *GenruleExtraProperties) VendorVariantNeeded(ctx android.BaseModuleContext) bool {
+	return Bool(g.Vendor_available) || Bool(g.Odm_available) || ctx.SocSpecific() || ctx.DeviceSpecific()
+}
+
+func (g *GenruleExtraProperties) ProductVariantNeeded(ctx android.BaseModuleContext) bool {
+	return Bool(g.Product_available) || ctx.ProductSpecific()
+}
+
 func (g *GenruleExtraProperties) CoreVariantNeeded(ctx android.BaseModuleContext) bool {
 	return !(ctx.SocSpecific() || ctx.DeviceSpecific() || ctx.ProductSpecific())
 }
@@ -102,18 +110,7 @@ func (g *GenruleExtraProperties) RecoveryVariantNeeded(ctx android.BaseModuleCon
 }
 
 func (g *GenruleExtraProperties) ExtraImageVariations(ctx android.BaseModuleContext) []string {
-	var variants []string
-	vendorVariantRequired := Bool(g.Vendor_available) || Bool(g.Odm_available) || ctx.SocSpecific() || ctx.DeviceSpecific()
-	productVariantRequired := Bool(g.Product_available) || ctx.ProductSpecific()
-
-	if vendorVariantRequired {
-		variants = append(variants, VendorVariation)
-	}
-	if productVariantRequired {
-		variants = append(variants, ProductVariation)
-	}
-
-	return variants
+	return nil
 }
 
 func (g *GenruleExtraProperties) SetImageVariation(ctx android.BaseModuleContext, variation string) {

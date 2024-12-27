@@ -98,14 +98,16 @@ func BuildLinkerConfig(ctx android.ModuleContext, builder *android.RuleBuilder,
 	builder.Command().
 		BuiltTool("conv_linker_config").
 		Flag("proto").
+		Flag("--force").
 		FlagWithInput("-s ", input).
 		FlagWithOutput("-o ", interimOutput)
 
 	// Secondly, if there's provideLibs gathered from provideModules, append them
 	var provideLibs []string
 	for _, m := range provideModules {
-		if c, ok := m.(*cc.Module); ok && cc.IsStubTarget(c) {
-			for _, ps := range c.PackagingSpecs() {
+		if c, ok := m.(*cc.Module); ok && (cc.IsStubTarget(c) || c.HasLlndkStubs()) {
+			for _, ps := range android.OtherModuleProviderOrDefault(
+				ctx, c, android.InstallFilesProvider).PackagingSpecs {
 				provideLibs = append(provideLibs, ps.FileName())
 			}
 		}

@@ -24,4 +24,8 @@ bootstrap_go_package {
         "golang-protobuf-reflect-protoreflect",
         "golang-protobuf-runtime-protoimpl",
     ],
+    visibility: [
+        "//build/make/tools/compliance:__subpackages__",
+        "//build/soong:__subpackages__",
+    ],
 }

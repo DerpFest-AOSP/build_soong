@@ -177,6 +177,41 @@ func setFromList[T comparable](l []T) map[T]bool {
 	return m
 }
 
+// PrettyConcat returns the formatted concatenated string suitable for displaying user-facing
+// messages.
+func PrettyConcat(list []string, quote bool, lastSep string) string {
+	if len(list) == 0 {
+		return ""
+	}
+
+	quoteStr := func(v string) string {
+		if !quote {
+			return v
+		}
+		return fmt.Sprintf("%q", v)
+	}
+
+	if len(list) == 1 {
+		return quoteStr(list[0])
+	}
+
+	var sb strings.Builder
+	for i, val := range list {
+		if i > 0 {
+			sb.WriteString(", ")
+		}
+		if i == len(list)-1 {
+			sb.WriteString(lastSep)
+			if lastSep != "" {
+				sb.WriteString(" ")
+			}
+		}
+		sb.WriteString(quoteStr(val))
+	}
+
+	return sb.String()
+}
+
 // ListSetDifference checks if the two lists contain the same elements. It returns
 // a boolean which is true if there is a difference, and then returns lists of elements
 // that are in l1 but not l2, and l2 but not l1.
@@ -199,6 +234,12 @@ func ListSetDifference[T comparable](l1, l2 []T) (bool, []T, []T) {
 		}
 	}
 	return listsDiffer, diff1, diff2
+}
+
+// Returns true if the two lists have common elements.
+func HasIntersection[T comparable](l1, l2 []T) bool {
+	_, a, b := ListSetDifference(l1, l2)
+	return len(a)+len(b) < len(setFromList(l1))+len(setFromList(l2))
 }
 
 // Returns true if the given string s is prefixed with any string in the given prefix list.

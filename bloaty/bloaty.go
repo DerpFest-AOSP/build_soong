@@ -88,7 +88,7 @@ func (singleton *sizesSingleton) GenerateBuildActions(ctx android.SingletonConte
 		if !m.ExportedToMake() {
 			return
 		}
-		filePaths, ok := android.SingletonModuleProvider(ctx, m, fileSizeMeasurerKey)
+		filePaths, ok := android.OtherModuleProvider(ctx, m, fileSizeMeasurerKey)
 		if !ok {
 			return
 		}

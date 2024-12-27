@@ -421,11 +421,9 @@ func TestReleaseExportRuntimeApis(t *testing.T) {
 	result := android.GroupFixturePreparers(
 		prepareForJavaTest,
 		android.FixtureModifyProductVariables(func(variables android.FixtureProductVariables) {
-			variables.BuildFlags = map[string]string{
-				"RELEASE_HIDDEN_API_EXPORTABLE_STUBS": "true",
-			}
 			variables.ExportRuntimeApis = proptools.BoolPtr(true)
 		}),
+		android.PrepareForTestWithBuildFlag("RELEASE_HIDDEN_API_EXPORTABLE_STUBS", "true"),
 		android.FixtureMergeMockFs(map[string][]byte{
 			"a/A.java":      nil,
 			"a/current.txt": nil,

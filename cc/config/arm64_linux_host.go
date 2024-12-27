@@ -87,8 +87,8 @@ func (toolchainLinuxBionicArm64) CrtBeginSharedBinary() []string {
 }
 
 func linuxBionicArm64ToolchainFactory(arch android.Arch) Toolchain {
-	archVariant := "armv8-a" // for host, default to armv8-a
-	toolchainCflags := []string{arm64ArchVariantCflagsVar[archVariant]}
+	// for host, default to armv8-a
+	toolchainCflags := []string{"-march=armv8-a"}
 
 	// We don't specify CPU architecture for host. Conservatively assume
 	// the host CPU needs the fix

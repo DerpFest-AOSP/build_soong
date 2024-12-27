@@ -17,7 +17,11 @@ package java
 // This file contains the module implementations for runtime_resource_overlay and
 // override_runtime_resource_overlay.
 
-import "android/soong/android"
+import (
+	"android/soong/android"
+
+	"github.com/google/blueprint/proptools"
+)
 
 func init() {
 	RegisterRuntimeResourceOverlayBuildComponents(android.InitRegistrationContext)
@@ -71,7 +75,7 @@ type RuntimeResourceOverlayProperties struct {
 	Min_sdk_version *string
 
 	// list of android_library modules whose resources are extracted and linked against statically
-	Static_libs []string
+	Static_libs proptools.Configurable[[]string]
 
 	// list of android_app modules whose resources are extracted and linked against
 	Resource_libs []string
@@ -120,7 +124,7 @@ func (r *RuntimeResourceOverlay) DepsMutator(ctx android.BottomUpMutatorContext)
 		ctx.AddDependency(ctx.Module(), certificateTag, cert)
 	}
 
-	ctx.AddVariationDependencies(nil, staticLibTag, r.properties.Static_libs...)
+	ctx.AddVariationDependencies(nil, staticLibTag, r.properties.Static_libs.GetOrDefault(ctx, nil)...)
 	ctx.AddVariationDependencies(nil, libTag, r.properties.Resource_libs...)
 
 	for _, aconfig_declaration := range r.aaptProperties.Flags_packages {
@@ -150,12 +154,13 @@ func (r *RuntimeResourceOverlay) GenerateAndroidBuildActions(ctx android.ModuleC
 		aaptLinkFlags = append(aaptLinkFlags,
 			"--rename-overlay-category "+*r.overridableProperties.Category)
 	}
+	aconfigTextFilePaths := getAconfigFilePaths(ctx)
 	r.aapt.buildActions(ctx,
 		aaptBuildActionOptions{
 			sdkContext:                     r,
 			enforceDefaultTargetSdkVersion: false,
 			extraLinkFlags:                 aaptLinkFlags,
-			aconfigTextFiles:               getAconfigFilePaths(ctx),
+			aconfigTextFiles:               aconfigTextFilePaths,
 		},
 	)
 
@@ -176,6 +181,10 @@ func (r *RuntimeResourceOverlay) GenerateAndroidBuildActions(ctx android.ModuleC
 	partition := rroPartition(ctx)
 	r.installDir = android.PathForModuleInPartitionInstall(ctx, partition, "overlay", String(r.properties.Theme))
 	ctx.InstallFile(r.installDir, r.outputFile.Base(), r.outputFile)
+
+	android.SetProvider(ctx, FlagsPackagesProvider, FlagsPackages{
+		AconfigTextFiles: aconfigTextFilePaths,
+	})
 }
 
 func (r *RuntimeResourceOverlay) SdkVersion(ctx android.EarlyModuleContext) android.SdkSpec {

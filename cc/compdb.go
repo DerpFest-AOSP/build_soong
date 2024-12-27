@@ -85,23 +85,24 @@ func (c *compdbGeneratorSingleton) GenerateBuildActions(ctx android.SingletonCon
 	if err != nil {
 		log.Fatalf("Could not create file %s: %s", compDBFile, err)
 	}
-	defer f.Close()
+	defer func() {
+		if err := f.Close(); err != nil {
+			log.Fatalf("Could not close file %s: %s", compDBFile, err)
+		}
+	}()
 
 	v := make([]compDbEntry, 0, len(m))
-
 	for _, value := range m {
 		v = append(v, value)
 	}
-	var dat []byte
+
+	w := json.NewEncoder(f)
 	if outputCompdbDebugInfo {
-		dat, err = json.MarshalIndent(v, "", " ")
-	} else {
-		dat, err = json.Marshal(v)
+		w.SetIndent("", " ")
 	}
-	if err != nil {
-		log.Fatalf("Failed to marshal: %s", err)
+	if err := w.Encode(v); err != nil {
+		log.Fatalf("Failed to encode: %s", err)
 	}
-	f.Write(dat)
 
 	if finalLinkDir := ctx.Config().Getenv(envVariableCompdbLink); finalLinkDir != "" {
 		finalLinkPath := filepath.Join(finalLinkDir, compdbFilename)

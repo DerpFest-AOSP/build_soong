@@ -16,7 +16,6 @@ package filesystem
 
 import (
 	"os"
-	"path/filepath"
 	"testing"
 
 	"android/soong/android"
@@ -147,8 +146,8 @@ func TestIncludeMakeBuiltFiles(t *testing.T) {
 
 	output := result.ModuleForTests("myfilesystem", "android_common").Output("myfilesystem.img")
 
-	stampFile := filepath.Join(result.Config.OutDir(), "target/product/test_device/obj/PACKAGING/system_intermediates/staging_dir.stamp")
-	fileListFile := filepath.Join(result.Config.OutDir(), "target/product/test_device/obj/PACKAGING/system_intermediates/file_list.txt")
+	stampFile := "out/target/product/test_device/obj/PACKAGING/system_intermediates/staging_dir.stamp"
+	fileListFile := "out/target/product/test_device/obj/PACKAGING/system_intermediates/file_list.txt"
 	android.AssertStringListContains(t, "deps of filesystem must include the staging dir stamp file", output.Implicits.Strings(), stampFile)
 	android.AssertStringListContains(t, "deps of filesystem must include the staging dir file list", output.Implicits.Strings(), fileListFile)
 }

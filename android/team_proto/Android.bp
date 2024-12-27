@@ -40,4 +40,8 @@ python_library_host {
     proto: {
         canonical_path_from_root: false,
     },
+    visibility: [
+        "//build/soong:__subpackages__",
+        "//tools/asuite/team_build_scripts",
+    ],
 }

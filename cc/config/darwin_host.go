@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 
@@ -28,6 +29,7 @@ var (
 	darwinCflags = []string{
 		"-fPIC",
 		"-funwind-tables",
+		"-fno-omit-frame-pointer",
 
 		"-isysroot ${macSdkRoot}",
 		"-mmacosx-version-min=${macMinVersion}",
@@ -73,31 +75,33 @@ var (
 )
 
 func init() {
-	pctx.VariableFunc("macSdkRoot", func(ctx android.PackageVarContext) string {
-		return getMacTools(ctx).sdkRoot
-	})
-	pctx.StaticVariable("macMinVersion", "10.14")
-	pctx.VariableFunc("MacArPath", func(ctx android.PackageVarContext) string {
-		return getMacTools(ctx).arPath
-	})
+	if runtime.GOOS == "darwin" {
+		pctx.VariableFunc("macSdkRoot", func(ctx android.PackageVarContext) string {
+			return getMacTools(ctx).sdkRoot
+		})
+		pctx.StaticVariable("macMinVersion", "10.14")
+		pctx.VariableFunc("MacArPath", func(ctx android.PackageVarContext) string {
+			return getMacTools(ctx).arPath
+		})
 
-	pctx.VariableFunc("MacLipoPath", func(ctx android.PackageVarContext) string {
-		return getMacTools(ctx).lipoPath
-	})
+		pctx.VariableFunc("MacLipoPath", func(ctx android.PackageVarContext) string {
+			return getMacTools(ctx).lipoPath
+		})
 
-	pctx.VariableFunc("MacStripPath", func(ctx android.PackageVarContext) string {
-		return getMacTools(ctx).stripPath
-	})
+		pctx.VariableFunc("MacStripPath", func(ctx android.PackageVarContext) string {
+			return getMacTools(ctx).stripPath
+		})
 
-	pctx.VariableFunc("MacToolPath", func(ctx android.PackageVarContext) string {
-		return getMacTools(ctx).toolPath
-	})
+		pctx.VariableFunc("MacToolPath", func(ctx android.PackageVarContext) string {
+			return getMacTools(ctx).toolPath
+		})
 
-	pctx.StaticVariable("DarwinCflags", strings.Join(darwinCflags, " "))
-	pctx.StaticVariable("DarwinLdflags", strings.Join(darwinLdflags, " "))
-	pctx.StaticVariable("DarwinLldflags", strings.Join(darwinLdflags, " "))
+		pctx.StaticVariable("DarwinCflags", strings.Join(darwinCflags, " "))
+		pctx.StaticVariable("DarwinLdflags", strings.Join(darwinLdflags, " "))
+		pctx.StaticVariable("DarwinLldflags", strings.Join(darwinLdflags, " "))
 
-	pctx.StaticVariable("DarwinYasmFlags", "-f macho -m amd64")
+		pctx.StaticVariable("DarwinYasmFlags", "-f macho -m amd64")
+	}
 }
 
 func MacStripPath(ctx android.PathContext) string {

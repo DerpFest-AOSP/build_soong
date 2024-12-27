@@ -54,6 +54,7 @@ func TestDexpreoptEnabled(t *testing.T) {
 					name: "foo",
 					installable: true,
 					srcs: ["a.java"],
+					sdk_version: "current",
 				}`,
 			enabled: true,
 		},
@@ -98,6 +99,7 @@ func TestDexpreoptEnabled(t *testing.T) {
 				java_library {
 					name: "foo",
 					installable: true,
+					sdk_version: "current",
 				}`,
 			enabled: false,
 		},
@@ -107,6 +109,7 @@ func TestDexpreoptEnabled(t *testing.T) {
 				java_library {
 					name: "foo",
 					srcs: ["a.java"],
+					sdk_version: "current",
 				}`,
 			enabled: false,
 		},
@@ -144,6 +147,7 @@ func TestDexpreoptEnabled(t *testing.T) {
 					name: "foo",
 					srcs: ["a.java"],
 					compile_dex: true,
+					sdk_version: "current",
 				}`,
 			enabled: false,
 		},
@@ -164,6 +168,7 @@ func TestDexpreoptEnabled(t *testing.T) {
 					installable: true,
 					srcs: ["a.java"],
 					apex_available: ["com.android.apex1"],
+					sdk_version: "current",
 				}`,
 			apexVariant: true,
 			enabled:     false,
@@ -176,6 +181,7 @@ func TestDexpreoptEnabled(t *testing.T) {
 					installable: true,
 					srcs: ["a.java"],
 					apex_available: ["com.android.apex1"],
+					sdk_version: "current",
 				}`,
 			moduleName:  "service-foo",
 			apexVariant: true,
@@ -189,6 +195,7 @@ func TestDexpreoptEnabled(t *testing.T) {
 					installable: true,
 					srcs: ["a.java"],
 					apex_available: ["com.android.apex1"],
+					sdk_version: "current",
 				}`,
 			moduleName:  "prebuilt_service-foo",
 			apexVariant: true,
@@ -202,6 +209,7 @@ func TestDexpreoptEnabled(t *testing.T) {
 					installable: true,
 					srcs: ["a.java"],
 					apex_available: ["com.android.apex1"],
+					sdk_version: "current",
 				}`,
 			moduleName:  "service-foo",
 			apexVariant: false,
@@ -311,6 +319,7 @@ func TestDexpreoptBuiltInstalledForApex(t *testing.T) {
 			installable: true,
 			srcs: ["a.java"],
 			apex_available: ["com.android.apex1"],
+			sdk_version: "current",
 		}`)
 	ctx := result.TestContext
 	module := ctx.ModuleForTests("service-foo", "android_common_apex1000")
@@ -342,6 +351,7 @@ func TestDexpreoptBuiltInstalledForApex(t *testing.T) {
 			name: "foo",
 			installable: true,
 			srcs: ["a.java"],
+			sdk_version: "current",
 		}`)
 	ctx = result.TestContext
 	module = ctx.ModuleForTests("foo", "android_common")
@@ -398,6 +408,7 @@ func TestAndroidMkEntriesForApex(t *testing.T) {
 			installable: true,
 			srcs: ["a.java"],
 			apex_available: ["com.android.apex1"],
+			sdk_version: "current",
 		}`)
 	ctx := result.TestContext
 	module := ctx.ModuleForTests("service-foo", "android_common_apex1000")
@@ -429,6 +440,7 @@ func TestAndroidMkEntriesForApex(t *testing.T) {
 			name: "foo",
 			installable: true,
 			srcs: ["a.java"],
+			sdk_version: "current",
 		}`)
 	ctx = result.TestContext
 	module = ctx.ModuleForTests("foo", "android_common")
@@ -454,6 +466,7 @@ func TestGenerateProfileEvenIfDexpreoptIsDisabled(t *testing.T) {
 				profile: "art-profile",
 			},
 			srcs: ["a.java"],
+			sdk_version: "current",
 		}`)
 
 	ctx := result.TestContext

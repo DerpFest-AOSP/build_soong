@@ -236,7 +236,7 @@ func TestMultilibGenruleOut(t *testing.T) {
 	}
 	`
 	result := PrepareForIntegrationTestWithCc.RunTestWithBp(t, bp)
-	gen_32bit := result.ModuleForTests("gen", "android_arm_armv7-a-neon").OutputFiles(t, "")
+	gen_32bit := result.ModuleForTests("gen", "android_arm_armv7-a-neon").OutputFiles(result.TestContext, t, "")
 	android.AssertPathsEndWith(t,
 		"genrule_out",
 		[]string{
@@ -245,7 +245,7 @@ func TestMultilibGenruleOut(t *testing.T) {
 		gen_32bit,
 	)
 
-	gen_64bit := result.ModuleForTests("gen", "android_arm64_armv8-a").OutputFiles(t, "")
+	gen_64bit := result.ModuleForTests("gen", "android_arm64_armv8-a").OutputFiles(result.TestContext, t, "")
 	android.AssertPathsEndWith(t,
 		"genrule_out",
 		[]string{

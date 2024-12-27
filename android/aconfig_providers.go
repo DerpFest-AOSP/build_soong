@@ -43,6 +43,10 @@ type AconfigDeclarationsProviderData struct {
 
 var AconfigDeclarationsProviderKey = blueprint.NewProvider[AconfigDeclarationsProviderData]()
 
+type AconfigReleaseDeclarationsProviderData map[string]AconfigDeclarationsProviderData
+
+var AconfigReleaseDeclarationsProviderKey = blueprint.NewProvider[AconfigReleaseDeclarationsProviderData]()
+
 type ModeInfo struct {
 	Container string
 	Mode      string
@@ -112,6 +116,8 @@ func aconfigUpdateAndroidBuildActions(ctx ModuleContext) {
 		if dep, ok := OtherModuleProvider(ctx, module, AconfigDeclarationsProviderKey); ok {
 			mergedAconfigFiles[dep.Container] = append(mergedAconfigFiles[dep.Container], dep.IntermediateCacheOutputPath)
 		}
+		// If we were generating on-device artifacts for other release configs, we would need to add code here to propagate
+		// those artifacts as well.  See also b/298444886.
 		if dep, ok := OtherModuleProvider(ctx, module, AconfigPropagatingProviderKey); ok {
 			for container, v := range dep.AconfigFiles {
 				mergedAconfigFiles[container] = append(mergedAconfigFiles[container], v...)
@@ -130,12 +136,12 @@ func aconfigUpdateAndroidBuildActions(ctx ModuleContext) {
 			AconfigFiles: mergedAconfigFiles,
 			ModeInfos:    mergedModeInfos,
 		})
-		ctx.Module().base().aconfigFilePaths = getAconfigFilePaths(ctx.Module().base(), mergedAconfigFiles)
+		ctx.setAconfigPaths(getAconfigFilePaths(ctx.Module().base(), mergedAconfigFiles))
 	}
 }
 
 func aconfigUpdateAndroidMkData(ctx fillInEntriesContext, mod Module, data *AndroidMkData) {
-	info, ok := SingletonModuleProvider(ctx, mod, AconfigPropagatingProviderKey)
+	info, ok := OtherModuleProvider(ctx, mod, AconfigPropagatingProviderKey)
 	// If there is no aconfigPropagatingProvider, or there are no AconfigFiles, then we are done.
 	if !ok || len(info.AconfigFiles) == 0 {
 		return
@@ -166,7 +172,7 @@ func aconfigUpdateAndroidMkEntries(ctx fillInEntriesContext, mod Module, entries
 	if len(*entries) == 0 {
 		return
 	}
-	info, ok := SingletonModuleProvider(ctx, mod, AconfigPropagatingProviderKey)
+	info, ok := OtherModuleProvider(ctx, mod, AconfigPropagatingProviderKey)
 	if !ok || len(info.AconfigFiles) == 0 {
 		return
 	}
@@ -178,6 +184,20 @@ func aconfigUpdateAndroidMkEntries(ctx fillInEntriesContext, mod Module, entries
 			},
 		)
 
+	}
+}
+
+func aconfigUpdateAndroidMkInfos(ctx fillInEntriesContext, mod Module, infos *AndroidMkProviderInfo) {
+	info, ok := OtherModuleProvider(ctx, mod, AconfigPropagatingProviderKey)
+	if !ok || len(info.AconfigFiles) == 0 {
+		return
+	}
+	// All of the files in the module potentially depend on the aconfig flag values.
+	infos.PrimaryInfo.AddPaths("LOCAL_ACONFIG_FILES", getAconfigFilePaths(mod.base(), info.AconfigFiles))
+	if len(infos.ExtraInfo) > 0 {
+		for _, ei := range (*infos).ExtraInfo {
+			ei.AddPaths("LOCAL_ACONFIG_FILES", getAconfigFilePaths(mod.base(), info.AconfigFiles))
+		}
 	}
 }
 
@@ -213,7 +233,8 @@ func getAconfigFilePaths(m *ModuleBase, aconfigFiles map[string]Paths) (paths Pa
 	} else if m.ProductSpecific() {
 		container = "product"
 	} else if m.SystemExtSpecific() {
-		container = "system_ext"
+		// system_ext and system partitions should be treated as one container
+		container = "system"
 	}
 
 	paths = append(paths, aconfigFiles[container]...)

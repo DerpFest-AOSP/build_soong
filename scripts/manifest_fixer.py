@@ -23,15 +23,7 @@ import sys
 from xml.dom import minidom
 
 
-from manifest import android_ns
-from manifest import compare_version_gt
-from manifest import ensure_manifest_android_ns
-from manifest import find_child_with_attribute
-from manifest import get_children_with_tag
-from manifest import get_indent
-from manifest import parse_manifest
-from manifest import write_xml
-
+from manifest import *
 
 def parse_args():
   """Parse commandline arguments."""
@@ -48,9 +40,9 @@ def parse_args():
   parser.add_argument('--library', dest='library', action='store_true',
                       help='manifest is for a static library')
   parser.add_argument('--uses-library', dest='uses_libraries', action='append',
-                      help='specify additional <uses-library> tag to add. android:requred is set to true')
+                      help='specify additional <uses-library> tag to add. android:required is set to true')
   parser.add_argument('--optional-uses-library', dest='optional_uses_libraries', action='append',
-                      help='specify additional <uses-library> tag to add. android:requred is set to false')
+                      help='specify additional <uses-library> tag to add. android:required is set to false')
   parser.add_argument('--uses-non-sdk-api', dest='uses_non_sdk_api', action='store_true',
                       help='manifest is for a package built against the platform')
   parser.add_argument('--logging-parent', dest='logging_parent', default='',
@@ -91,47 +83,33 @@ def raise_min_sdk_version(doc, min_sdk_version, target_sdk_version, library):
 
   manifest = parse_manifest(doc)
 
-  # Get or insert the uses-sdk element
-  uses_sdk = get_children_with_tag(manifest, 'uses-sdk')
-  if len(uses_sdk) > 1:
-    raise RuntimeError('found multiple uses-sdk elements')
-  elif len(uses_sdk) == 1:
-    element = uses_sdk[0]
-  else:
-    element = doc.createElement('uses-sdk')
-    indent = get_indent(manifest.firstChild, 1)
-    manifest.insertBefore(element, manifest.firstChild)
-
-    # Insert an indent before uses-sdk to line it up with the indentation of the
-    # other children of the <manifest> tag.
-    manifest.insertBefore(doc.createTextNode(indent), manifest.firstChild)
-
-  # Get or insert the minSdkVersion attribute.  If it is already present, make
-  # sure it as least the requested value.
-  min_attr = element.getAttributeNodeNS(android_ns, 'minSdkVersion')
-  if min_attr is None:
-    min_attr = doc.createAttributeNS(android_ns, 'android:minSdkVersion')
-    min_attr.value = min_sdk_version
-    element.setAttributeNode(min_attr)
-  else:
-    if compare_version_gt(min_sdk_version, min_attr.value):
+  for uses_sdk in get_or_create_uses_sdks(doc, manifest):
+    # Get or insert the minSdkVersion attribute.  If it is already present, make
+    # sure it as least the requested value.
+    min_attr = uses_sdk.getAttributeNodeNS(android_ns, 'minSdkVersion')
+    if min_attr is None:
+      min_attr = doc.createAttributeNS(android_ns, 'android:minSdkVersion')
       min_attr.value = min_sdk_version
-
-  # Insert the targetSdkVersion attribute if it is missing.  If it is already
-  # present leave it as is.
-  target_attr = element.getAttributeNodeNS(android_ns, 'targetSdkVersion')
-  if target_attr is None:
-    target_attr = doc.createAttributeNS(android_ns, 'android:targetSdkVersion')
-    if library:
-      # TODO(b/117122200): libraries shouldn't set targetSdkVersion at all, but
-      # ManifestMerger treats minSdkVersion="Q" as targetSdkVersion="Q" if it
-      # is empty.  Set it to something low so that it will be overriden by the
-      # main manifest, but high enough that it doesn't cause implicit
-      # permissions grants.
-      target_attr.value = '16'
+      uses_sdk.setAttributeNode(min_attr)
     else:
-      target_attr.value = target_sdk_version
-    element.setAttributeNode(target_attr)
+      if compare_version_gt(min_sdk_version, min_attr.value):
+        min_attr.value = min_sdk_version
+
+    # Insert the targetSdkVersion attribute if it is missing.  If it is already
+    # present leave it as is.
+    target_attr = uses_sdk.getAttributeNodeNS(android_ns, 'targetSdkVersion')
+    if target_attr is None:
+      target_attr = doc.createAttributeNS(android_ns, 'android:targetSdkVersion')
+      if library:
+        # TODO(b/117122200): libraries shouldn't set targetSdkVersion at all, but
+        # ManifestMerger treats minSdkVersion="Q" as targetSdkVersion="Q" if it
+        # is empty.  Set it to something low so that it will be overridden by the
+        # main manifest, but high enough that it doesn't cause implicit
+        # permissions grants.
+        target_attr.value = '16'
+      else:
+        target_attr.value = target_sdk_version
+      uses_sdk.setAttributeNode(target_attr)
 
 
 def add_logging_parent(doc, logging_parent_value):
@@ -147,37 +125,27 @@ def add_logging_parent(doc, logging_parent_value):
   manifest = parse_manifest(doc)
 
   logging_parent_key = 'android.content.pm.LOGGING_PARENT'
-  elems = get_children_with_tag(manifest, 'application')
-  application = elems[0] if len(elems) == 1 else None
-  if len(elems) > 1:
-    raise RuntimeError('found multiple <application> tags')
-  elif not elems:
-    application = doc.createElement('application')
-    indent = get_indent(manifest.firstChild, 1)
-    first = manifest.firstChild
-    manifest.insertBefore(doc.createTextNode(indent), first)
-    manifest.insertBefore(application, first)
+  for application in get_or_create_applications(doc, manifest):
+    indent = get_indent(application.firstChild, 2)
 
-  indent = get_indent(application.firstChild, 2)
-
-  last = application.lastChild
-  if last is not None and last.nodeType != minidom.Node.TEXT_NODE:
-    last = None
-
-  if not find_child_with_attribute(application, 'meta-data', android_ns,
-                                   'name', logging_parent_key):
-    ul = doc.createElement('meta-data')
-    ul.setAttributeNS(android_ns, 'android:name', logging_parent_key)
-    ul.setAttributeNS(android_ns, 'android:value', logging_parent_value)
-    application.insertBefore(doc.createTextNode(indent), last)
-    application.insertBefore(ul, last)
     last = application.lastChild
+    if last is not None and last.nodeType != minidom.Node.TEXT_NODE:
+      last = None
 
-  # align the closing tag with the opening tag if it's not
-  # indented
-  if last and last.nodeType != minidom.Node.TEXT_NODE:
-    indent = get_indent(application.previousSibling, 1)
-    application.appendChild(doc.createTextNode(indent))
+    if not find_child_with_attribute(application, 'meta-data', android_ns,
+                                     'name', logging_parent_key):
+      ul = doc.createElement('meta-data')
+      ul.setAttributeNS(android_ns, 'android:name', logging_parent_key)
+      ul.setAttributeNS(android_ns, 'android:value', logging_parent_value)
+      application.insertBefore(doc.createTextNode(indent), last)
+      application.insertBefore(ul, last)
+      last = application.lastChild
+
+    # align the closing tag with the opening tag if it's not
+    # indented
+    if last and last.nodeType != minidom.Node.TEXT_NODE:
+      indent = get_indent(application.previousSibling, 1)
+      application.appendChild(doc.createTextNode(indent))
 
 
 def add_uses_libraries(doc, new_uses_libraries, required):
@@ -192,42 +160,32 @@ def add_uses_libraries(doc, new_uses_libraries, required):
   """
 
   manifest = parse_manifest(doc)
-  elems = get_children_with_tag(manifest, 'application')
-  application = elems[0] if len(elems) == 1 else None
-  if len(elems) > 1:
-    raise RuntimeError('found multiple <application> tags')
-  elif not elems:
-    application = doc.createElement('application')
-    indent = get_indent(manifest.firstChild, 1)
-    first = manifest.firstChild
-    manifest.insertBefore(doc.createTextNode(indent), first)
-    manifest.insertBefore(application, first)
+  for application in get_or_create_applications(doc, manifest):
+    indent = get_indent(application.firstChild, 2)
 
-  indent = get_indent(application.firstChild, 2)
+    last = application.lastChild
+    if last is not None and last.nodeType != minidom.Node.TEXT_NODE:
+      last = None
 
-  last = application.lastChild
-  if last is not None and last.nodeType != minidom.Node.TEXT_NODE:
-    last = None
+    for name in new_uses_libraries:
+      if find_child_with_attribute(application, 'uses-library', android_ns,
+                                   'name', name) is not None:
+        # If the uses-library tag of the same 'name' attribute value exists,
+        # respect it.
+        continue
 
-  for name in new_uses_libraries:
-    if find_child_with_attribute(application, 'uses-library', android_ns,
-                                 'name', name) is not None:
-      # If the uses-library tag of the same 'name' attribute value exists,
-      # respect it.
-      continue
+      ul = doc.createElement('uses-library')
+      ul.setAttributeNS(android_ns, 'android:name', name)
+      ul.setAttributeNS(android_ns, 'android:required', str(required).lower())
 
-    ul = doc.createElement('uses-library')
-    ul.setAttributeNS(android_ns, 'android:name', name)
-    ul.setAttributeNS(android_ns, 'android:required', str(required).lower())
+      application.insertBefore(doc.createTextNode(indent), last)
+      application.insertBefore(ul, last)
 
-    application.insertBefore(doc.createTextNode(indent), last)
-    application.insertBefore(ul, last)
-
-  # align the closing tag with the opening tag if it's not
-  # indented
-  if application.lastChild.nodeType != minidom.Node.TEXT_NODE:
-    indent = get_indent(application.previousSibling, 1)
-    application.appendChild(doc.createTextNode(indent))
+    # align the closing tag with the opening tag if it's not
+    # indented
+    if application.lastChild.nodeType != minidom.Node.TEXT_NODE:
+      indent = get_indent(application.previousSibling, 1)
+      application.appendChild(doc.createTextNode(indent))
 
 
 def add_uses_non_sdk_api(doc):
@@ -240,111 +198,63 @@ def add_uses_non_sdk_api(doc):
   """
 
   manifest = parse_manifest(doc)
-  elems = get_children_with_tag(manifest, 'application')
-  application = elems[0] if len(elems) == 1 else None
-  if len(elems) > 1:
-    raise RuntimeError('found multiple <application> tags')
-  elif not elems:
-    application = doc.createElement('application')
-    indent = get_indent(manifest.firstChild, 1)
-    first = manifest.firstChild
-    manifest.insertBefore(doc.createTextNode(indent), first)
-    manifest.insertBefore(application, first)
-
-  attr = application.getAttributeNodeNS(android_ns, 'usesNonSdkApi')
-  if attr is None:
-    attr = doc.createAttributeNS(android_ns, 'android:usesNonSdkApi')
-    attr.value = 'true'
-    application.setAttributeNode(attr)
+  for application in get_or_create_applications(doc, manifest):
+    attr = application.getAttributeNodeNS(android_ns, 'usesNonSdkApi')
+    if attr is None:
+      attr = doc.createAttributeNS(android_ns, 'android:usesNonSdkApi')
+      attr.value = 'true'
+      application.setAttributeNode(attr)
 
 
 def add_use_embedded_dex(doc):
   manifest = parse_manifest(doc)
-  elems = get_children_with_tag(manifest, 'application')
-  application = elems[0] if len(elems) == 1 else None
-  if len(elems) > 1:
-    raise RuntimeError('found multiple <application> tags')
-  elif not elems:
-    application = doc.createElement('application')
-    indent = get_indent(manifest.firstChild, 1)
-    first = manifest.firstChild
-    manifest.insertBefore(doc.createTextNode(indent), first)
-    manifest.insertBefore(application, first)
-
-  attr = application.getAttributeNodeNS(android_ns, 'useEmbeddedDex')
-  if attr is None:
-    attr = doc.createAttributeNS(android_ns, 'android:useEmbeddedDex')
-    attr.value = 'true'
-    application.setAttributeNode(attr)
-  elif attr.value != 'true':
-    raise RuntimeError('existing attribute mismatches the option of --use-embedded-dex')
+  for application in get_or_create_applications(doc, manifest):
+    attr = application.getAttributeNodeNS(android_ns, 'useEmbeddedDex')
+    if attr is None:
+      attr = doc.createAttributeNS(android_ns, 'android:useEmbeddedDex')
+      attr.value = 'true'
+      application.setAttributeNode(attr)
+    elif attr.value != 'true':
+      raise RuntimeError('existing attribute mismatches the option of --use-embedded-dex')
 
 
 def add_extract_native_libs(doc, extract_native_libs):
   manifest = parse_manifest(doc)
-  elems = get_children_with_tag(manifest, 'application')
-  application = elems[0] if len(elems) == 1 else None
-  if len(elems) > 1:
-    raise RuntimeError('found multiple <application> tags')
-  elif not elems:
-    application = doc.createElement('application')
-    indent = get_indent(manifest.firstChild, 1)
-    first = manifest.firstChild
-    manifest.insertBefore(doc.createTextNode(indent), first)
-    manifest.insertBefore(application, first)
-
-  value = str(extract_native_libs).lower()
-  attr = application.getAttributeNodeNS(android_ns, 'extractNativeLibs')
-  if attr is None:
-    attr = doc.createAttributeNS(android_ns, 'android:extractNativeLibs')
-    attr.value = value
-    application.setAttributeNode(attr)
-  elif attr.value != value:
-    raise RuntimeError('existing attribute extractNativeLibs="%s" conflicts with --extract-native-libs="%s"' %
-                       (attr.value, value))
+  for application in get_or_create_applications(doc, manifest):
+    value = str(extract_native_libs).lower()
+    attr = application.getAttributeNodeNS(android_ns, 'extractNativeLibs')
+    if attr is None:
+      attr = doc.createAttributeNS(android_ns, 'android:extractNativeLibs')
+      attr.value = value
+      application.setAttributeNode(attr)
+    elif attr.value != value:
+      raise RuntimeError('existing attribute extractNativeLibs="%s" conflicts with --extract-native-libs="%s"' %
+                         (attr.value, value))
 
 
 def set_has_code_to_false(doc):
   manifest = parse_manifest(doc)
-  elems = get_children_with_tag(manifest, 'application')
-  application = elems[0] if len(elems) == 1 else None
-  if len(elems) > 1:
-    raise RuntimeError('found multiple <application> tags')
-  elif not elems:
-    application = doc.createElement('application')
-    indent = get_indent(manifest.firstChild, 1)
-    first = manifest.firstChild
-    manifest.insertBefore(doc.createTextNode(indent), first)
-    manifest.insertBefore(application, first)
+  for application in get_or_create_applications(doc, manifest):
+    attr = application.getAttributeNodeNS(android_ns, 'hasCode')
+    if attr is not None:
+      # Do nothing if the application already has a hasCode attribute.
+      continue
+    attr = doc.createAttributeNS(android_ns, 'android:hasCode')
+    attr.value = 'false'
+    application.setAttributeNode(attr)
 
-  attr = application.getAttributeNodeNS(android_ns, 'hasCode')
-  if attr is not None:
-    # Do nothing if the application already has a hasCode attribute.
-    return
-  attr = doc.createAttributeNS(android_ns, 'android:hasCode')
-  attr.value = 'false'
-  application.setAttributeNode(attr)
 
 def set_test_only_flag_to_true(doc):
   manifest = parse_manifest(doc)
-  elems = get_children_with_tag(manifest, 'application')
-  application = elems[0] if len(elems) == 1 else None
-  if len(elems) > 1:
-    raise RuntimeError('found multiple <application> tags')
-  elif not elems:
-    application = doc.createElement('application')
-    indent = get_indent(manifest.firstChild, 1)
-    first = manifest.firstChild
-    manifest.insertBefore(doc.createTextNode(indent), first)
-    manifest.insertBefore(application, first)
+  for application in get_or_create_applications(doc, manifest):
+    attr = application.getAttributeNodeNS(android_ns, 'testOnly')
+    if attr is not None:
+      # Do nothing If the application already has a testOnly attribute.
+      continue
+    attr = doc.createAttributeNS(android_ns, 'android:testOnly')
+    attr.value = 'true'
+    application.setAttributeNode(attr)
 
-  attr = application.getAttributeNodeNS(android_ns, 'testOnly')
-  if attr is not None:
-    # Do nothing If the application already has a testOnly attribute.
-    return
-  attr = doc.createAttributeNS(android_ns, 'android:testOnly')
-  attr.value = 'true'
-  application.setAttributeNode(attr)
 
 def set_max_sdk_version(doc, max_sdk_version):
   """Replace the maxSdkVersion attribute value for permission and
@@ -364,6 +274,7 @@ def set_max_sdk_version(doc, max_sdk_version):
       if max_attr and max_attr.value == 'current':
         max_attr.value = max_sdk_version
 
+
 def override_placeholder_version(doc, new_version):
   """Replace the versionCode attribute value if it\'s currently
   set to the placeholder version of 0.
@@ -374,8 +285,9 @@ def override_placeholder_version(doc, new_version):
   """
   manifest = parse_manifest(doc)
   version = manifest.getAttribute("android:versionCode")
-  if (version == '0'):
+  if version == '0':
     manifest.setAttribute("android:versionCode", new_version)
+
 
 def main():
   """Program entry point."""
@@ -426,6 +338,7 @@ def main():
   except Exception as err:
     print('error: ' + str(err), file=sys.stderr)
     sys.exit(-1)
+
 
 if __name__ == '__main__':
   main()
