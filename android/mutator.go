@@ -15,9 +15,8 @@
 package android
 
 import (
-	"sync"
-
 	"github.com/google/blueprint"
+	"github.com/google/blueprint/pool"
 )
 
 // Phases:
@@ -333,19 +332,10 @@ type BottomUpMutatorContext interface {
 // for each transition mutator.  bottomUpMutatorContext and topDownMutatorContext are created once for every module
 // for every BottomUp or TopDown mutator.  Use a global pool for each to avoid reallocating every time.
 var (
-	outgoingTransitionContextPool = sync.Pool{
-		New: func() any { return &outgoingTransitionContextImpl{} },
-	}
-	incomingTransitionContextPool = sync.Pool{
-		New: func() any { return &incomingTransitionContextImpl{} },
-	}
-	bottomUpMutatorContextPool = sync.Pool{
-		New: func() any { return &bottomUpMutatorContext{} },
-	}
-
-	topDownMutatorContextPool = sync.Pool{
-		New: func() any { return &topDownMutatorContext{} },
-	}
+	outgoingTransitionContextPool = pool.New[outgoingTransitionContextImpl]()
+	incomingTransitionContextPool = pool.New[incomingTransitionContextImpl]()
+	bottomUpMutatorContextPool    = pool.New[bottomUpMutatorContext]()
+	topDownMutatorContextPool     = pool.New[topDownMutatorContext]()
 )
 
 type bottomUpMutatorContext struct {
@@ -356,10 +346,10 @@ type bottomUpMutatorContext struct {
 
 // callers must immediately follow the call to this function with defer bottomUpMutatorContextPool.Put(mctx).
 func bottomUpMutatorContextFactory(ctx blueprint.BottomUpMutatorContext, a Module,
-	finalPhase bool) BottomUpMutatorContext {
+	finalPhase bool) *bottomUpMutatorContext {
 
 	moduleContext := a.base().baseModuleContextFactory(ctx)
-	mctx := bottomUpMutatorContextPool.Get().(*bottomUpMutatorContext)
+	mctx := bottomUpMutatorContextPool.Get()
 	*mctx = bottomUpMutatorContext{
 		bp:                ctx,
 		baseModuleContext: moduleContext,
@@ -554,7 +544,7 @@ func (c *outgoingTransitionContextImpl) provider(provider blueprint.AnyProviderK
 
 func (a *androidTransitionMutator) OutgoingTransition(bpctx blueprint.OutgoingTransitionContext, sourceVariation string) string {
 	if m, ok := bpctx.Module().(Module); ok {
-		ctx := outgoingTransitionContextPool.Get().(*outgoingTransitionContextImpl)
+		ctx := outgoingTransitionContextPool.Get()
 		defer outgoingTransitionContextPool.Put(ctx)
 		*ctx = outgoingTransitionContextImpl{
 			archModuleContext: m.base().archModuleContextFactory(bpctx),
@@ -593,7 +583,7 @@ func (c *incomingTransitionContextImpl) provider(provider blueprint.AnyProviderK
 
 func (a *androidTransitionMutator) IncomingTransition(bpctx blueprint.IncomingTransitionContext, incomingVariation string) string {
 	if m, ok := bpctx.Module().(Module); ok {
-		ctx := incomingTransitionContextPool.Get().(*incomingTransitionContextImpl)
+		ctx := incomingTransitionContextPool.Get()
 		defer incomingTransitionContextPool.Put(ctx)
 		*ctx = incomingTransitionContextImpl{
 			archModuleContext: m.base().archModuleContextFactory(bpctx),
@@ -641,7 +631,7 @@ func (x *registerMutatorsContext) TopDown(name string, m TopDownMutator) Mutator
 	f := func(ctx blueprint.TopDownMutatorContext) {
 		if a, ok := ctx.Module().(Module); ok {
 			moduleContext := a.base().baseModuleContextFactory(ctx)
-			actx := topDownMutatorContextPool.Get().(*topDownMutatorContext)
+			actx := topDownMutatorContextPool.Get()
 			defer topDownMutatorContextPool.Put(actx)
 			*actx = topDownMutatorContext{
 				bp:                ctx,

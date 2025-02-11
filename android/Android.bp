@@ -9,6 +9,7 @@ bootstrap_go_package {
         "blueprint",
         "blueprint-bootstrap",
         "blueprint-metrics",
+        "blueprint-pool",
         "sbox_proto",
         "soong",
         "soong-android_team_proto",
