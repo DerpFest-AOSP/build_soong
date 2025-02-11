@@ -2932,14 +2932,18 @@ func (module *Module) collectJarJarRules(ctx android.ModuleContext) *JarJarProvi
 // Get the jarjar rule text for a given provider for the fully resolved rules. Classes that map
 // to "" won't be in this list because they shouldn't be renamed yet.
 func getJarJarRuleText(provider *JarJarProviderData) string {
-	result := ""
+	result := strings.Builder{}
 	for _, orig := range android.SortedKeys(provider.Rename) {
 		renamed := provider.Rename[orig]
 		if renamed != "" {
-			result += "rule " + orig + " " + renamed + "\n"
+			result.WriteString("rule ")
+			result.WriteString(orig)
+			result.WriteString(" ")
+			result.WriteString(renamed)
+			result.WriteString("\n")
 		}
 	}
-	return result
+	return result.String()
 }
 
 // Repackage the flags if the jarjar rule txt for the flags is generated
